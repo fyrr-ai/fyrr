@@ -38,8 +38,83 @@ pub struct PreparedEnvelope {
     /// The serving head the worker prepared against; `null` on a namespace
     /// without a publication.
     pub base_head: Option<BaseHead>,
+    /// Written to the microsecond, always: the encoding of an envelope is as
+    /// long whenever it is written.
+    #[serde(serialize_with = "to_the_microsecond")]
+    #[schemars(with = "DateTime<Utc>")]
     pub created_at: DateTime<Utc>,
+    /// The generation of the cursor lease its worker held; part of the ID of a
+    /// permissions envelope, so two workers never write the same one.
+    /// Zero on an envelope written before permissions envelopes were chained.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub lease_generation: u64,
+    /// The permissions envelope this one follows, from the cursor
+    /// of its worker; none for the first. The committer applies only the
+    /// envelopes that chain back from the one the cursor confirmed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous: Option<String>,
     pub payload: EnvelopePayload,
+}
+
+fn to_the_microsecond<S: serde::Serializer>(
+    time: &DateTime<Utc>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.serialize_str(&time.to_rfc3339_opts(chrono::SecondsFormat::Micros, true))
+}
+
+/// The largest envelope that ends a permission read in `namespace`: no root,
+/// the longest IDs and numbers, and cursors of the most bytes, each escaped as
+/// JSON escapes a control character. `writer.envelope_max_bytes` holds it, so
+/// that the envelope that ends a read is never over the bound.
+pub fn largest_permission_end(namespace: &str) -> PreparedEnvelope {
+    use chrono::TimeZone;
+    let source = "a".repeat(crate::limits::MAX_ID_BYTES);
+    let cursor = "\u{1}".repeat(crate::limits::MAX_CURSOR_BYTES);
+    let id = leased_envelope_id(
+        namespace,
+        &source,
+        SyncKind::Permissions,
+        u64::MAX,
+        u32::MAX,
+        Some(&cursor),
+        u64::MAX,
+    );
+    PreparedEnvelope {
+        schema_version: ENVELOPE_CONTRACT_VERSION,
+        envelope_id: id.clone(),
+        namespace: namespace.into(),
+        source_id: source,
+        kind: SyncKind::Permissions,
+        sequence: u64::MAX,
+        rejection_generation: u32::MAX,
+        restore_sequence: u64::MAX,
+        cursor: CursorStep {
+            start: Some(cursor.clone()),
+            end: cursor,
+        },
+        advances_cursor: false,
+        base_head: Some(BaseHead {
+            content_publication_id: format!("pub-{}", "f".repeat(32)),
+            content_sequence: u64::MAX,
+            lance_version: u64::MAX,
+        }),
+        created_at: Utc
+            .with_ymd_and_hms(9999, 12, 31, 23, 59, 59)
+            .single()
+            .unwrap_or_else(|| unreachable!("a valid time")),
+        lease_generation: u64::MAX,
+        previous: Some(id),
+        payload: EnvelopePayload::Permissions(PermissionsPayload {
+            complete_read: false,
+            documents: Vec::new(),
+            container_grants: Vec::new(),
+        }),
+    }
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 
 /// The head an envelope was prepared against.
@@ -297,8 +372,9 @@ pub struct ChunkProfileIdentity {
 /// A permission sync's per-document readers and container grants.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct PermissionsPayload {
-    /// True only on the empty envelope that ends a read replacing a rejected
-    /// generation; it alone consumes the rejection markers.
+    /// True on the envelope that ends a read: the read's only envelope, or its
+    /// last when the read is published in parts. Only such an envelope consumes
+    /// the rejection markers.
     pub complete_read: bool,
     pub documents: Vec<DocumentPermission>,
     pub container_grants: Vec<ContainerGrant>,
@@ -339,13 +415,14 @@ impl Contract for PreparedEnvelope {
     fn validate(&self) -> Result<(), String> {
         check_id("namespace", &self.namespace)?;
         check_id("source_id", &self.source_id)?;
-        let expected = envelope_id(
+        let expected = leased_envelope_id(
             &self.namespace,
             &self.source_id,
             self.kind,
             self.sequence,
             self.rejection_generation,
             self.cursor.start.as_deref(),
+            self.lease_generation,
         );
         if self.envelope_id != expected {
             return Err("envelope_id does not match its derivation".into());
@@ -458,6 +535,28 @@ pub fn envelope_id(
     rejection_generation: u32,
     start_cursor: Option<&str>,
 ) -> String {
+    leased_envelope_id(
+        namespace,
+        source_id,
+        kind,
+        sequence,
+        rejection_generation,
+        start_cursor,
+        0,
+    )
+}
+
+/// [`envelope_id`] with the generation of the lease of the worker that wrote it
+/// (zero: none, as for content).
+pub fn leased_envelope_id(
+    namespace: &str,
+    source_id: &str,
+    kind: SyncKind,
+    sequence: u64,
+    rejection_generation: u32,
+    start_cursor: Option<&str>,
+    lease_generation: u64,
+) -> String {
     let mut hasher = Sha256::new();
     let mut part = |bytes: &[u8]| {
         hasher.update((bytes.len() as u64).to_le_bytes());
@@ -475,6 +574,10 @@ pub fn envelope_id(
             part(b"+");
             part(cursor.as_bytes());
         }
+    }
+    if lease_generation > 0 {
+        part(b"lease");
+        part(&lease_generation.to_le_bytes());
     }
     let digest = hasher.finalize();
     format!("env-{}", hex::encode(&digest[..16]))

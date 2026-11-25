@@ -424,13 +424,14 @@ async fn purged_fragments_are_durable_before_their_envelope_is_unlinked() {
         false,
     );
     envelope.sequence += 100;
-    envelope.envelope_id = fyrr_core::envelope::envelope_id(
+    envelope.envelope_id = fyrr_core::envelope::leased_envelope_id(
         &envelope.namespace,
         &envelope.source_id,
         envelope.kind,
         envelope.sequence,
         envelope.rejection_generation,
         envelope.cursor.start.as_deref(),
+        envelope.lease_generation,
     );
     let path = namespace
         .clone()

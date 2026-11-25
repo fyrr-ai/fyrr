@@ -49,14 +49,23 @@ pub async fn reject(config: &Config, envelope: &PreparedEnvelope, reason: &str) 
     fyrr_reader::storage::observed_durability(config)?
         .persist()
         .await?;
-    crate::prepare::put_immutable(
-        store.as_ref(),
-        &root
-            .join("rejections")
-            .join(format!("{}.json", envelope.envelope_id)),
-        &marker,
-    )
-    .await?;
+    let path = root
+        .join("rejections")
+        .join(format!("{}.json", envelope.envelope_id));
+    match crate::prepare::put_immutable(store.as_ref(), &path, &marker).await {
+        Ok(()) => {}
+        // A marker written before, by a commit that did not live to publish it,
+        // stands with its own reason: this one is a retry, not a second rejection.
+        Err(WriterError::ImmutableObjectConflict) => {
+            let written: RejectionMarker =
+                fyrr_reader::storage::read_contract(store.as_ref(), &path).await?;
+            if written.envelope_id != marker.envelope_id {
+                return Err(WriterError::ImmutableObjectConflict);
+            }
+            return Ok(());
+        }
+        Err(error) => return Err(error),
+    }
     fyrr_reader::metrics::add(&crate::telemetry::REJECTED_ENVELOPES, &[], 1);
     Ok(())
 }
@@ -126,10 +135,18 @@ pub(crate) async fn write_rows(
     config: &Config,
     rows: Vec<RecordBatch>,
 ) -> Result<Vec<serde_json::Value>> {
+    check_row_bounds(config, &rows)?;
+    write_fragments(config, rows).await
+}
+
+/// Writes `rows` as data files, unbounded: the caller bounds what it holds.
+async fn write_fragments(
+    config: &Config,
+    rows: Vec<RecordBatch>,
+) -> Result<Vec<serde_json::Value>> {
     if rows.is_empty() {
         return Ok(Vec::new());
     }
-    check_row_bounds(config, &rows)?;
     let params = WriteParams {
         store_params: Some(crate::prepare::store_params(config)?),
         ..Default::default()
@@ -325,37 +342,11 @@ pub fn complete_read(envelope: &PreparedEnvelope) -> bool {
     }
 }
 
-/// Charge the rows a permission replacement actually writes, using only changed keys.
-pub async fn permission_work(
-    config: &Config,
-    head: &fyrr_core::publication::ServingHead,
-    source: &str,
-    payload: &PermissionsPayload,
-) -> Result<u64> {
-    let Some(_) = &head.content else {
-        return Ok((payload.documents.len() + payload.container_grants.len()) as u64);
-    };
-    if payload.documents.is_empty() {
-        return Ok(payload.container_grants.len() as u64);
-    }
-    let dataset = fyrr_reader::storage::pinned(config, head).await?;
-    let mut work = payload.container_grants.len() as u64;
-    for document in &payload.documents {
-        let count = dataset
-            .count_rows(Some(keys_filter(
-                source,
-                std::slice::from_ref(&document.root_id),
-            )))
-            .await
-            .map_err(|_| WriterError::ChangedRowScanFailed)?;
-        work = work
-            .checked_add((count as u64).max(1))
-            .ok_or(WriterError::EnvelopeBoundsInvalid)?;
-    }
-    Ok(work)
-}
-
 /// Per-row permissions are reapplied from their separate revision before content.
+/// A root's rows are read [`STEP_ROWS`] at a time and written in steps of at
+/// most a group's rows and bytes, a row alone being a step, so that an
+/// envelope is never refused for what it rewrites: the steps are staged as one
+/// change of the dataset.
 pub async fn permissions(
     config: &Config,
     dataset: &Dataset,
@@ -371,7 +362,8 @@ pub async fn permissions(
         .collect::<Vec<_>>();
     let previous = states(dataset, &envelope.source_id, &roots).await?;
     let mut changed = Vec::new();
-    let mut output = Vec::new();
+    let mut fragments = Vec::new();
+    let mut steps = Steps::default();
     for document in &payload.documents {
         let mut state = previous.get(&document.root_id).cloned().unwrap_or_default();
         if state
@@ -395,35 +387,86 @@ pub async fn permissions(
             containers: document.containers.clone(),
         };
         let filter = keys_filter(&envelope.source_id, std::slice::from_ref(&document.root_id));
-        let rows = dataset
-            .scan()
-            .filter(&filter)
+        state.permission = Some(permission.clone());
+        let mut scan = dataset.scan();
+        scan.filter(&filter)
             .map_err(|_| WriterError::ChangedRowsInvalid)?
-            .try_into_batch()
+            .batch_size(STEP_ROWS)
+            .batch_readahead(1)
+            .fragment_readahead(1);
+        let mut stream = scan
+            .try_into_stream()
             .await
             .map_err(|_| WriterError::ChangedRowScanFailed)?;
-        state.permission = Some(permission.clone());
-        if rows.num_rows() == 0 {
-            output.push(marker_row(
+        let mut found = false;
+        while let Some(rows) = stream
+            .try_next()
+            .await
+            .map_err(|_| WriterError::ChangedRowScanFailed)?
+        {
+            for row in 0..rows.num_rows() {
+                found = true;
+                let tokens = if strings(&rows, "source_id")?.value(row)
+                    == state_source(&envelope.source_id)
+                {
+                    Vec::new()
+                } else {
+                    effective_readers(own_readers(&rows, row)?.as_deref(), &permission.readers)
+                };
+                let row = with_state(&rows.slice(row, 1), &state, &tokens)?;
+                if let Some(full) = steps.push(config, row)? {
+                    fragments.extend(write_fragments(config, full).await?);
+                }
+            }
+        }
+        if !found {
+            let marker = marker_row(
                 config.embedding.dimensions,
                 config.namespace.dense_element,
                 &envelope.source_id,
                 &document.root_id,
                 &state,
-            )?);
-        }
-        for row in 0..rows.num_rows() {
-            let tokens =
-                if strings(&rows, "source_id")?.value(row) == state_source(&envelope.source_id) {
-                    Vec::new()
-                } else {
-                    effective_readers(own_readers(&rows, row)?.as_deref(), &permission.readers)
-                };
-            output.push(with_state(&rows.slice(row, 1), &state, &tokens)?);
+            )?;
+            if let Some(full) = steps.push(config, marker)? {
+                fragments.extend(write_fragments(config, full).await?);
+            }
         }
         changed.push(filter);
     }
-    Ok((changed, write_rows(config, output).await?))
+    fragments.extend(write_fragments(config, steps.rows).await?);
+    Ok((changed, fragments))
+}
+
+/// The rows of a root a permission replacement reads at a time.
+const STEP_ROWS: usize = 256;
+
+/// The rewritten rows of a permission replacement not yet written: a step of
+/// at most a group's rows and bytes, or a row alone.
+#[derive(Default)]
+struct Steps {
+    rows: Vec<RecordBatch>,
+    held: (u64, u64),
+}
+
+impl Steps {
+    /// Holds `row`, and gives the step to write first when it would be over.
+    fn push(&mut self, config: &Config, row: RecordBatch) -> Result<Option<Vec<RecordBatch>>> {
+        let (count, bytes) = row_size(std::slice::from_ref(&row))?;
+        let bytes = bytes - ROW_OVERHEAD_BYTES;
+        let full = (!self.rows.is_empty()
+            && (self.held.0 + count > config.writer.commit.group_max_rows
+                || ROW_OVERHEAD_BYTES
+                    .saturating_add(self.held.1)
+                    .saturating_add(bytes)
+                    > config.writer.commit.group_max_bytes.as_u64()))
+        .then(|| {
+            self.held = (0, 0);
+            std::mem::take(&mut self.rows)
+        });
+        self.held = (self.held.0 + count, self.held.1.saturating_add(bytes));
+        self.rows.push(row);
+        Ok(full)
+    }
 }
 
 /// A complete listing stages at most one bounded delete group per publication.
@@ -579,47 +622,58 @@ pub async fn verify_publication(
             _ => Vec::new(),
         };
         for page in roots.chunks(256) {
-            let batch = dataset
-                .scan()
-                .filter(&keys_filter(&envelope.source_id, page))
+            // The rows of a page are read in batches: a root of many rows is
+            // never held whole.
+            let mut scan = dataset.scan();
+            scan.filter(&keys_filter(&envelope.source_id, page))
                 .map_err(|_| WriterError::ChangedRowsInvalid)?
-                .try_into_batch()
+                .batch_size(STEP_ROWS)
+                .batch_readahead(1)
+                .fragment_readahead(1);
+            let mut stream = scan
+                .try_into_stream()
                 .await
                 .map_err(|_| WriterError::ChangedRowsInvalid)?;
             let mut keys = BTreeSet::new();
-            let mut states = BTreeMap::new();
-            for row in 0..batch.num_rows() {
-                let root = strings(&batch, "root_id")?.value(row);
-                let record = strings(&batch, "record_id")?.value(row);
-                let source = strings(&batch, "source_id")?.value(row);
-                if !keys.insert((source, root, record)) {
-                    return Err(WriterError::DuplicateChangedRows);
-                }
-                let vector = batch
-                    .column_by_name("vector")
-                    .and_then(|a| a.as_any().downcast_ref::<FixedSizeListArray>())
-                    .ok_or(WriterError::ChangedRowsInvalid)?
-                    .value(row);
-                if !valid_vector(vector.as_ref(), config.embedding.dimensions) {
-                    return Err(WriterError::ChangedRowsInvalid);
-                }
-                let current = state(&batch, row)?;
-                if states.get(root).is_some_and(|old| old != &current) {
-                    return Err(WriterError::DocumentStateInvalid);
-                }
-                states.insert(root, current.clone());
-                if source == state_source(&envelope.source_id) {
-                    if !tokens(&batch, row)?.is_empty()
-                        || !strings(&batch, "searchable_text")?.value(row).is_empty()
-                    {
-                        return Err(WriterError::TombstoneInvalid);
+            let mut states: BTreeMap<String, DocumentState> = BTreeMap::new();
+            while let Some(batch) = stream
+                .try_next()
+                .await
+                .map_err(|_| WriterError::ChangedRowsInvalid)?
+            {
+                for row in 0..batch.num_rows() {
+                    let root = strings(&batch, "root_id")?.value(row);
+                    let record = strings(&batch, "record_id")?.value(row);
+                    let source = strings(&batch, "source_id")?.value(row);
+                    if !keys.insert((source.to_owned(), root.to_owned(), record.to_owned())) {
+                        return Err(WriterError::DuplicateChangedRows);
                     }
-                } else if current.deleted
-                    || strings(&batch, "searchable_text")?.value(row).is_empty()
-                    || current.revision.as_deref()
-                        != Some(strings(&batch, "source_revision")?.value(row))
-                {
-                    return Err(WriterError::ChangedRowsInvalid);
+                    let vector = batch
+                        .column_by_name("vector")
+                        .and_then(|a| a.as_any().downcast_ref::<FixedSizeListArray>())
+                        .ok_or(WriterError::ChangedRowsInvalid)?
+                        .value(row);
+                    if !valid_vector(vector.as_ref(), config.embedding.dimensions) {
+                        return Err(WriterError::ChangedRowsInvalid);
+                    }
+                    let current = state(&batch, row)?;
+                    if states.get(root).is_some_and(|old| old != &current) {
+                        return Err(WriterError::DocumentStateInvalid);
+                    }
+                    states.insert(root.to_owned(), current.clone());
+                    if source == state_source(&envelope.source_id) {
+                        if !tokens(&batch, row)?.is_empty()
+                            || !strings(&batch, "searchable_text")?.value(row).is_empty()
+                        {
+                            return Err(WriterError::TombstoneInvalid);
+                        }
+                    } else if current.deleted
+                        || strings(&batch, "searchable_text")?.value(row).is_empty()
+                        || current.revision.as_deref()
+                            != Some(strings(&batch, "source_revision")?.value(row))
+                    {
+                        return Err(WriterError::ChangedRowsInvalid);
+                    }
                 }
             }
             if let EnvelopePayload::Content(payload) = &envelope.payload {
@@ -632,7 +686,10 @@ pub async fn verify_publication(
                         Some(state)
                             if state.publication_sequence == sequence
                                 && state.revision == document.source_revision
-                                && !state.deleted =>
+                                && !state.deleted
+                                // A purged document stays its marker, whatever
+                                // the stale content says: it has no rows to count.
+                                && !state.content_purged =>
                         {
                             let actual = keys
                                 .iter()

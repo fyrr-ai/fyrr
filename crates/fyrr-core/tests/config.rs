@@ -433,6 +433,16 @@ fn cross_field_rules_are_enforced() {
         "[writer]\ndocument_max_bytes = \"256MiB\"",
         "writer.envelope_max_bytes",
     );
+    // An envelope bound that cannot hold the envelope that ends a permission
+    // read with the largest cursors.
+    let small =
+        errors_with("[writer]\ndocument_max_bytes = \"64KiB\"\nenvelope_max_bytes = \"128KiB\"");
+    assert!(
+        small
+            .iter()
+            .any(|e| e.contains("writer.envelope_max_bytes") && e.contains("largest cursors")),
+        "{small:#?}"
+    );
     assert_error(
         "[writer.commit]\ngroup_max_bytes = \"1MiB\"",
         "writer.commit",

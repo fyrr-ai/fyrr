@@ -5,6 +5,7 @@ use crate::prepare::{chunk_identity, put_immutable, store_params};
 use crate::{Result, WriterError};
 use futures::TryStreamExt;
 use fyrr_core::config::{Config, ProcessEnvironment};
+use fyrr_core::connector::SyncKind;
 use fyrr_core::envelope::*;
 use fyrr_core::identity::*;
 use fyrr_core::publication::*;
@@ -61,9 +62,217 @@ pub async fn pending(config: &Config, head: &ServingHead) -> Result<Vec<Prepared
         }
         result.push(envelope);
     }
+    let mut result = confirmed(config, head, result, &|id: &str| -> Result<bool> {
+        Ok(applied.contains(id))
+    })
+    .await?;
     result.sort_by(|a, b| (&a.source_id, a.sequence).cmp(&(&b.source_id, b.sequence)));
     crate::telemetry::pending_envelopes(&config.namespace.name, result.len());
     Ok(result)
+}
+
+/// The permissions envelopes of `pending` that the cursor of their source
+/// confirmed: those that chain back, through `previous`, from the newest one
+/// the cursor holds to the newest one the manifest records as applied. An
+/// envelope that is not on that chain, such as a late put by a worker that lost
+/// its lease, is never applied, and the chain is read by ID, never from a
+/// listing. A source that has content or a listing pending is checked too, so
+/// that they never publish while its tail is missing. The envelopes of a
+/// retired source are left as they are: they are rejected. `resolved` tells an
+/// envelope that was applied or rejected.
+pub(crate) async fn confirmed(
+    config: &Config,
+    head: &ServingHead,
+    pending: Vec<PreparedEnvelope>,
+    resolved: &(dyn Fn(&str) -> Result<bool> + Sync),
+) -> Result<Vec<PreparedEnvelope>> {
+    // A permissions envelope without its lease generation, as 0.1 wrote them, has
+    // no place in a chain: it is not on one, and so it is never applied. It stays
+    // in the log as debris, which cleanup removes.
+    let sources: BTreeSet<_> = pending
+        .iter()
+        .filter(|e| e.kind != SyncKind::Members)
+        .map(|e| e.source_id.clone())
+        .collect();
+    if sources.is_empty() {
+        return Ok(pending);
+    }
+    let (store, root) = namespace_store(config)?;
+    let policy: PolicyArtifact =
+        fyrr_reader::storage::artifact(store.as_ref(), &root, &head.policy).await?;
+    let mut kept = Vec::new();
+    let mut listed = BTreeMap::new();
+    for envelope in pending {
+        if envelope.kind == SyncKind::Permissions
+            && !policy.retired_sources.contains_key(&envelope.source_id)
+        {
+            listed.insert(envelope.envelope_id.clone(), envelope);
+        } else {
+            kept.push(envelope);
+        }
+    }
+    let (unresolved, blocked) = chains(config, head, &policy, &sources, &listed, resolved).await?;
+    kept.extend(unresolved);
+    // Content and a listing, which derives deletes, wait for a broken chain.
+    kept.retain(|e| {
+        !matches!(e.kind, SyncKind::Content | SyncKind::Reconcile)
+            || !blocked.contains(&e.source_id)
+    });
+    Ok(kept)
+}
+
+/// Walks the chain of each of `sources` that is not retired: the envelopes of
+/// `listed` that wait on a whole chain, and the sources whose chain is broken,
+/// which hold their content and listings too, until it is whole: they must not
+/// publish with rights it may have revoked.
+pub(crate) async fn chains<L: Link>(
+    config: &Config,
+    head: &ServingHead,
+    policy: &PolicyArtifact,
+    sources: &BTreeSet<String>,
+    listed: &BTreeMap<String, L>,
+    resolved: &(dyn Fn(&str) -> Result<bool> + Sync),
+) -> Result<(Vec<L>, BTreeSet<String>)> {
+    let (store, root) = namespace_store(config)?;
+    let manifest = previous_manifest(store.as_ref(), &root, head).await?;
+    let mut unresolved = Vec::new();
+    let mut blocked = BTreeSet::new();
+    for source in sources
+        .iter()
+        .filter(|source| !policy.retired_sources.contains_key(*source))
+    {
+        let applied = manifest
+            .as_ref()
+            .and_then(|m| m.authorization_applied.get(source));
+        let last = crate::sync_lease::CursorLease::peek(config, source, SyncKind::Permissions)
+            .await?
+            .and_then(|state| state.last)
+            .map(|last| last.id);
+        match walk(
+            config,
+            store.as_ref(),
+            &root,
+            source,
+            last,
+            applied,
+            listed,
+            resolved,
+        )
+        .await?
+        {
+            Some(walk) => unresolved.extend(walk.unresolved),
+            None => {
+                crate::telemetry::permissions_blocked(source);
+                blocked.insert(source.clone());
+            }
+        }
+    }
+    Ok((unresolved, blocked))
+}
+
+/// The links of a chain after `applied`, as one walk finds them.
+pub(crate) struct Walk<L> {
+    /// Every link, resolved or not.
+    pub(crate) ids: BTreeSet<String>,
+    /// The links not yet applied or rejected, oldest first.
+    pub(crate) unresolved: Vec<L>,
+}
+
+/// What a walk reads of a permissions envelope that was listed, by its ID: the
+/// whole envelope for the committer, less for a count.
+pub(crate) trait Link: Clone + From<PreparedEnvelope> {
+    fn source_id(&self) -> &str;
+    fn previous(&self) -> Option<&String>;
+    fn lease_generation(&self) -> u64;
+}
+
+impl Link for PreparedEnvelope {
+    fn source_id(&self) -> &str {
+        &self.source_id
+    }
+    fn previous(&self) -> Option<&String> {
+        self.previous.as_ref()
+    }
+    fn lease_generation(&self) -> u64 {
+        self.lease_generation
+    }
+}
+
+/// Walks the chain of the permissions of `source` by ID from `last`, the newest
+/// envelope its cursor confirmed, back to `applied`: `None` when it does not
+/// reach it, or when `last` is missing while an envelope was applied. The
+/// source is then blocked, and nothing is skipped. The committer and cleanup
+/// walk the same way. A link that is not there is a broken chain; a storage
+/// error is an error, to be retried.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn walk<L: Link>(
+    config: &Config,
+    store: &dyn ObjectStore,
+    root: &Path,
+    source: &String,
+    last: Option<String>,
+    applied: Option<&String>,
+    listed: &BTreeMap<String, L>,
+    resolved: &(dyn Fn(&str) -> Result<bool> + Sync),
+) -> Result<Option<Walk<L>>> {
+    let mut found = Walk {
+        ids: BTreeSet::new(),
+        unresolved: Vec::new(),
+    };
+    let Some(last) = last else {
+        // No cursor, or one with no confirmed envelope, is whole only when the
+        // manifest has applied none: otherwise the chain it held is lost.
+        return Ok(applied.is_none().then_some(found));
+    };
+    let mut next = Some(last);
+    while let Some(id) = next.take() {
+        if applied == Some(&id) {
+            found.unresolved.reverse();
+            return Ok(Some(found));
+        }
+        if !found.ids.insert(id.clone()) {
+            return Ok(None);
+        }
+        // The listed links were read under their ID, of this namespace's kind.
+        let link = match listed.get(&id) {
+            Some(link) => link.clone(),
+            None => {
+                let path = root.clone().join("envelopes").join(format!("{id}.json"));
+                let object = match store.get(&path).await {
+                    Ok(object) => object,
+                    Err(object_store::Error::NotFound { .. }) => return Ok(None),
+                    Err(_) => return Err(WriterError::StorageUnavailable),
+                };
+                let bytes = object
+                    .bytes()
+                    .await
+                    .map_err(|_| WriterError::StorageUnavailable)?;
+                match fyrr_core::parse_contract::<PreparedEnvelope>(&bytes) {
+                    Ok(envelope)
+                        if envelope.envelope_id == id
+                            && envelope.namespace == config.namespace.name
+                            && envelope.kind == SyncKind::Permissions =>
+                    {
+                        L::from(envelope)
+                    }
+                    _ => return Ok(None),
+                }
+            }
+        };
+        if link.source_id() != source || link.lease_generation() == 0 {
+            return Ok(None);
+        }
+        next = link.previous().cloned();
+        if !resolved(&id)? {
+            found.unresolved.push(link);
+        }
+    }
+    // The chain starts here, so it is whole unless an applied envelope was expected.
+    if applied.is_some() {
+        return Ok(None);
+    }
+    found.unresolved.reverse();
+    Ok(Some(found))
 }
 
 pub async fn envelope_paths(
@@ -606,7 +815,7 @@ async fn drain_authorization_held(
     loop {
         let group = if let Some(h) = history.as_deref_mut() {
             h.refresh(config, &head).await?;
-            let unresolved = h.unconsumed_rejections(config, &[]).await?;
+            let unresolved = h.unconsumed_rejections(config, &remaining).await?;
             commit_group_with_rejections(config, remaining, &head, unresolved).await?
         } else {
             commit_group(config, remaining, &head).await?
@@ -631,7 +840,7 @@ async fn drain_authorization_held(
             }
         }
         remaining = match history.as_deref_mut() {
-            Some(h) => h.pending(config, true).await?,
+            Some(h) => h.pending(config, &head, true).await?,
             None => pending(config, &head).await?,
         }
         .into_iter()
@@ -685,7 +894,9 @@ pub(crate) async fn commit_group(
     pending: Vec<PreparedEnvelope>,
     head: &ServingHead,
 ) -> Result<Vec<PreparedEnvelope>> {
-    let unresolved = unconsumed_rejections(config, head, &[]).await?;
+    // A replacement that is pending consumes a rejection for the content of its
+    // source: it is committed with it, or it is rejected, and the content waits again.
+    let unresolved = unconsumed_rejections(config, head, &pending).await?;
     commit_group_with_rejections(config, pending, head, unresolved).await
 }
 async fn commit_group_with_rejections(
@@ -747,6 +958,19 @@ async fn commit_group_with_rejections(
     if first {
         return Ok(pending);
     } // Only the empty namespace's first IVF training.
+    // Before the first content the permissions envelopes only wait, or are
+    // rejected: they never keep another kind from being chosen, and they are
+    // judged with what is, so that a rejection is recorded at once and a
+    // commit with nothing else to do writes nothing.
+    let waiting: Vec<_> = if head.content.is_none() {
+        let (waiting, rest) = std::mem::take(&mut pending)
+            .into_iter()
+            .partition(|e| e.kind == SyncKind::Permissions);
+        pending = rest;
+        waiting
+    } else {
+        Vec::new()
+    };
     let mut group: Vec<PreparedEnvelope> = Vec::new();
     let mut rows = 0u64;
     let mut bytes = 0u64;
@@ -764,38 +988,78 @@ async fn commit_group_with_rejections(
         if !group.is_empty() && pending[position].kind != group[0].kind {
             break;
         }
-        let envelope = &pending[position];
-        let (next_rows, next_bytes) = envelope_work(config, head, envelope).await?;
-        if next_rows > config.writer.commit.group_max_rows
-            || next_bytes > config.writer.commit.group_max_bytes.as_u64()
-        {
+        // A permission read is published whole: its oldest unpublished read,
+        // the parts and the envelope that ends it, is one unit of the group.
+        let unit = if kind == SyncKind::Permissions {
+            read_of(&pending, &pending[position].source_id)
+        } else {
+            vec![pending[position].envelope_id.clone()]
+        };
+        let (mut next_rows, mut next_bytes, mut over) = (0u64, 0u64, false);
+        for envelope in pending.iter().filter(|e| unit.contains(&e.envelope_id)) {
+            let (work, size) = envelope_work(config, envelope)?;
+            over |= work > config.writer.commit.group_max_rows
+                || size > config.writer.commit.group_max_bytes.as_u64();
+            next_rows = next_rows.saturating_add(work);
+            next_bytes = next_bytes.saturating_add(size);
+        }
+        if over {
             // An envelope prepared under larger configured bounds is committed alone and
-            // rejected (envelope_bounds_exceeded); its source re-fetches it through the
-            // current bounded preparer. The group applies no content; CAS publishes the rejection.
+            // rejected (envelope_bounds_exceeded), with the rest of its read; its source
+            // re-fetches it through the current bounded preparer. The group applies no
+            // content; CAS publishes the rejection.
             if group.is_empty() {
-                return Ok(vec![pending.remove(position)]);
+                group = take(&mut pending, &unit);
             }
             break;
         }
-        if rows
+        let fits = rows
             .checked_add(next_rows)
-            .is_none_or(|n| n > config.writer.commit.group_max_rows)
-            || bytes
+            .is_some_and(|n| n <= config.writer.commit.group_max_rows)
+            && bytes
                 .checked_add(next_bytes)
-                .is_none_or(|n| n > config.writer.commit.group_max_bytes.as_u64())
-        {
+                .is_some_and(|n| n <= config.writer.commit.group_max_bytes.as_u64());
+        // A read over the bounds of a group, each of its envelopes within them,
+        // is the group alone: each envelope is applied as its own step.
+        if !fits && !group.is_empty() {
             break;
         }
-        rows += next_rows;
-        bytes += next_bytes;
-        sources.insert(envelope.source_id.clone());
-        group.push(pending.remove(position));
+        rows = rows.saturating_add(next_rows);
+        bytes = bytes.saturating_add(next_bytes);
+        sources.insert(pending[position].source_id.clone());
+        group.extend(take(&mut pending, &unit));
         // A final listing can derive a full bounded group of deletes.
-        if kind == fyrr_core::connector::SyncKind::Reconcile {
+        if !fits || kind == SyncKind::Reconcile {
             break;
         }
     }
+    group.extend(waiting);
     Ok(group)
+}
+
+/// The IDs of the oldest permission read of `source` in `pending`: its links
+/// up to the first that ends a read.
+fn read_of(pending: &[PreparedEnvelope], source: &str) -> Vec<String> {
+    let mut links: Vec<_> = pending
+        .iter()
+        .filter(|e| e.kind == SyncKind::Permissions && e.source_id == source)
+        .collect();
+    links.sort_by_key(|e| e.sequence);
+    let end = links
+        .iter()
+        .position(|e| crate::apply::complete_read(e))
+        .map_or(links.len(), |i| i + 1);
+    links[..end].iter().map(|e| e.envelope_id.clone()).collect()
+}
+
+/// Takes the envelopes of `ids` out of `pending`, in sequence order.
+fn take(pending: &mut Vec<PreparedEnvelope>, ids: &[String]) -> Vec<PreparedEnvelope> {
+    let (mut taken, rest): (Vec<_>, Vec<_>) = std::mem::take(pending)
+        .into_iter()
+        .partition(|e| ids.contains(&e.envelope_id));
+    *pending = rest;
+    taken.sort_by_key(|e| e.sequence);
+    taken
 }
 
 pub(crate) async fn apply_staged(
@@ -936,11 +1200,7 @@ fn fixed_grants(config: &Config) -> Result<std::collections::BTreeMap<String, Ve
         .collect()
 }
 
-async fn envelope_work(
-    config: &Config,
-    head: &ServingHead,
-    envelope: &PreparedEnvelope,
-) -> Result<(u64, u64)> {
+fn envelope_work(config: &Config, envelope: &PreparedEnvelope) -> Result<(u64, u64)> {
     Ok(match &envelope.payload {
         EnvelopePayload::Content(p) => {
             let rows = p.fragments.iter().try_fold(0u64, |sum, f| {
@@ -976,8 +1236,10 @@ async fn envelope_work(
                 )),
             )
         }
+        // A permission envelope is weighed by its roots: the committer rewrites
+        // their rows in bounded steps, whatever they hold.
         EnvelopePayload::Permissions(p) => (
-            crate::apply::permission_work(config, head, &envelope.source_id, p).await?,
+            (p.documents.len() + p.container_grants.len()) as u64,
             write_contract(envelope).len() as u64,
         ),
         EnvelopePayload::Members(p) => (p.principals, write_contract(envelope).len() as u64),
@@ -1258,5 +1520,196 @@ mod evidence_tests {
             .chain(ids('9', 2))
             .collect();
         assert_eq!(evidence.applied, expected);
+    }
+}
+
+#[cfg(test)]
+mod chain_tests {
+    use super::*;
+
+    /// A permissions envelope of `source` in a chain: sequence, and the one before it.
+    fn link(
+        config: &Config,
+        sequence: u64,
+        previous: Option<&PreparedEnvelope>,
+    ) -> PreparedEnvelope {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/contracts/prepared-envelope/permissions.json");
+        let mut envelope: PreparedEnvelope =
+            fyrr_core::parse_contract(&std::fs::read(path).unwrap()).unwrap();
+        envelope.namespace.clone_from(&config.namespace.name);
+        envelope.source_id = "source".into();
+        envelope.rejection_generation = 0;
+        envelope.cursor.start = None;
+        envelope.sequence = sequence;
+        envelope.lease_generation = 1;
+        envelope.previous = previous.map(|p| p.envelope_id.clone());
+        envelope.envelope_id = fyrr_core::envelope::leased_envelope_id(
+            &envelope.namespace,
+            "source",
+            envelope.kind,
+            sequence,
+            0,
+            None,
+            1,
+        );
+        envelope
+    }
+
+    /// Three links the cursor of `source` confirms, written to storage.
+    async fn confirmed_chain(config: &Config) -> Vec<PreparedEnvelope> {
+        crate::lease::tests::put_head(config).await;
+        let (store, root) = namespace_store(config).unwrap();
+        let mut links: Vec<PreparedEnvelope> = Vec::new();
+        for sequence in 1..=3 {
+            let envelope = link(config, sequence, links.last());
+            put_immutable(
+                store.as_ref(),
+                &root
+                    .clone()
+                    .join("envelopes")
+                    .join(format!("{}.json", envelope.envelope_id)),
+                &envelope,
+            )
+            .await
+            .unwrap();
+            links.push(envelope);
+        }
+        let lease =
+            crate::sync_lease::CursorLease::acquire(config, "source", SyncKind::Permissions)
+                .await
+                .unwrap();
+        let mut state = lease.state().await.unwrap();
+        state.sequence = 3;
+        state.last = Some(fyrr_core::connector::LastEnvelope {
+            sequence: 3,
+            id: links[2].envelope_id.clone(),
+        });
+        lease.write(state).await.unwrap();
+        lease.release().await.unwrap();
+        links
+    }
+
+    async fn walk(
+        config: &Config,
+        applied: Option<&String>,
+        listed: &[&PreparedEnvelope],
+        resolved: &[&PreparedEnvelope],
+    ) -> Option<Vec<u64>> {
+        let (store, root) = namespace_store(config).unwrap();
+        let listed = listed
+            .iter()
+            .map(|e| (e.envelope_id.clone(), (*e).clone()))
+            .collect();
+        let resolved: BTreeSet<_> = resolved.iter().map(|e| e.envelope_id.clone()).collect();
+        let source = "source".to_owned();
+        let last = crate::sync_lease::CursorLease::peek(config, &source, SyncKind::Permissions)
+            .await
+            .unwrap()
+            .and_then(|state| state.last)
+            .map(|last| last.id);
+        super::walk(
+            config,
+            store.as_ref(),
+            &root,
+            &source,
+            last,
+            applied,
+            &listed,
+            &|id: &str| -> Result<bool> { Ok(resolved.contains(id)) },
+        )
+        .await
+        .unwrap()
+        .map(|walk| walk.unresolved.into_iter().map(|e| e.sequence).collect())
+    }
+
+    /// The chain is read by ID from the cursor: an envelope that a listing shows
+    /// late, or not yet, is still applied before the ones that follow it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_chain_is_read_by_id_whatever_a_listing_shows_on_local_storage() {
+        let (config, root) = crate::lease::tests::local_config("chain-by-id");
+        let links = confirmed_chain(&config).await;
+        // The listing shows the newest envelope and not the two before it.
+        assert_eq!(
+            walk(&config, None, &[&links[2]], &[]).await,
+            Some(vec![1, 2, 3])
+        );
+        // The manifest applied the first: the walk stops at it.
+        assert_eq!(
+            walk(&config, Some(&links[0].envelope_id), &[&links[2]], &[]).await,
+            Some(vec![2, 3])
+        );
+        // A rejected link is walked and not applied.
+        assert_eq!(
+            walk(
+                &config,
+                Some(&links[0].envelope_id),
+                &[&links[2]],
+                &[&links[1]]
+            )
+            .await,
+            Some(vec![3])
+        );
+        // Everything applied: nothing to do, and nothing read.
+        assert_eq!(
+            walk(&config, Some(&links[2].envelope_id), &[], &[&links[2]]).await,
+            Some(vec![])
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// A chain that does not reach what the manifest applied blocks its source:
+    /// nothing is skipped.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_chain_that_does_not_reach_the_applied_envelope_blocks_its_source_on_local_storage() {
+        let (config, root) = crate::lease::tests::local_config("chain-blocked");
+        let links = confirmed_chain(&config).await;
+        let elsewhere = "env-00000000000000000000000000000000".to_owned();
+        assert_eq!(
+            walk(&config, Some(&elsewhere), &[&links[2]], &[]).await,
+            None
+        );
+        // A link that was deleted blocks it too.
+        let (store, ns) = namespace_store(&config).unwrap();
+        store
+            .delete(
+                &ns.join("envelopes")
+                    .join(format!("{}.json", links[1].envelope_id)),
+            )
+            .await
+            .unwrap();
+        assert_eq!(walk(&config, None, &[&links[2]], &[]).await, None);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// A cursor that holds no envelope is whole only when the manifest applied
+    /// none: otherwise the chain it held is lost, and the source is blocked.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_cursor_without_a_confirmed_envelope_blocks_a_source_with_a_chain_on_local_storage() {
+        let (config, root) = crate::lease::tests::local_config("chain-lost");
+        let links = confirmed_chain(&config).await;
+        let (store, ns) = namespace_store(&config).unwrap();
+        let source = "source".to_owned();
+        let applied = links[0].envelope_id.clone();
+        let mut found = Vec::new();
+        for applied in [None, Some(&applied)] {
+            found.push(
+                super::walk(
+                    &config,
+                    store.as_ref(),
+                    &ns,
+                    &source,
+                    None,
+                    applied,
+                    &BTreeMap::<String, PreparedEnvelope>::new(),
+                    &|_: &str| -> Result<bool> { Ok(false) },
+                )
+                .await
+                .unwrap()
+                .is_some(),
+            );
+        }
+        assert_eq!(found, [true, false], "nothing applied: nothing lost");
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

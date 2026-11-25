@@ -44,13 +44,14 @@ async fn revision_callback_thread_progress_measurement_on_local_storage() {
     for n in 0..64 {
         let mut envelope = template.clone();
         envelope.sequence = n + 100;
-        envelope.envelope_id = fyrr_core::envelope::envelope_id(
+        envelope.envelope_id = fyrr_core::envelope::leased_envelope_id(
             &envelope.namespace,
             &envelope.source_id,
             envelope.kind,
             envelope.sequence,
             envelope.rejection_generation,
             envelope.cursor.start.as_deref(),
+            envelope.lease_generation,
         );
         seed.push((
             namespace

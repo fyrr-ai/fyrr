@@ -17,7 +17,8 @@ Setting a deployment up (topology, images, scheduling) is in
 - `fyrr writer status` prints the serving `content_sequence`, envelope and
   pending-envelope counts, quarantined entries per reason, the directory's
   identity generation, the age of the last permission and member read per
-  source (`source_reads`; null for a read that never completed) and a `warnings` list with fixed codes (for example
+  source (`source_reads`; null for a read that never completed), the
+  [blocked sources](#blocked-sources) (`blocked_sources`) and a `warnings` list with fixed codes (for example
   `physical_purge_deadline_at_risk`). It never names documents or users.
 - `fyrr reader check` exits nonzero when the publication cannot be admitted;
   the HTTP server answers `/readyz`. A reader whose request scheduler fails
@@ -235,6 +236,30 @@ Retirement is final: every reader denies the source from its next version
 check on (`reader.version_check_interval`) and
 the [committer](architecture.md#terms) rejects its envelopes. Purge also removes its rows, envelopes
 and cursors; each step is idempotent, so an interrupted purge is run again.
+
+### Blocked sources
+
+The permission reads of a source form a chain: its cursor names the newest
+read, each envelope names the one before, and the publication names the
+newest one applied. When the chain from the cursor does not reach that one (an
+envelope of it was deleted, or the cursor was deleted or restored from an
+older copy), the committer blocks the source: none of its permissions, content
+or listings publish, so no revocation is skipped, and the other sources go on.
+`fyrr writer status` lists it in `blocked_sources`, and the committer logs
+`telemetry permissions=blocked source=SOURCE_ID`. Nothing else is published for
+it until the chain is whole.
+
+An envelope in the log that does not parse is not isolated this way: `fyrr
+writer commit` and `fyrr writer status` fail with `publication_invalid` for
+every source until it is removed or put back
+([#370](https://github.com/fyrr-ai/fyrr/issues/370)).
+
+Put back the missing cursor or envelope (`cursors/SOURCE_ID-permissions.json`,
+`envelopes/ID.json` under the namespace) from a backup or an older object
+version if the storage keeps one: the next commit publishes what waited.
+Otherwise purge the source (`fyrr writer source purge SOURCE_ID --confirm`),
+which is final, and configure it again under a new source ID: it reads its
+content and rights from the start.
 
 ## Upgrades
 

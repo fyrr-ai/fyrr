@@ -266,7 +266,13 @@ impl Preparation<'_> {
             {
                 content_paths.push(path.clone());
             }
-            if envelope.source_id == self.source.id && envelope.kind == self.kind {
+            // A permissions envelope counts only once the cursor confirmed it: the
+            // cursor holds what a read needs of them, and the committer reads
+            // their chain.
+            if envelope.source_id == self.source.id
+                && envelope.kind == self.kind
+                && envelope.kind != SyncKind::Permissions
+            {
                 durable_generation = durable_generation.max(envelope.rejection_generation);
                 durable_restore_sequence = durable_restore_sequence.max(envelope.restore_sequence);
                 if matches!(
@@ -355,7 +361,12 @@ impl Preparation<'_> {
         // A generation no complete-read envelope has ended is a replacement of a
         // rejection, also after an earlier attempt failed; the schedule never
         // delays an unfinished permission or member recovery.
-        let replaces = state.rejection_generation > durable.completed_generation;
+        let completed = if self.kind == SyncKind::Permissions {
+            state.completed_generation
+        } else {
+            durable.completed_generation
+        };
+        let replaces = state.rejection_generation > completed;
         let recovering = replaces && matches!(self.kind, SyncKind::Permissions | SyncKind::Members);
         if due && markers.is_empty() && !recovering && within_interval(&state, interval) {
             return Ok((state, true, false));

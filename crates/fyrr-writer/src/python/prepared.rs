@@ -236,6 +236,9 @@ impl Preparation<'_> {
             // shortcut: a members snapshot is held whole until the provider read
             // ends, as the commit holds it whole too.
             let mut held: Vec<ConnectorBatch> = Vec::new();
+            // A permission read is held the same way: its roots are put as
+            // parts, and the envelope that ends the read confirms them all.
+            let mut permissions = crate::prepare::HeldPermissions::new(limits);
             let mut checker =
                 BatchChecker::new(&self.source.id, self.kind, limits, state.cursor.clone());
             let cursor = state.cursor.clone();
@@ -273,6 +276,16 @@ impl Preparation<'_> {
                         // unchanged one writes nothing.
                         held.push(batch);
                         Ok(())
+                    } else if self.kind == SyncKind::Permissions {
+                        permissions.push(self.config, &self.source.id, batch, state, base)?;
+                        self.rt.block_on(crate::prepare::permission_parts(
+                            self.config,
+                            &self.source.id,
+                            &mut permissions,
+                            state,
+                            self.lease,
+                            base,
+                        ))
                     } else {
                         self.rt.block_on(crate::prepare::non_content(
                             self.config,
@@ -300,9 +313,20 @@ impl Preparation<'_> {
             {
                 return Err(WriterError::MembershipSnapshotIncomplete);
             }
-            // Only the read that replaces a rejected generation ends with a
-            // complete-read envelope: it alone consumes the rejection markers.
-            // Any other read writes nothing beyond its own changes.
+            if self.kind == SyncKind::Permissions {
+                self.rt.block_on(crate::prepare::permission_end(
+                    self.config,
+                    &self.source.id,
+                    &mut permissions,
+                    state,
+                    self.lease,
+                    base.clone(),
+                    replaces_rejection,
+                ))?;
+            }
+            // A members read ends with a complete-read envelope only when it
+            // replaces a rejected generation: it alone consumes the rejection
+            // markers. Any other members read writes nothing beyond its parts.
             if !held.is_empty() {
                 // Only a whole snapshot read here, parts 0 to last, can be
                 // compared; a read resumed after an earlier part was written
@@ -348,9 +372,7 @@ impl Preparation<'_> {
                     }
                 }
             }
-            if replaces_rejection
-                && (self.kind == SyncKind::Permissions || self.kind == SyncKind::Members)
-            {
+            if replaces_rejection && self.kind == SyncKind::Members {
                 let batch = ConnectorBatch {
                     schema_version: fyrr_core::connector::CONNECTOR_CONTRACT_VERSION,
                     source_id: self.source.id.clone(),
@@ -359,22 +381,15 @@ impl Preparation<'_> {
                         start: state.cursor.clone(),
                         end: state.cursor.clone().unwrap_or_else(|| "complete".into()),
                     },
-                    body: if self.kind == SyncKind::Permissions {
-                        fyrr_core::connector::BatchBody::PermissionChanges {
-                            documents: Vec::new(),
-                            container_grants: Vec::new(),
-                        }
-                    } else {
-                        fyrr_core::connector::BatchBody::PrincipalSnapshot(
-                            fyrr_core::connector::PrincipalSnapshotPart {
-                                snapshot_id: format!("complete-{}", state.sequence),
-                                part: 0,
-                                last: false,
-                                users: Vec::new(),
-                                groups: Vec::new(),
-                            },
-                        )
-                    },
+                    body: fyrr_core::connector::BatchBody::PrincipalSnapshot(
+                        fyrr_core::connector::PrincipalSnapshotPart {
+                            snapshot_id: format!("complete-{}", state.sequence),
+                            part: 0,
+                            last: false,
+                            users: Vec::new(),
+                            groups: Vec::new(),
+                        },
+                    ),
                 };
                 self.rt.block_on(crate::prepare::non_content(
                     self.config,

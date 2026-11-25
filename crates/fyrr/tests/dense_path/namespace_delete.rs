@@ -325,13 +325,14 @@ async fn delete_refuses_envelope_arriving_after_export_listing() {
         .unwrap()
         .1;
     envelope.sequence += 100;
-    envelope.envelope_id = fyrr_core::envelope::envelope_id(
+    envelope.envelope_id = fyrr_core::envelope::leased_envelope_id(
         &envelope.namespace,
         &envelope.source_id,
         envelope.kind,
         envelope.sequence,
         envelope.rejection_generation,
         envelope.cursor.start.as_deref(),
+        envelope.lease_generation,
     );
     store
         .put(

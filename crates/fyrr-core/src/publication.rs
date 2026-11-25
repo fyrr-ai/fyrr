@@ -256,6 +256,11 @@ pub struct ContentManifest {
     pub envelope_evidence: EnvelopeEvidence,
     /// What the version holds.
     pub stats: PublicationStats,
+    /// The newest chained permissions envelope of each source that this
+    /// publication and every older one applied. The committer walks the chain of
+    /// the cursor back to it.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub authorization_applied: BTreeMap<String, String>,
 }
 
 /// The size of a published version and when its namespace was first published.

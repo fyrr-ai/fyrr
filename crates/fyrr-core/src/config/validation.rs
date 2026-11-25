@@ -690,6 +690,18 @@ fn writer_bounds(config: &Config, error: &mut impl FnMut(&str, String)) {
             "must be between 1B and 9223372036854775807B".into(),
         );
     }
+    let end = crate::write_contract(&crate::envelope::largest_permission_end(
+        &config.namespace.name,
+    ))
+    .len() as u64;
+    if writer.envelope_max_bytes.as_u64() < end {
+        error(
+            "writer.envelope_max_bytes",
+            format!(
+                "must hold the envelope that ends a permission read with the largest cursors: {end}B"
+            ),
+        );
+    }
     if writer.envelope_max_bytes <= writer.document_max_bytes {
         error(
             "writer.envelope_max_bytes",

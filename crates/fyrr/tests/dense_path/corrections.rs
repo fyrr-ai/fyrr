@@ -867,13 +867,14 @@ async fn correction_durability_acl_and_private_mirror_on_storage() {
             .await
             .unwrap();
     duplicate.rejection_generation += 1;
-    duplicate.envelope_id = fyrr_core::envelope::envelope_id(
+    duplicate.envelope_id = fyrr_core::envelope::leased_envelope_id(
         &duplicate.namespace,
         &duplicate.source_id,
         duplicate.kind,
         duplicate.sequence,
         duplicate.rejection_generation,
         duplicate.cursor.start.as_deref(),
+        duplicate.lease_generation,
     );
     fyrr_writer::prepare::put_immutable(
         store.as_ref(),

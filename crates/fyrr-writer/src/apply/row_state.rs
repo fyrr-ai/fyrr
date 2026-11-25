@@ -214,24 +214,36 @@ pub async fn states(
     source: &str,
     roots: &[String],
 ) -> Result<BTreeMap<String, DocumentState>> {
+    use futures::TryStreamExt;
     let mut result = BTreeMap::new();
     for page in roots.chunks(256) {
-        let batch = dataset
-            .scan()
-            .project(&["root_id", "source_revision", "metadata_json", "readers"])
+        let mut scan = dataset.scan();
+        scan.project(&["root_id", "source_revision", "metadata_json", "readers"])
             .map_err(|_| WriterError::ChangedRowsInvalid)?
             .filter(&keys_filter(source, page))
             .map_err(|_| WriterError::ChangedRowsInvalid)?
-            .try_into_batch()
+            .batch_size(256)
+            .batch_readahead(1)
+            .fragment_readahead(1);
+        // The rows of a page are read in batches: a root of many rows is never
+        // held whole.
+        let mut stream = scan
+            .try_into_stream()
             .await
             .map_err(|_| WriterError::ChangedRowScanFailed)?;
-        for row in 0..batch.num_rows() {
-            let root = strings(&batch, "root_id")?.value(row).to_owned();
-            let value = state(&batch, row)?;
-            if result.get(&root).is_some_and(|previous| previous != &value) {
-                return Err(WriterError::DocumentStateInvalid);
+        while let Some(batch) = stream
+            .try_next()
+            .await
+            .map_err(|_| WriterError::ChangedRowScanFailed)?
+        {
+            for row in 0..batch.num_rows() {
+                let root = strings(&batch, "root_id")?.value(row).to_owned();
+                let value = state(&batch, row)?;
+                if result.get(&root).is_some_and(|previous| previous != &value) {
+                    return Err(WriterError::DocumentStateInvalid);
+                }
+                result.insert(root, value);
             }
-            result.insert(root, value);
         }
     }
     Ok(result)

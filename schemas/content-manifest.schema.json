@@ -159,6 +159,13 @@
     "stats": {
       "$ref": "#/$defs/PublicationStats",
       "description": "What the version holds."
+    },
+    "authorization_applied": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "The newest chained permissions envelope of each source that this\npublication and every older one applied. The committer walks the chain of\nthe cursor back to it."
     }
   },
   "required": [

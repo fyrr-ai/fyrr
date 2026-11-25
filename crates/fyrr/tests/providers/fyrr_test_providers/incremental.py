@@ -142,9 +142,33 @@ class Incremental(Connector):
     def permissions(self, cursor: str | None) -> Iterator[PermissionBatch]:
         data = self.data()
         self.catch_revision_failure(data)
+        if "permission_log" in data:
+            # A source that keeps the log of its changes: a read yields what follows
+            # the entry its cursor names, one batch for each.
+            log = data["permission_log"]
+            start = int(cursor or 0)
+            for index in range(start, len(log)):
+                if data.get("fail_permissions_at") == index - start:
+                    raise RuntimeError("fixture permission read failure")
+                entry = log[index]
+                yield PermissionBatch(
+                    documents=[
+                        DocumentPermission(
+                            root_id=entry["id"],
+                            permission_revision=entry["revision"],
+                            readers=entry["readers"],
+                            containers=[],
+                        )
+                    ],
+                    container_grants=[],
+                    cursor=str(index + 1),
+                )
+            return
         for index, documents in enumerate(
             data.get("permissions", [[]] if data.get("container_grants") else [])
         ):
+            if data.get("fail_permissions_at") == index:
+                raise RuntimeError("fixture permission read failure")
             yield PermissionBatch(
                 documents=[
                     DocumentPermission(
