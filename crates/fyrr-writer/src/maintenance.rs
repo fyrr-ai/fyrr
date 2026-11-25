@@ -1419,14 +1419,18 @@ async fn compact_one(
     let limit = config.writer.maintenance.step_max_duration.as_duration();
     // Limit the actual source set, rather than asking the native planner to
     // discard an oversized bin. Deleted fragments take priority regardless of size.
+    // The rewritten rows are encoded again against the vector model, as in a step of
+    // `vector_step`, so a pair holds at most `merge_tier_rows`.
     let fragments = &dataset.manifest().fragments;
+    let rows = |f: &lance::table::format::Fragment| f.physical_rows.unwrap_or(0) as u64;
     let selected: BTreeSet<_> = if let Some(fragment) =
         fragments.iter().find(|f| f.deletion_file.is_some())
     {
         [fragment.id].into_iter().collect()
     } else if let Some(pair) = fragments.windows(2).find(|pair| {
         pair.iter()
-            .all(|f| (f.physical_rows.unwrap_or(0) as u64) < config.writer.commit.group_max_rows)
+            .all(|f| rows(f) < config.writer.commit.group_max_rows)
+            && rows(&pair[0]) + rows(&pair[1]) <= merge_tier_rows(config)
     }) {
         pair.iter().map(|f| f.id).collect()
     } else {
