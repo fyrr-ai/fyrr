@@ -338,7 +338,7 @@ pub async fn persist_native_files(
     .map_err(|_| StorageError::StorageUnavailable)?
 }
 
-const OLD_LAYOUT_HINT: &str = "the namespace was written by v0.1.x or an earlier build, in a stored format v0.2.0 does not read. Recreate it with v0.2.0: delete its namespaces/<name>/ prefix with the storage tool (or choose a new namespace name), then run writer namespace create and sync its sources.";
+const OLD_LAYOUT_HINT: &str = "the namespace was written by v0.1.x or an earlier build, in a stored format v0.2.0 does not read. Recreate the namespace under a new name with v0.2.0 (writer namespace create), sync its sources again and write again what was written through the API; or, after stopping every writer of this namespace and keeping a recoverable copy, delete its namespaces/<name>/ prefix and recreate it under the same name.";
 const OLD_ROOT_HINT: &str = "the local storage root was written by v0.1.x or an earlier build (it holds .fyrr-storage.lock or .fyrr-storage.stage). Recreate its namespaces in a new root with v0.2.0; remove those files only once no older writer runs.";
 
 /// What an operator does about an error code that needs more than its name,

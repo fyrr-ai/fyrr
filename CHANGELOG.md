@@ -19,8 +19,10 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   v0.2.0; remove those files only once no older writer runs. A namespace
   that v0.1.x or an earlier build wrote is refused with `namespace_layout_old`
   in any root, S3 included: one of its stored contracts is of an older major, or
-  its connector namespace has no typed connector columns. Delete its
-  `namespaces/<name>/` prefix or use a new name, then create it again. A
+  its connector namespace has no typed connector columns. Recreate it under a
+  new name (or, with every writer stopped and a copy kept, after deleting its
+  `namespaces/<name>/` prefix), sync its sources again and write the API
+  documents again. A
   local put no longer opens a root lock file. See
   [operations](docs/operations.md#upgrades).
 - The excerpt of a hit in a namespace with an `[namespace.analyzer]`, or with
@@ -35,7 +37,7 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   of the file, so a filter or `order_by` can use them. `search`, `fetch` and
   `list_filters` return the same fields as before. A connector namespace
   created without the columns is refused with `namespace_layout_old`: recreate
-  it with v0.2.0. A manifest of the new layout is
+  it under a new name with v0.2.0 and sync its sources again. A manifest of the new layout is
   content-manifest 5.0 and its policy artifact 4.0, the versions of attribute
   index options and of the read-only switch, so an older build refuses it
   instead of reading nulls. The

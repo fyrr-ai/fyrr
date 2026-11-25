@@ -1309,7 +1309,7 @@ fn a_local_root_written_before_0_2_0_is_refused_by_name() {
 }
 
 /// What v0.1.x (and earlier builds of 0.2.0) stored is refused with `namespace_layout_old`
-/// by `writer namespace create`, `writer status` and `reader check`, on local storage with
+/// by `writer namespace create`, `writer status`, `writer commit` and `reader check`, on local storage with
 /// no root marker: the serving head 3.0 and policy 2.2 that v0.1.1 wrote, and a policy 3.1
 /// of a connector namespace without the typed connector columns.
 #[test]

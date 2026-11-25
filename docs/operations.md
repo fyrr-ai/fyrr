@@ -253,9 +253,11 @@ in a new root with v0.2.0. Remove the two files only once no older writer runs.
 A namespace that v0.1.x or an earlier build wrote is refused with
 `namespace_layout_old`, in any root, S3 included: one of its stored contracts (the serving
 head, the policy) is of an older major than v0.2.0 writes, or
-its connector namespace has no typed connector columns. Recreate it with v0.2.0:
-delete its `namespaces/<name>/` prefix with the storage tool (or choose a new
-namespace name), run `writer namespace create` and sync its sources. The command line prints what to do under
+its connector namespace has no typed connector columns. Recreate the namespace
+under a new name with v0.2.0 (`writer namespace create`), sync its sources again
+and write again what was written through the API. Or, after stopping every
+writer of the namespace and keeping a recoverable copy, delete its
+`namespaces/<name>/` prefix and recreate it under the same name. The command line prints what to do under
 `error: <code>`.
 
 Configuration schema `4.0` changed the default retrieval policy to

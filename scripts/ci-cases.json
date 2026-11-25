@@ -447,6 +447,10 @@
         "tier": "quick",
         "seconds": 0.234
       },
+      "full:fyrr-writer:lib:fyrr_writer/write_api::tests::a_namespace_of_an_earlier_fyrr_is_refused_without_a_retry": {
+        "tier": "quick",
+        "seconds": 0.001
+      },
       "full:fyrr-writer:lib:fyrr_writer/write_api::tests::the_documented_request_is_the_parsed_one": {
         "tier": "quick",
         "seconds": 0.001
