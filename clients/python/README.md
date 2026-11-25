@@ -93,7 +93,7 @@ created again ([guarantees](https://github.com/fyrr-ai/fyrr/blob/main/docs/guara
 They are retried only when the request provably did not reach the server (the
 connection could not be made): no answer, not even a `429` from a proxy, proves
 that it was not applied. A write
-that sets `conditions` is **never** retried. Every other failure, a timeout or
+that sets a non-empty `conditions` is **never** retried. Every other failure, a timeout or
 `503 outcome_unknown` included, is raised for the caller to decide.
 
 The last answer is raised as `FyrrError` (`status`, `code`, `retry_after`); a

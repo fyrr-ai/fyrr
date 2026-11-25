@@ -161,7 +161,7 @@ test("a read is not retried after a certificate error", async (t) => {
 /** The cases that the Python client tests too: `clients/retry-cases.json`. */
 const shared = JSON.parse(readFileSync(new URL("../../retry-cases.json", import.meta.url), "utf8")) as {
   conditions: Record<string, WriteRequest["conditions"] | null>;
-  cases: { conditions: string; answers: string[]; requests: number }[];
+  cases: { conditions: string; answers: string[]; requests: number; outcome: string }[];
 };
 const sharedAnswers: Record<string, () => Answer> = {
   refused: () => refused,
@@ -177,8 +177,14 @@ test("a write is retried as the shared cases say", async (t) => {
     const conditions = shared.conditions[sharedCase.conditions];
     if (conditions !== null) request.conditions = conditions;
     const fake = script(...sharedCase.answers.map((name) => sharedAnswers[name]!()));
-    await client(fake).write("ns", request).catch(() => undefined);
+    const outcome = await client(fake)
+      .write("ns", request)
+      .then(() => "ok")
+      .catch((error: unknown) =>
+        error instanceof FyrrError ? `${error.status} ${error.code}` : "connection refused",
+      );
     assert.equal(fake.seen.length, sharedCase.requests, JSON.stringify(sharedCase));
+    assert.equal(outcome, sharedCase.outcome, JSON.stringify(sharedCase));
   }
 });
 
