@@ -131,6 +131,10 @@
         "tier": "quick",
         "seconds": 0.0
       },
+      "full:fyrr-reader:lib:fyrr_reader/http::place_tests::an_idle_namespace_is_closed_but_for_the_one_that_asks": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
       "full:fyrr-reader:lib:fyrr_reader/http::place_tests::a_slot_returns_its_place_when_it_goes": {
         "tier": "quick",
         "seconds": 0.0

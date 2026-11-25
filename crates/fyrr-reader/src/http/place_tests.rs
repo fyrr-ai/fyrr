@@ -35,6 +35,16 @@ fn a_place_is_made_by_closing_an_idle_namespace_only() {
 }
 
 #[test]
+fn an_idle_namespace_is_closed_but_for_the_one_that_asks() {
+    let mut open = Open::<u8>::new();
+    place(&mut open, "a", true, 3).unwrap();
+    place(&mut open, "b", true, 3).unwrap();
+    assert_eq!(close_idle(&mut open, Some("a")).as_deref(), Some("b"));
+    assert_eq!(close_idle(&mut open, Some("a")), None);
+    assert_eq!(close_idle(&mut open, None).as_deref(), Some("a"));
+}
+
+#[test]
 fn a_slot_returns_its_place_when_it_goes() {
     let slots = Arc::new(Semaphore::new(1));
     let slot = Slot {

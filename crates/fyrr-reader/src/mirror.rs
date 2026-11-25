@@ -18,10 +18,6 @@ use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
-/// Woken when a namespace could not keep its files in the mirror for want of
-/// room. A reader that holds several namespaces frees the room of an idle one.
-pub(crate) static ROOM_WANTED: tokio::sync::Notify = tokio::sync::Notify::const_new();
-
 /// Both the Lance wrapper factory and its read-only wrapped object store.
 #[derive(Debug, Clone)]
 pub struct MirrorStore {

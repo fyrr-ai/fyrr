@@ -37,6 +37,7 @@ async fn readiness_refuses_failed_scheduler_on_storage() {
                 admission: admission.clone(),
                 service: service.clone(),
             }),
+            tokio::sync::mpsc::unbounded_channel().0,
         )),
         admission,
         service: service.clone(),

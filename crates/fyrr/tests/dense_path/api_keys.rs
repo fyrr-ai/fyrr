@@ -1197,12 +1197,14 @@ async fn namespaces_opened_by_path_stay_inside_the_memory_budget() {
 }
 
 /// The bytes the mirror counts against its budget under `directory`: complete
-/// files, pages and page maps, at their apparent length.
+/// files, pages and page maps, at their apparent length. A file that goes
+/// while the walk runs counts for nothing.
 fn mirror_bytes(directory: &Path) -> u64 {
     std::fs::read_dir(directory)
         .into_iter()
         .flatten()
-        .map(|entry| entry.unwrap().path())
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
         .map(|path| {
             if path.is_dir() {
                 mirror_bytes(&path)
@@ -1210,7 +1212,7 @@ fn mirror_bytes(directory: &Path) -> u64 {
                 .extension()
                 .is_some_and(|e| ["blob", "sparse", "map", "partial"].iter().any(|k| e == *k))
             {
-                path.metadata().unwrap().len()
+                path.metadata().map_or(0, |meta| meta.len())
             } else {
                 0
             }
@@ -1218,18 +1220,11 @@ fn mirror_bytes(directory: &Path) -> u64 {
         .sum()
 }
 
-/// How many namespaces the reader has warmed so far, by its log.
-fn warmed(reader: &Reader) -> usize {
-    reader
-        .stderr_text()
-        .matches("reader_refresh status=ready")
-        .count()
-}
-
-/// Waits until `reader` has warmed `count` namespaces.
-async fn warmed_by(reader: &Reader, count: usize, seconds: u64) -> bool {
+/// Waits until the reader's log says that it warmed the namespace `name`.
+async fn warmed(reader: &Reader, name: &str, seconds: u64) -> bool {
+    let event = format!("telemetry namespace=warmed name={name}\n");
     let deadline = std::time::Instant::now() + Duration::from_secs(seconds);
-    while warmed(reader) < count {
+    while !reader.stderr_text().contains(&event) {
         if std::time::Instant::now() > deadline {
             return false;
         }
@@ -1258,11 +1253,15 @@ async fn namespaces_opened_by_path_stay_inside_the_mirror_budget() {
     let configured = fyrr_core::config::load(&deployment.worker).unwrap().config;
     let mirror = PathBuf::from(configured.reader.mirror_path.as_ref().unwrap());
     let mut probe = Reader::start_appended(&deployment.worker, &deployment.root, key_http).await;
-    assert!(warmed_by(&probe, 1, 120).await, "{}", probe.stderr_text());
+    assert!(warmed(&probe, &deployment.namespace, 120).await);
     let own = mirror_bytes(&mirror);
     let (status, body) = path_query(&probe, &key.secret, &names[0]).await;
     assert_eq!(status, 200, "{body}");
-    assert!(warmed_by(&probe, 2, 120).await, "{}", probe.stderr_text());
+    assert!(
+        warmed(&probe, &names[0], 120).await,
+        "{}",
+        probe.stderr_text()
+    );
     let each = mirror_bytes(&mirror) - own;
     probe.stop().await;
     assert!(own > 0 && each > 0, "the mirror holds {own} and {each}");
@@ -1286,33 +1285,52 @@ async fn namespaces_opened_by_path_stay_inside_the_mirror_budget() {
     )
     .unwrap();
     let mut reader = Reader::start_appended(&tight, &deployment.root, key_http).await;
-    assert!(warmed_by(&reader, 1, 120).await, "{}", reader.stderr_text());
-    for name in names.iter().chain(&names[..1]) {
-        let (status, body) = path_query(&reader, &key.secret, name).await;
-        assert_eq!(status, 200, "{name}: {body}");
-        assert_eq!(hits_of(&body), [deployment.doc(1)], "{name}");
-        let held = mirror_bytes(&parent);
-        assert!(
-            held <= budget,
-            "{name}: the mirrors hold {held} of {budget}"
-        );
+    assert!(warmed(&reader, &deployment.namespace, 120).await);
+    let ask = |name: String| {
+        let (reader, key, deployment, parent) = (&reader, &key, &deployment, &parent);
+        async move {
+            let (status, body) = path_query(reader, &key.secret, &name).await;
+            assert_eq!(status, 200, "{name}: {body}");
+            assert_eq!(hits_of(&body), [deployment.doc(1)], "{name}");
+            let held = mirror_bytes(parent);
+            assert!(
+                held <= budget,
+                "{name}: the mirrors hold {held} of {budget}"
+            );
+        }
+    };
+    // The first two fill the room, idle.
+    for name in &names[..2] {
+        ask(name.clone()).await;
+        assert!(warmed(&reader, name, 120).await, "{}", reader.stderr_text());
     }
-    // The namespaces that came first hold the room, idle: the later ones close
-    // the one used least recently, and are kept in the mirror after that.
-    // The configured namespace and two others were warmed; one warmed after
-    // a closure is a fourth.
+    // The third finds none: it closes the one used least recently, the first,
+    // never itself and never the second, and warms in its place.
+    ask(names[2].clone()).await;
     assert!(
-        warmed_by(&reader, 4, 240).await,
-        "no namespace was warmed after the mirror ran out of room:\n{}",
+        warmed(&reader, &names[2], 120).await,
+        "the namespace was not warmed after the mirror ran out of room:\n{}",
         reader.stderr_text()
     );
     let log = reader.stderr_text();
+    let closed =
+        |name: &str| format!("telemetry namespace=closed reason=mirror_capacity name={name}\n");
+    let victim = log
+        .find(&closed(&names[0]))
+        .unwrap_or_else(|| panic!("the least recently used namespace was not closed:\n{log}"));
+    let warm = log
+        .find(&format!("telemetry namespace=warmed name={}\n", names[2]))
+        .unwrap();
     assert!(
-        log.contains("telemetry namespace=closed reason=mirror_capacity"),
-        "no namespace was closed for the mirror:\n{log}"
+        victim < warm,
+        "the namespace warmed before the room was made:\n{log}"
     );
-    let held = mirror_bytes(&parent);
-    assert!(held <= budget, "the mirrors hold {held} of {budget}");
+    for name in &names[1..3] {
+        assert!(!log.contains(&closed(name)), "{name} was closed:\n{log}");
+    }
+    // More namespaces, and the closed one again, are answered inside the budget.
+    ask(names[3].clone()).await;
+    ask(names[0].clone()).await;
     // One budget for all of them: no directory of mirrors beside the configured one.
     assert!(!PathBuf::from(format!("{}.paths", kept.display())).exists());
     reader.stop().await;

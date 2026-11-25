@@ -324,6 +324,16 @@ use preparation::*;
 pub(crate) use recall::SampleSkip;
 use recall::{SampleResult, SampleWork, recall_telemetry};
 pub(crate) use scheduler::{start, start_guarded};
+
+/// How a namespace asks the reader that holds it for the room of another one
+/// in the mirror: `asks` carries its `name` and the `retry` that the reader
+/// wakes once room has been made.
+#[derive(Clone)]
+pub(crate) struct Room {
+    pub(crate) name: String,
+    pub(crate) asks: mpsc::UnboundedSender<(String, Arc<tokio::sync::Notify>)>,
+    pub(crate) retry: Arc<tokio::sync::Notify>,
+}
 pub(crate) use stdio::serve;
 
 #[cfg(test)]
