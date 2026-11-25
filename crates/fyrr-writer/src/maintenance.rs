@@ -34,11 +34,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 // Bound catalog-wide index opens, while the indexes stay below `merge_tier_rows` per segment.
 pub(crate) const INDEX_SEGMENT_LIMIT: usize = 64;
-// Throughput of a step that encodes rows against a trained model. Measured on #319: steps of
-// 750,000 rows of 128 dimensions against 4,096 partitions at 4,450 to 4,650 rows/s, one at
-// 2,600 on a loaded host, on `writer maintain`, cores 0-3, `writer.threads = 2`. Re-measure with
-// `scripts/bench-scale` when the step changes.
-const MERGE_ROWS_PER_SECOND: u128 = 4_000;
+// Throughput of a step that encodes rows against a trained model, the slowest measured. On #319,
+// steps of 550,000 to 750,000 rows of 128 dimensions against 4,096 partitions ran at 3,500 to
+// 4,650 rows/s, and at 2,376 and 2,620 rows/s on a host at load 10 to 20, on `writer maintain`,
+// cores 0-3, `writer.threads = 2`. Re-measure with `scripts/bench-scale` when the step changes.
+const MERGE_ROWS_PER_SECOND: u128 = 2_400;
 // Throughput of a step that copies the partitions of segments of one model into one segment.
 // Measured on #319: 700,000 to 750,000 rows at 225,000 to 830,000 rows/s.
 const COPY_ROWS_PER_SECOND: u128 = 200_000;
@@ -48,7 +48,7 @@ const COPY_ROWS_PER_SECOND: u128 = 200_000;
 const MODEL_GROWTH: usize = 2;
 
 /// The rows one step of a vector index may rewrite: half of `step_max_duration` at the measured
-/// throughput, 600,000 rows by default. A step also opens segments and writes the version. No
+/// throughput, 360,000 rows by default. A step also opens segments and writes the version. No
 /// segment grows beyond it while the model may grow, so that one step can always encode a whole
 /// segment again.
 fn merge_tier_rows(config: &Config) -> u64 {

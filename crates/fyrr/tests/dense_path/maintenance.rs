@@ -1987,20 +1987,20 @@ async fn vector_segment_rows(config: &Path, version: Option<u64>) -> Vec<usize> 
 
 /// A namespace of 24 publications of 500 rows has 24 vector segments, each
 /// encoded against the one partition of the first. With `step_max_duration =
-/// 4s` a step may rewrite 8,000 rows (half the step at 4,000 rows/s). `writer
+/// 4s` a step may rewrite 4,800 rows (half the step at 2,400 rows/s). `writer
 /// maintain` trains a model for the 12,000 rows and encodes the newest segment
-/// against it, then the first 16 segments as one of 8,000 rows, then the
-/// other seven as one of 3,500, and copies that and the newest into one of
-/// 4,000. The two do not fit one step, so they stay. Every version the steps
-/// publish holds segments of at most that many rows, no step runs out of time,
-/// a later write is encoded against the grown model, and the namespace answers
-/// like before.
+/// against it, then the first nine segments as one of 4,500 rows, the next
+/// nine as another, and the other five as one of 2,500, and copies that and
+/// the newest into one of 3,000. No two neighbors fit one step, so they stay.
+/// Every version the steps publish holds segments of at most that many rows,
+/// no step runs out of time, a later write is encoded against the grown model,
+/// and the namespace answers like before.
 #[tokio::test]
 #[ignore = "real executable and local storage; scripts/ci"]
 async fn maintenance_merges_the_vector_segments_in_tiers_on_storage() {
     const COMMITS: usize = 24;
     const COMMIT_ROWS: usize = 500;
-    const STEP_ROWS: usize = 8_000;
+    const STEP_ROWS: usize = 4_800;
     let (config, root) = setup_on(Backend::Local);
     let text = std::fs::read_to_string(&config)
         .unwrap()
@@ -2044,7 +2044,11 @@ async fn maintenance_merges_the_vector_segments_in_tiers_on_storage() {
     assert!(stderr.contains("index_model=trained"), "{stderr}");
     assert!(!stderr.contains("index_merge=skipped"), "{stderr}");
     let after = vector_segment_rows(&config, None).await;
-    assert_eq!(after, [16 * COMMIT_ROWS, 8 * COMMIT_ROWS], "{maintained}");
+    assert_eq!(
+        after,
+        [9 * COMMIT_ROWS, 9 * COMMIT_ROWS, 6 * COMMIT_ROWS],
+        "{maintained}"
+    );
     assert!(maintained["index_merge_steps"].as_u64().unwrap() >= 4);
     // Every segment is of the model trained for the rows the namespace has now.
     let partitions: Vec<_> = publication(&config)
@@ -2057,7 +2061,7 @@ async fn maintenance_merges_the_vector_segments_in_tiers_on_storage() {
         .collect();
     assert_eq!(
         partitions,
-        [Some((COMMITS * COMMIT_ROWS / 550) as u32); 2],
+        [Some((COMMITS * COMMIT_ROWS / 550) as u32); 3],
         "{maintained}"
     );
     // No step rewrote more than the budget: every version a step published has
@@ -2098,7 +2102,7 @@ async fn maintenance_merges_the_vector_segments_in_tiers_on_storage() {
         .collect();
     assert_eq!(
         partitions,
-        [Some((COMMITS * COMMIT_ROWS / 550) as u32); 3],
+        [Some((COMMITS * COMMIT_ROWS / 550) as u32); 4],
         "{maintained}"
     );
     assert_eq!(command(&config, &["writer", "verify"])["verified"], true);
