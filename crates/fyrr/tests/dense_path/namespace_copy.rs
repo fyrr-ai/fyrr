@@ -17,7 +17,7 @@ fn storage_of(config: &Path) -> PathBuf {
 
 /// The configuration of the same namespace in another local storage, with the
 /// key of `config` unless `key` names another variable.
-fn elsewhere(config: &Path, suffix: &str, key: Option<&str>) -> PathBuf {
+pub(super) fn elsewhere(config: &Path, suffix: &str, key: Option<&str>) -> PathBuf {
     let storage = storage_of(config).display().to_string();
     let mut text = std::fs::read_to_string(config)
         .unwrap()
@@ -44,7 +44,7 @@ fn copy(config: &Path, to: &Path) -> Output {
         .unwrap()
 }
 
-fn copied(config: &Path, to: &Path) -> Value {
+pub(super) fn copied(config: &Path, to: &Path) -> Value {
     let output = copy(config, to);
     assert!(
         output.status.success(),

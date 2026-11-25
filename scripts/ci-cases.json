@@ -2635,6 +2635,10 @@
       "full:fyrr:test:dense_path/incremental::incremental_read_only_namespace_refuses_syncs_and_commits_what_was_prepared_on_storage": {
         "tier": "full",
         "seconds": 60
+      },
+      "full:fyrr:test:dense_path/schedule::schedule_reads_faults_cleanup_and_copy_keep_the_rights_exact_on_storage": {
+        "tier": "full",
+        "seconds": 200
       }
     }
   },

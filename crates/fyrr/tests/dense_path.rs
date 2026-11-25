@@ -52,6 +52,8 @@ mod publication_lifecycle;
 mod rerank;
 #[path = "dense_path/retrieval.rs"]
 mod retrieval;
+#[path = "dense_path/schedule.rs"]
+mod schedule;
 #[path = "dense_path/slack.rs"]
 mod slack;
 #[path = "dense_path/storage_budget.rs"]

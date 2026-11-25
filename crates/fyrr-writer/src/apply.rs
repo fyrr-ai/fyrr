@@ -632,7 +632,10 @@ pub async fn verify_publication(
                         Some(state)
                             if state.publication_sequence == sequence
                                 && state.revision == document.source_revision
-                                && !state.deleted =>
+                                && !state.deleted
+                                // A purged document stays its marker, whatever
+                                // the stale content says: it has no rows to count.
+                                && !state.content_purged =>
                         {
                             let actual = keys
                                 .iter()
