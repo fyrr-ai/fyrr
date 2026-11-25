@@ -30,6 +30,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 // Bound catalog-wide index opens, while the indexes stay below `merge_tier_rows` per segment.
 pub(crate) const INDEX_SEGMENT_LIMIT: usize = 64;
+// The newest segments of an index that one step of `writer serve` merges, so that a write that
+// waits for the lease waits for a short step. `writer maintain` merges an index in one step.
+const MERGE_STEP_SEGMENTS: usize = 16;
 // Merge throughput measured on #317: 3,000,000 rows in 2,147 s on `writer maintain`, cores 0-3,
 // `writer.threads = 2`. Re-measure with `scripts/bench-scale --maintain` when the merge changes.
 const MERGE_ROWS_PER_SECOND: u128 = 1_400;
@@ -241,6 +244,12 @@ async fn maintain_held(
     let mut merged = 0;
     let limit = config.writer.maintenance.step_max_duration.as_duration();
     loop {
+        // Compaction appends a segment to every index, and the purge of denied rows belongs
+        // to a run that no write presses, or to the overdue one: a run that a write presses
+        // goes on to the merges.
+        if pressed() {
+            break;
+        }
         let head = boundary(config, lease, history).await?;
         if head.content.is_none() {
             break;
@@ -256,11 +265,6 @@ async fn maintain_held(
             break;
         }
         compacted += 1;
-        // Compaction appends a segment to every index, so the merges of a run that is
-        // pressed come before the next compaction step: they would never be reached.
-        if pressed() {
-            break;
-        }
     }
     // One index name per interruptible step. Merge the segments, never retrain;
     // with `rebalance` Lance also splits and joins partitions toward the index's
@@ -451,7 +455,11 @@ async fn merge_step(
     let before = dataset.version().version;
     let mut work = lineage(lease, &head);
     let vector = is_vector_index(config, &name);
-    let mut options = OptimizeOptions::merge(usize::MAX);
+    let mut options = OptimizeOptions::merge(if rebalance {
+        usize::MAX
+    } else {
+        MERGE_STEP_SEGMENTS
+    });
     options.index_names = Some(vec![name]);
     options.retrain = false;
     let target = merge_tier_rows(config);

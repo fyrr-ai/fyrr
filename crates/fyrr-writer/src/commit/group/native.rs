@@ -19,7 +19,7 @@ pub(super) async fn published(
         return Ok(None);
     }
     let pinned = fyrr_reader::storage::pinned(config, head).await?;
-    let latest = pinned.latest_version_id().await?;
+    let latest = latest_version(&pinned).await?;
     Ok(Some((pinned, latest)))
 }
 

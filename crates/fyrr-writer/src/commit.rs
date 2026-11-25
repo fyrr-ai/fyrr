@@ -889,8 +889,24 @@ pub(crate) async fn record_transaction(
     Ok(())
 }
 
+/// The newest version of the dataset. One probe for the version after the one held answers it
+/// when nothing was written since; listing the versions confirms the same at a cost that grows
+/// with their number.
+pub(crate) async fn latest_version(dataset: &Dataset) -> Result<u64> {
+    let held = dataset.version().version;
+    match dataset.checkout_version(held + 1).await {
+        Ok(_) => Ok(dataset.latest_version_id().await?),
+        Err(
+            lance::Error::DatasetNotFound { .. }
+            | lance::Error::NotFound { .. }
+            | lance::Error::VersionNotFound { .. },
+        ) => Ok(held),
+        Err(_) => Err(WriterError::StorageUnavailable),
+    }
+}
+
 async fn verify_lineage(dataset: &Dataset, lineage: &CommitLineage) -> Result<()> {
-    if dataset.latest_version_id().await? != dataset.version().version {
+    if latest_version(dataset).await? != dataset.version().version {
         return Err(WriterError::ForeignLineage);
     }
     let mut previous = lineage
