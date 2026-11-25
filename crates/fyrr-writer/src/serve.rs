@@ -271,6 +271,11 @@ async fn maintain(
 ) {
     let name = config.namespace.name.clone();
     let yield_now = || stop.load(Ordering::Acquire) || commits.is_waiting(&name);
+    // The commit that started this run answers its request a moment later: a run does not
+    // start while a request waits, or it would end before its first step.
+    while yield_now() && !stop.load(Ordering::Acquire) {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
     match crate::maintenance::maintain_until(&config, false, &yield_now).await {
         Ok(done) => {
             let yielded = done["yielded"].as_bool().unwrap_or(false);

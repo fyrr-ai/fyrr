@@ -234,17 +234,11 @@ async fn maintain_held(
     command_start(config, lease, history, false).await?;
     let version = |head: &ServingHead| head.content.as_ref().map_or(0, |p| p.lance_version);
     let urgent = purge_overdue(config, &lease.head().await?).await?;
-    let yielded = |compacted, merged| {
-        (!urgent && yield_now()).then(|| {
-            serde_json::json!({"compaction_steps":compacted,"index_merge_steps":merged,"yielded":true})
-        })
-    };
+    let pressed = || !urgent && yield_now();
+    let yielded = |compacted, merged| serde_json::json!({"compaction_steps":compacted,"index_merge_steps":merged,"yielded":true});
     let mut skipped = Vec::new();
     let mut compacted = 0;
     let mut merged = 0;
-    if let Some(done) = yielded(compacted, merged) {
-        return Ok(done);
-    }
     let limit = config.writer.maintenance.step_max_duration.as_duration();
     loop {
         let head = boundary(config, lease, history).await?;
@@ -262,8 +256,10 @@ async fn maintain_held(
             break;
         }
         compacted += 1;
-        if let Some(done) = yielded(compacted, merged) {
-            return Ok(done);
+        // Compaction appends a segment to every index, so the merges of a run that is
+        // pressed come before the next compaction step: they would never be reached.
+        if pressed() {
+            break;
         }
     }
     // One index name per interruptible step. Merge the segments, never retrain;
@@ -308,8 +304,8 @@ async fn maintain_held(
                     Ok(Some(rows)) => {
                         merged += 1;
                         crate::telemetry::index_merge_done(rows, start.elapsed());
-                        if let Some(done) = yielded(compacted, merged) {
-                            return Ok(done);
+                        if pressed() {
+                            return Ok(yielded(compacted, merged));
                         }
                     }
                     Ok(None) => break,
@@ -326,6 +322,9 @@ async fn maintain_held(
                 }
             }
         }
+    }
+    if pressed() {
+        return Ok(yielded(compacted, merged));
     }
     // One retained set for both cleanups: a manifest goes only with the
     // version files that this set protects.
