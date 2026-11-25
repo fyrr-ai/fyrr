@@ -357,9 +357,8 @@ workers, finishes the current commit group or maintenance step and releases the
 lease. It also runs `fyrr writer maintain`, outside the commit loop, when the served version needs it
 (too many index segments at once; fragments with deletions, or no maintenance
 for longer than the windows after which retired versions and applied envelopes
-are deleted, at most once per `writer.version_grace`). A write that waits for the lease
-ends that run after its current step; the purge is never deferred by more than one
-`writer.version_grace` interval. Set `writer.serve.maintenance = false` to
+are deleted, at most once per `writer.version_grace`). A write that waits is committed between the steps of that run.
+Set `writer.serve.maintenance = false` to
 schedule `fyrr writer maintain` yourself, as below.
 
 Sync, directory pulls and commits can also run from cron (a SCIM directory

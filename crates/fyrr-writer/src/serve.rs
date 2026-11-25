@@ -233,7 +233,7 @@ pub async fn run(
                         .filter(|_| loaded.config.writer.serve.maintenance)
                         .filter(|_| maintaining.as_ref().is_none_or(tokio::task::JoinHandle::is_finished))
                     {
-                        maintaining = Some(tokio::spawn(maintain(config, stop.clone(), commits.clone())));
+                        maintaining = Some(tokio::spawn(maintain(config, commits.clone())));
                     }
                 }
             }
@@ -260,33 +260,14 @@ pub async fn run(
     Ok(serde_json::json!({"stopped":true}))
 }
 
-/// One maintenance run of a namespace. It stops after the step in progress when a write waits
-/// for the namespace's lease, or the service is stopped; the next tick that finds work starts
-/// it again.
+/// One maintenance run of a namespace. A write that waits for the namespace's lease is
+/// committed between its steps, under the lease the run holds.
 #[allow(clippy::print_stderr)]
-async fn maintain(
-    config: fyrr_core::config::Config,
-    stop: Arc<AtomicBool>,
-    commits: Arc<crate::write_api::Commits>,
-) {
-    let name = config.namespace.name.clone();
-    let yield_now = || stop.load(Ordering::Acquire) || commits.is_waiting(&name);
-    // The commit that started this run answers its request a moment later: a run does not
-    // start while a request waits, or it would end before its first step.
-    while yield_now() && !stop.load(Ordering::Acquire) {
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    }
-    match crate::maintenance::maintain_until(&config, false, &yield_now).await {
+async fn maintain(config: fyrr_core::config::Config, commits: Arc<crate::write_api::Commits>) {
+    eprintln!("writer_service event=maintenance_started");
+    match crate::maintenance::maintain_serving(&config, false, Some(&commits)).await {
         Ok(done) => {
-            let yielded = done["yielded"].as_bool().unwrap_or(false);
-            eprintln!(
-                "writer_service event={}",
-                if yielded {
-                    "maintenance_yielded"
-                } else {
-                    "maintained"
-                }
-            );
+            eprintln!("writer_service event=maintained");
             for (step, key) in [
                 ("compaction", "compaction_steps"),
                 ("index_merge", "index_merge_steps"),
@@ -299,14 +280,12 @@ async fn maintain(
                 );
             }
         }
-        Err(WriterError::CommitterBusy) => eprintln!("writer_service event=committer_busy"),
+        Err(WriterError::CommitterBusy) => eprintln!("writer_service event=maintenance_busy"),
         Err(error) => eprintln!(
             "writer_service event=maintenance_failed code={}",
             error.as_str()
         ),
     }
-    // The write that waited is committed now, not at its next recheck.
-    commits.requested.notify_one();
 }
 
 /// The next commit round: at the coalescing timer, or when a write request asks.

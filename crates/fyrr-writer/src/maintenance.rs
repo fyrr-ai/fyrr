@@ -153,21 +153,6 @@ pub(crate) fn due(config: &Config, manifest: &ContentManifest) -> bool {
     })
 }
 
-/// Whether the last complete maintenance is more than two `writer.version_grace` ago, the
-/// interval at which `due` runs it: its purge has waited the one interval a write may defer it.
-async fn purge_overdue(config: &Config, head: &ServingHead) -> Result<bool> {
-    let (store, root) = namespace_store(config)?;
-    let Some(manifest) = commit::previous_manifest(store.as_ref(), &root, head).await? else {
-        return Ok(false);
-    };
-    let limit = config.writer.version_grace.as_duration() * 2;
-    Ok(manifest.maintenance_completed_at.is_none_or(|at| {
-        (fyrr_core::clock::now() - at)
-            .to_std()
-            .is_ok_and(|age| age >= limit)
-    }))
-}
-
 pub(crate) fn lineage(lease: &LeaseGuard, head: &ServingHead) -> CommitLineage {
     CommitLineage {
         holder: lease.holder().holder.clone(),
@@ -180,11 +165,18 @@ pub(crate) fn lineage(lease: &LeaseGuard, head: &ServingHead) -> CommitLineage {
 
 /// Every native step starts from the head after fresh authorization discovery.
 /// Orphan recovery runs once at command start and again after a failed native step.
+///
+/// A write that waits for the lease is committed here, under the lease the run holds: it
+/// waits for the step in progress, not for the run.
 async fn boundary(
     config: &Config,
     lease: &LeaseGuard,
     history: &mut commit::RestoreHistory,
+    writes: Option<&crate::write_api::Commits>,
 ) -> Result<ServingHead> {
+    if let Some(writes) = writes {
+        writes.commit_waiting(config, lease).await?;
+    }
     cached_drain_authorization(config, lease, history, false).await?;
     lease.head().await
 }
@@ -193,21 +185,18 @@ async fn boundary(
 /// trains on up to 262,144 vectors in memory and cannot be interrupted, so
 /// only the operator command asks for it; `writer serve` merges segments only.
 pub async fn maintain(config: &Config, rebalance: bool) -> Result<serde_json::Value> {
-    maintain_until(config, rebalance, &|| false).await
+    maintain_serving(config, rebalance, None).await
 }
 
-/// `maintain` that ends after the step in progress once `yield_now` says a write waits for
-/// the lease, with `"yielded": true` in the result. A run whose last complete predecessor is
-/// more than twice `writer.version_grace` old does not yield: the purge is deferred by one
-/// interval at most.
-pub(crate) async fn maintain_until(
+/// `maintain` that commits the writes that wait for the namespace, between its steps.
+pub(crate) async fn maintain_serving(
     config: &Config,
     rebalance: bool,
-    yield_now: &(dyn Fn() -> bool + Sync),
+    writes: Option<&crate::write_api::Commits>,
 ) -> Result<serde_json::Value> {
     crate::lease::LeaseGuard::with(config, |lease| async move {
         let mut history = commit::RestoreHistory::new(config)?;
-        let mut result = maintain_held(config, &lease, &mut history, rebalance, yield_now).await;
+        let mut result = maintain_held(config, &lease, &mut history, rebalance, writes).await;
         // Every expired native step yields to authorization, including storage
         // reads during purge/compaction/index planning before cleanup begins.
         if result
@@ -227,7 +216,7 @@ async fn maintain_held(
     lease: &LeaseGuard,
     history: &mut commit::RestoreHistory,
     rebalance: bool,
-    yield_now: &(dyn Fn() -> bool + Sync),
+    writes: Option<&crate::write_api::Commits>,
 ) -> Result<serde_json::Value> {
     // Obsolete applied objects must not exhaust history's resident allowance
     // before the cleanup that can remove them becomes reachable.
@@ -236,21 +225,12 @@ async fn maintain_held(
     // once. Quiet native boundaries need only fresh authorization discovery.
     command_start(config, lease, history, false).await?;
     let version = |head: &ServingHead| head.content.as_ref().map_or(0, |p| p.lance_version);
-    let urgent = purge_overdue(config, &lease.head().await?).await?;
-    let pressed = || !urgent && yield_now();
-    let yielded = |compacted, merged| serde_json::json!({"compaction_steps":compacted,"index_merge_steps":merged,"yielded":true});
     let mut skipped = Vec::new();
     let mut compacted = 0;
     let mut merged = 0;
     let limit = config.writer.maintenance.step_max_duration.as_duration();
     loop {
-        // Compaction appends a segment to every index, and the purge of denied rows belongs
-        // to a run that no write presses, or to the overdue one: a run that a write presses
-        // goes on to the merges.
-        if pressed() {
-            break;
-        }
-        let head = boundary(config, lease, history).await?;
+        let head = boundary(config, lease, history, writes).await?;
         if head.content.is_none() {
             break;
         }
@@ -269,19 +249,16 @@ async fn maintain_held(
     // One index name per interruptible step. Merge the segments, never retrain;
     // with `rebalance` Lance also splits and joins partitions toward the index's
     // target size.
-    let head = boundary(config, lease, history).await?;
+    let head = boundary(config, lease, history, writes).await?;
     if head.content.is_some() {
         let dataset = pinned(config, &head).await?;
-        let mut segments = BTreeMap::<_, usize>::new();
-        for index in dataset.load_indices().await?.iter() {
-            *segments.entry(index.name.clone()).or_default() += 1;
-        }
-        // The most crowded index first: a run that yields after a step would otherwise merge
-        // the first index again and again, as each write gives it a new segment, and the
-        // others would never be reached.
-        let mut names: Vec<_> = segments.into_iter().collect();
-        names.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
-        for (name, _) in names {
+        let names: BTreeSet<_> = dataset
+            .load_indices()
+            .await?
+            .iter()
+            .map(|i| i.name.clone())
+            .collect();
+        for name in names {
             // An index that ran out of time on this version waits for a new publication.
             if merge_skipped(&config.namespace.name, &name, version(&head)) {
                 continue;
@@ -289,7 +266,7 @@ async fn maintain_held(
             // Each step merges the newest segments only, so the next one finds
             // the step's output among them.
             loop {
-                let head = boundary(config, lease, history).await?;
+                let head = boundary(config, lease, history, writes).await?;
                 let dataset = pinned(config, &head).await?;
                 let segments = dataset
                     .load_indices()
@@ -308,9 +285,6 @@ async fn maintain_held(
                     Ok(Some(rows)) => {
                         merged += 1;
                         crate::telemetry::index_merge_done(rows, start.elapsed());
-                        if pressed() {
-                            return Ok(yielded(compacted, merged));
-                        }
                     }
                     Ok(None) => break,
                     // The other indexes and the steps after the merges still run.
@@ -327,12 +301,9 @@ async fn maintain_held(
             }
         }
     }
-    if pressed() {
-        return Ok(yielded(compacted, merged));
-    }
     // One retained set for both cleanups: a manifest goes only with the
     // version files that this set protects.
-    let head = boundary(config, lease, history).await?;
+    let head = boundary(config, lease, history, writes).await?;
     let kept = if head.content.is_some() {
         tokio::time::timeout(limit, retained(config, &head))
             .await
@@ -354,7 +325,7 @@ async fn maintain_held(
     if cleaned && protected == 0 {
         removed += superseded_history(config, lease, history, &head, &kept).await?;
     }
-    let head = boundary(config, lease, history).await?;
+    let head = boundary(config, lease, history, writes).await?;
     if head.content.is_some() {
         let mut dataset = pinned(config, &head).await?;
         let mut work = lineage(lease, &head);
@@ -791,7 +762,7 @@ async fn superseded_history(
                     break;
                 }
                 let current = if deleted % 64 == 0 {
-                    boundary(config, lease, history).await?
+                    boundary(config, lease, history, None).await?
                 } else {
                     lease.head().await?
                 };
@@ -942,7 +913,7 @@ async fn cleanup_versions(
         }
         // Keep the 64-delete revocation boundary and the row/time budgets.
         let current = if removed % 64 == 0 {
-            boundary(config, lease, history).await?
+            boundary(config, lease, history, None).await?
         } else {
             lease.head().await?
         };

@@ -82,11 +82,22 @@ impl Commits {
             .map(|waiting| waiting.keys().cloned().collect())
             .unwrap_or_default()
     }
-    /// Whether a request of namespace `name` waits for its publication.
-    pub(crate) fn is_waiting(&self, name: &str) -> bool {
-        self.waiting
+    /// Commits what waits for the namespace of `config`, under the lease `lease` that a
+    /// maintenance run holds, and wakes the requests to look at what was published.
+    pub(crate) async fn commit_waiting(
+        &self,
+        config: &Config,
+        lease: &crate::lease::LeaseGuard,
+    ) -> crate::Result<()> {
+        let waits = self
+            .waiting
             .lock()
-            .is_ok_and(|waiting| waiting.contains_key(name))
+            .is_ok_and(|waiting| waiting.contains_key(&config.namespace.name));
+        if waits {
+            crate::commit::drain(config, false, lease, None).await?;
+            self.done.send_modify(|rounds| *rounds += 1);
+        }
+        Ok(())
     }
     fn wait(&self, name: &str) -> Waiting<'_> {
         if let Ok(mut waiting) = self.waiting.lock() {

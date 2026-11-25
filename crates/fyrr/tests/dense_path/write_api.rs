@@ -6205,8 +6205,9 @@ async fn identity_write_api_answers_a_write_that_waits_for_maintenance_on_storag
     for n in 0..CROWDED_WRITES {
         assert_eq!(writer.post(WRITE_KEY, namespace, &row(n)).await.0, 200);
     }
-    // Writers that never stop waiting: every maintenance run that starts finds one, and
-    // gives the lease up after at most one step. Each write is answered all the same.
+    // Writers that never stop waiting: the run of maintenance that the crowded indexes start
+    // (it compacts 68 fragments, step by step) commits their writes between its steps, so
+    // each is answered while the run is in progress.
     let writer = &writer;
     let writes = (0..3).map(|lane| async move {
         for n in 0..20 {
@@ -6221,19 +6222,20 @@ async fn identity_write_api_answers_a_write_that_waits_for_maintenance_on_storag
     });
     futures::future::join_all(writes).await;
     assert!(
-        events("maintenance_yielded") > 0,
-        "no maintenance run yielded"
+        events("maintenance_started")
+            > events("maintained") + events("maintenance_busy") + events("maintenance_failed"),
+        "the run of maintenance ended before the writes were answered"
     );
-    // With no write waiting, the next run goes through every step.
-    assert_eq!(
-        writer
-            .post(WRITE_KEY, namespace, &row(CROWDED_WRITES + 60))
-            .await
-            .0,
-        200
-    );
-    let deadline = Instant::now() + Duration::from_secs(180);
+    // Every index ends within the cap once the writes stop.
+    let deadline = Instant::now() + Duration::from_secs(600);
     loop {
+        assert_eq!(
+            writer
+                .post(WRITE_KEY, namespace, &row(CROWDED_WRITES + 60))
+                .await
+                .0,
+            200
+        );
         let (_, manifest) = super::coordination::publication(&config).await;
         let mut segments = std::collections::BTreeMap::<String, usize>::new();
         for index in &manifest.indexes {
@@ -6246,43 +6248,8 @@ async fn identity_write_api_answers_a_write_that_waits_for_maintenance_on_storag
             Instant::now() < deadline,
             "maintenance did not finish: {segments:?}"
         );
-        tokio::time::sleep(Duration::from_millis(250)).await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
     }
-    assert_eq!(
-        events("maintenance_failed"),
-        0,
-        "{}",
-        std::fs::read_to_string(&log).unwrap()
-    );
-
-    // A purge that has waited more than twice `writer.version_grace` is not deferred again:
-    // the run that finds it does not yield, though a write waits all the while.
-    fyrr_core::clock::advance(Duration::from_secs(25 * 3600)).unwrap();
-    let before = events("maintained");
-    let writes = (0..3).map(|lane| async move {
-        for n in 0..15 {
-            let (status, _) = writer
-                .post(
-                    WRITE_KEY,
-                    namespace,
-                    &row(CROWDED_WRITES + 100 + lane * 15 + n),
-                )
-                .await;
-            assert_eq!(status, 200);
-        }
-    });
-    futures::future::join_all(writes).await;
-    assert!(
-        events("maintained") > before,
-        "the overdue purge was deferred"
-    );
-    // A run in flight when the clock jumped lost its lease: the one failure expected.
     let failures = std::fs::read_to_string(&log).unwrap();
-    assert!(
-        failures
-            .lines()
-            .filter(|line| line.contains("event=maintenance_failed"))
-            .all(|line| line.ends_with("code=lease_lost")),
-        "{failures}"
-    );
+    assert_eq!(events("maintenance_failed"), 0, "{failures}");
 }

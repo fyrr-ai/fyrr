@@ -639,7 +639,7 @@ async fn drain_authorization_held(
     }
 }
 
-async fn drain(
+pub(crate) async fn drain(
     config: &Config,
     stage_timings: bool,
     lease: &LeaseGuard,

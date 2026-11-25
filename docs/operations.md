@@ -117,11 +117,9 @@ the served version has a vector index with more than 64 segments and two neighbo
 per `writer.version_grace`, has fragments with deletions or has gone
 `writer.purge_window` minus `writer.version_grace` (or `writer.max_envelope_age`,
 if shorter) without it; `writer.serve.maintenance =
-false` turns that off. The run is a task of its own, outside the commit loop: a write
-that waits for the lease ends it after the step in progress, and the next tick starts
-it again. A run that finds the last complete maintenance more than two
-`writer.version_grace` old does not yield, so retired versions and applied
-envelopes are deleted at most one interval late. That cadence does not bound how long deleted content
+false` turns that off. The run is a task of its own, outside the commit loop: a write that waits for the
+namespace is committed between its steps, under the lease the run holds, so it waits
+for the step in progress and not for the run. That cadence does not bound how long deleted content
 stays in retained old versions: run `writer maintain` often enough that it
 physically leaves namespace storage within the purge window. Only `writer maintain`
 re-partitions the vector index of a grown namespace (see
