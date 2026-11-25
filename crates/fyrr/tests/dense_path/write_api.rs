@@ -1921,7 +1921,13 @@ async fn indexed_answer(
 async fn identity_write_api_orders_equal_dense_scores_by_document_key_on_storage() {
     let (config, root) = setup_on(Backend::Local);
     let address = free_address();
-    configure(&config, &address, "");
+    // The dense lane answers with exactly the 10 rows asked for, so a cut
+    // before the key order would keep an arbitrary 10 of the tie.
+    configure(
+        &config,
+        &address,
+        "[namespace.retrieval]\ndense_candidates = 10",
+    );
     let writer = Writer::start(&config, &root, address).await;
     // 3,000 rows written in reverse key order; the reader may read every third
     // of them, more than the first rescore pool. The first 60 share the query's
@@ -1956,9 +1962,9 @@ async fn identity_write_api_orders_equal_dense_scores_by_document_key_on_storage
         .await;
         let (found, telemetry) = indexed_answer(&reader, &[0.5; 16], 10).await;
         assert_eq!(found, expected, "{sparse_read}: {telemetry}");
-        // The refinement ranked the first pool, 300 of the 1,000 rows the reader
-        // may read, and the tie fit in it.
-        assert_eq!(telemetry["dense_candidates_fetched"], 300, "{telemetry}");
+        // The refinement ranked the first pool, 40 of the 1,000 rows the reader
+        // may read, and the tie of 20 fit in it.
+        assert_eq!(telemetry["dense_candidates_fetched"], 40, "{telemetry}");
         assert!(
             telemetry.get("dense_tie_bound_hits").is_none(),
             "{telemetry}"

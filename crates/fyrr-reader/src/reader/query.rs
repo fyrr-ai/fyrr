@@ -169,9 +169,11 @@ impl PreparedReader {
         // Default requests retain their existing claims and executable path.
         self.response_claim =
             if args.queries.is_some() && self.selected_rows().max_len().unwrap_or(0) != 0 {
+                // The depth each query searches: the request limit when it is
+                // larger, as in the dense lane below.
                 Some(self.batch_claim(
                     queries.len(),
-                    self.config.namespace.retrieval.dense_candidates,
+                    self.config.namespace.retrieval.dense_candidates.max(k),
                     queries.len() * k,
                 )?)
             } else {
