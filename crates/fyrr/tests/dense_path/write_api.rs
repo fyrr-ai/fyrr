@@ -5728,8 +5728,7 @@ async fn identity_write_api_searches_named_vector_attributes_on_storage() {
         (200, json!({"upserted": 7, "deleted": 0}))
     );
 
-    // The manifest records them, in the version an older build refuses, with an
-    // index of each.
+    // The manifest records them, with an index of each.
     let (_, manifest) = super::coordination::publication(&config).await;
     assert_eq!(manifest.schema_version.major, 5);
     assert_eq!(

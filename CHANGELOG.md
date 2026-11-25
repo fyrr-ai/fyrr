@@ -19,7 +19,10 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   `logical_bytes` and `first_published_at`, never `null`. The retrieval digest
   always includes the retrieval settings, and a connector batch must have
   `sections[].vector` (a contract 1.3 batch without it is refused). A namespace
-  that an unreleased build wrote before this change is refused: recreate it.
+  written by an unreleased build before this change is still read when its
+  manifest is 5.0 and its policy 4.0, as every connector namespace's are; a
+  manifest 4.1, a policy 3.1 and a queued envelope 5.0 are refused, so recreate
+  such a namespace.
 - `rescore_depth` has no `legacy` mode. Leave it unset for the default: four
   times the dense lane depth, which for one-bit codes grows with the rows the
   probes inspect. A configuration that sets `{ mode = "legacy" }` is refused.
@@ -29,8 +32,8 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   refused with `storage_root_old`. Recreate its namespaces in a new root with
   v0.2.0; remove those files only once no older writer runs. A namespace
   that v0.1.x or an earlier build wrote is refused with `namespace_layout_old`
-  in any root, S3 included: one of its stored contracts is of an older major, or
-  its connector namespace has no typed connector columns. Recreate it under a
+  in any root, S3 included: one of its stored contracts is of an older major.
+  Recreate it under a
   new name (or, with every writer stopped and a copy kept, after deleting its
   `namespaces/<name>/` prefix), sync its sources again and write the API
   documents again. A
@@ -47,8 +50,8 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   documents as typed columns, declared with the namespace like the attributes
   of the file, so a filter or `order_by` can use them. `search`, `fetch` and
   `list_filters` return the same fields as before. A connector namespace
-  created without the columns is refused with `namespace_layout_old`: recreate
-  it under a new name with v0.2.0 and sync its sources again. A manifest of the new layout is
+  created without the columns is refused: recreate it under a new name with
+  v0.2.0 and sync its sources again. A manifest of the new layout is
   content-manifest 5.0 and its policy artifact 4.0, the versions of attribute
   index options and of the read-only switch, so an older build refuses it
   instead of reading nulls. The

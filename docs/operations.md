@@ -253,8 +253,7 @@ with `storage_root_old`: the root holds `.fyrr-storage.lock` or
 in a new root with v0.2.0. Remove the two files only once no older writer runs.
 A namespace that v0.1.x or an earlier build wrote is refused with
 `namespace_layout_old`, in any root, S3 included: one of its stored contracts (the serving
-head, the policy) is of an older major than v0.2.0 writes, or
-its connector namespace has no typed connector columns. Recreate the namespace
+head, the policy, the manifest) is of an older major than v0.2.0 writes. Recreate the namespace
 under a new name with v0.2.0 (`writer namespace create`), sync its sources again
 and write again what was written through the API. Or, after stopping every
 writer of the namespace and keeping a recoverable copy, delete its
@@ -271,7 +270,7 @@ Configuration schema `6.0` removes `reader.version_check`,
 `reader.per_request_wait` and `identity.validity_deadline`; delete all three
 keys. The reader checks for a new version every `reader.version_check_interval`
 and catches up by itself after it did not run. The reader has no clock: results
-change only with a new publication. The serving head (`4.0`), the prepared envelope (`5.0`) and the identity
+change only with a new publication. The serving head (`4.1`), the prepared envelope (`6.0`) and the identity
 artifact (`2.0`) carry no
 freshness instants and MCP `4.0` has no `metadata.hidden_sources`. Republish
 older namespaces.

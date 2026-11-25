@@ -65,8 +65,7 @@ pub struct NamespaceSettings {
     /// records the ones that are built.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub attribute_indexes: AttributeIndexes,
-    /// The named vector attributes, fixed at creation. An older build would
-    /// not know their columns and indexes.
+    /// The named vector attributes, fixed at creation.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub vectors: VectorAttributes,
     /// Present: the namespace is written through the HTTP API and takes no
@@ -148,11 +147,6 @@ pub struct RetiredSource {
     pub purged_at: Option<DateTime<Utc>>,
 }
 
-/// The message of a policy that is refused because its connector namespace
-/// lacks the typed connector columns: a namespace of v0.1.x or an earlier
-/// build. Readers map it to a named error.
-pub const CONNECTOR_COLUMNS_MISSING: &str = "connector_columns_missing";
-
 impl Contract for PolicyArtifact {
     const NAME: &'static str = "policy-artifact";
     const VERSION: SchemaVersion = POLICY_CONTRACT_VERSION;
@@ -163,7 +157,7 @@ impl Contract for PolicyArtifact {
                 .iter()
                 .any(|(name, kind)| self.settings.attributes.get(*name) != Some(kind))
         {
-            return Err(CONNECTOR_COLUMNS_MISSING.into());
+            return Err("a connector namespace needs its typed connector columns".into());
         }
         if self.retired_sources.len() > MAX_RETIRED_SOURCES {
             return Err("retired_sources holds too many sources".into());

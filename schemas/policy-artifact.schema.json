@@ -128,7 +128,7 @@
           "additionalProperties": {
             "$ref": "#/$defs/VectorAttribute"
           },
-          "description": "The named vector attributes, fixed at creation. An older build would\nnot know their columns and indexes."
+          "description": "The named vector attributes, fixed at creation."
         },
         "write_api": {
           "anyOf": [

@@ -558,10 +558,7 @@ export interface NamespaceSettings {
    * records the ones that are built.
    */
   attribute_indexes?: Record<string, AttributeIndex>;
-  /**
-   * The named vector attributes, fixed at creation. An older build would
-   * not know their columns and indexes.
-   */
+  /** The named vector attributes, fixed at creation. */
   vectors?: Record<string, VectorAttribute>;
   /**
    * Present: the namespace is written through the HTTP API and takes no

@@ -464,9 +464,7 @@ class NamespaceSettings(TypedDict):
     records the ones that are built.
     """
     vectors: NotRequired[dict[str, VectorAttribute]]
-    """The named vector attributes, fixed at creation. An older build would
-    not know their columns and indexes.
-    """
+    """The named vector attributes, fixed at creation."""
     write_api: NotRequired[WriteApiSettings | None]
     """Present: the namespace is written through the HTTP API and takes no
     connector source. Fixed with the rest of the settings.
