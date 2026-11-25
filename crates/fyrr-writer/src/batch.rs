@@ -759,8 +759,11 @@ mod tests {
     #[test]
     fn a_batch_without_the_vector_column_is_refused() {
         let rows = build(&[Row::default()]);
-        let error = document_changes(&without_section_vector(&rows, "1.4")).expect_err("1.4");
-        assert!(error.contains("sections[].vector"), "{error}");
+        for version in ["1.3", "1.4"] {
+            let error =
+                document_changes(&without_section_vector(&rows, version)).expect_err(version);
+            assert!(error.contains("sections[].vector"), "{version}: {error}");
+        }
     }
 
     #[test]
