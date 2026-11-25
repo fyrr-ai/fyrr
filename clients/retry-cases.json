@@ -1,0 +1,19 @@
+{
+  "about": "Shared by the Python and TypeScript client tests: how a write is retried. A write is repeated only when the connection failed, and never when it sets conditions; the server reads an empty conditions object as none. `answers` are what the server side sends in turn: `refused` is a failed connection, `429` and `503` are answers that may follow an applied write. `requests` is how many requests the client makes.",
+  "conditions": {
+    "absent": null,
+    "empty": {},
+    "non_empty": { "a": { "field": "version", "op": "lt", "value": 2 } }
+  },
+  "cases": [
+    { "conditions": "absent", "answers": ["refused", "ok"], "requests": 2 },
+    { "conditions": "empty", "answers": ["refused", "ok"], "requests": 2 },
+    { "conditions": "non_empty", "answers": ["refused", "ok"], "requests": 1 },
+    { "conditions": "absent", "answers": ["429", "ok"], "requests": 1 },
+    { "conditions": "empty", "answers": ["429", "ok"], "requests": 1 },
+    { "conditions": "non_empty", "answers": ["429", "ok"], "requests": 1 },
+    { "conditions": "absent", "answers": ["503 outcome_unknown", "ok"], "requests": 1 },
+    { "conditions": "empty", "answers": ["503 outcome_unknown", "ok"], "requests": 1 },
+    { "conditions": "non_empty", "answers": ["503 outcome_unknown", "ok"], "requests": 1 }
+  ]
+}

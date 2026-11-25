@@ -633,6 +633,10 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Fixed
 
+- The TypeScript client treated a write with an empty `conditions` object as a
+  conditional one and never repeated it after a lost connection; the Python
+  client and the server read it as no conditions. All three now agree: only a
+  non-empty `conditions` stops the retry of a write.
 - A GitHub issue, PR or file the connector contract rejects no longer stalls
   the content sync: display values are fitted (control characters to spaces,
   cut to 1,024 bytes, at most 32 labels), anything still rejected is

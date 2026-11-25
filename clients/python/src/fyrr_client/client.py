@@ -97,6 +97,28 @@ class _Base:
             raise ValueError(f"this client has no {service}_url")
         return _Request(method, base + path, body, params, retry)
 
+    def _list(self, prefix: str | None) -> _Request:
+        params = {"prefix": prefix} if prefix else None
+        return self._request("reader", "GET", "/v1/namespaces", params=params)
+
+    def _describe(self, namespace: str) -> _Request:
+        return self._request("reader", "GET", _namespace_path(namespace))
+
+    def _delete(self, namespace: str) -> _Request:
+        path = _namespace_path(namespace)
+        return self._request("writer", "DELETE", path, {"namespace": namespace}, retry="unsent")
+
+    def _query(self, namespace: str, request: QueryRequest) -> _Request:
+        return self._request("reader", "POST", _namespace_path(namespace) + "/query", request)
+
+    def _write(self, namespace: str, request: WriteRequest) -> _Request:
+        # A write that sets `conditions` tests the stored documents when it is applied, so a
+        # repeat after a lost answer can decide differently: the caller decides. An empty
+        # `conditions` sets none, as the server reads it.
+        retry = "none" if request.get("conditions") else "unsent"
+        path = _namespace_path(namespace) + "/documents"
+        return self._request("writer", "POST", path, request, retry=retry)
+
     def _retry_delay(
         self,
         request: _Request,
@@ -163,12 +185,6 @@ def _retry_after(response: httpx.Response) -> float | None:
 
 def _namespace_path(namespace: str) -> str:
     return f"/v1/namespaces/{quote(namespace, safe='')}"
-
-
-def _write_retry(request: WriteRequest) -> str:
-    # A write that sets `conditions` tests the stored documents when it is applied, so a repeat
-    # after a lost answer can decide differently: the caller decides.
-    return "none" if request.get("conditions") else "unsent"
 
 
 def _scan_request(
@@ -264,11 +280,7 @@ class Client(_Base):
 
     def list_namespaces(self, prefix: str | None = None) -> NamespaceList:
         """One call: the names that start with `prefix`, or `too_many_namespaces` above 10,000."""
-        params = {"prefix": prefix} if prefix else None
-        return cast(
-            NamespaceList,
-            self._send(self._request("reader", "GET", "/v1/namespaces", params=params)),
-        )
+        return cast(NamespaceList, self._send(self._list(prefix)))
 
     def iter_namespaces(self, prefix: str = "") -> Iterator[str]:
         """Every name that starts with `prefix`, in name order.
@@ -290,22 +302,16 @@ class Client(_Base):
             yield from self.iter_namespaces(first)
 
     def describe_namespace(self, namespace: str) -> NamespaceReport:
-        path = _namespace_path(namespace)
-        return cast(NamespaceReport, self._send(self._request("reader", "GET", path)))
+        return cast(NamespaceReport, self._send(self._describe(namespace)))
 
     def delete_namespace(self, namespace: str) -> DeleteNamespaceResponse:
-        path = _namespace_path(namespace)
-        request = self._request("writer", "DELETE", path, {"namespace": namespace}, retry="unsent")
-        return cast(DeleteNamespaceResponse, self._send(request))
+        return cast(DeleteNamespaceResponse, self._send(self._delete(namespace)))
 
     def query(self, namespace: str, request: QueryRequest) -> SearchOutput:
-        path = _namespace_path(namespace) + "/query"
-        return cast(SearchOutput, self._send(self._request("reader", "POST", path, request)))
+        return cast(SearchOutput, self._send(self._query(namespace, request)))
 
     def write(self, namespace: str, request: WriteRequest) -> WriteResponse:
-        path = _namespace_path(namespace) + "/documents"
-        sent = self._request("writer", "POST", path, request, retry=_write_retry(request))
-        return cast(WriteResponse, self._send(sent))
+        return cast(WriteResponse, self._send(self._write(namespace, request)))
 
     def iter_documents(
         self,
@@ -375,9 +381,7 @@ class AsyncClient(_Base):
             attempt += 1
 
     async def list_namespaces(self, prefix: str | None = None) -> NamespaceList:
-        params = {"prefix": prefix} if prefix else None
-        request = self._request("reader", "GET", "/v1/namespaces", params=params)
-        return cast(NamespaceList, await self._send(request))
+        return cast(NamespaceList, await self._send(self._list(prefix)))
 
     async def iter_namespaces(self, prefix: str = "") -> AsyncIterator[str]:
         try:
@@ -394,23 +398,16 @@ class AsyncClient(_Base):
                 yield name
 
     async def describe_namespace(self, namespace: str) -> NamespaceReport:
-        path = _namespace_path(namespace)
-        return cast(NamespaceReport, await self._send(self._request("reader", "GET", path)))
+        return cast(NamespaceReport, await self._send(self._describe(namespace)))
 
     async def delete_namespace(self, namespace: str) -> DeleteNamespaceResponse:
-        path = _namespace_path(namespace)
-        request = self._request("writer", "DELETE", path, {"namespace": namespace}, retry="unsent")
-        return cast(DeleteNamespaceResponse, await self._send(request))
+        return cast(DeleteNamespaceResponse, await self._send(self._delete(namespace)))
 
     async def query(self, namespace: str, request: QueryRequest) -> SearchOutput:
-        path = _namespace_path(namespace) + "/query"
-        sent = self._request("reader", "POST", path, request)
-        return cast(SearchOutput, await self._send(sent))
+        return cast(SearchOutput, await self._send(self._query(namespace, request)))
 
     async def write(self, namespace: str, request: WriteRequest) -> WriteResponse:
-        path = _namespace_path(namespace) + "/documents"
-        sent = self._request("writer", "POST", path, request, retry=_write_retry(request))
-        return cast(WriteResponse, await self._send(sent))
+        return cast(WriteResponse, await self._send(self._write(namespace, request)))
 
     async def iter_documents(
         self,
