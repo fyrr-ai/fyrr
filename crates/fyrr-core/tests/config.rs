@@ -1185,7 +1185,7 @@ fn composition_is_bounded_defaulted_and_bound_into_policy_identity() {
 }
 
 #[test]
-fn retrieval_config_bounds_and_legacy_digest() {
+fn retrieval_config_bounds_and_digest() {
     let base = parse(MINIMAL).unwrap();
     assert!(errors(&base).is_empty());
     let retrieval = &base.config.namespace.retrieval;
@@ -1195,22 +1195,6 @@ fn retrieval_config_bounds_and_legacy_digest() {
     assert_eq!(retrieval.rescore_depth, None);
     assert_eq!(retrieval.rescore_initial(retrieval.dense_candidates), 300);
     assert_eq!(retrieval.rescore_maximum(retrieval.dense_candidates), 1200);
-    let legacy = serde_json::json!([
-        "slice2:cosine:ivf-rq1:f16:550:training256:logistic-z:population:lex.75:dense.25:source2-soft-per-bucket:lex50:dense75:p1:1200:phrase0",
-        base.config.namespace.fts_settings(),
-        base.config.namespace.composition
-    ]);
-    let legacy_digest = fyrr_core::limits::digest(legacy.to_string().as_bytes());
-    let historical = parse(&format!(
-        "{MINIMAL}\n[namespace.retrieval]\ndense_weight=0.25\nlexical_candidates=50\n"
-    ))
-    .unwrap();
-    assert!(errors(&historical).is_empty());
-    assert_eq!(
-        historical.config.namespace.retrieval_digest(),
-        legacy_digest
-    );
-    assert_ne!(base.config.namespace.retrieval_digest(), legacy_digest);
     let explicit = parse(&format!("{MINIMAL}\n[namespace.retrieval]\ndense_weight=0.5\ndense_candidates=75\nlexical_candidates=200\nsource_cap=2\nmax_documents=75\n")).unwrap();
     assert!(errors(&explicit).is_empty());
     assert_eq!(

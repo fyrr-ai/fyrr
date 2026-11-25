@@ -35,7 +35,7 @@ impl PreparedReader {
             cached.as_ref().is_some_and(|(_, policy)| policy.read_only)
         };
         let manifest = &self.manifest;
-        let stats = manifest.stats.as_ref();
+        let stats = &manifest.stats;
         // The policy may be newer than the manifest, when an authorization
         // refresh took a later generation before the reader moved to the later
         // publication. The schema is one generation: the manifest's.
@@ -52,9 +52,9 @@ impl PreparedReader {
             dense_metric: manifest.dense_metric,
             dense_element: manifest.dense_element,
             read_only,
-            rows: stats.map(|stats| stats.rows),
-            logical_bytes: stats.map(|stats| stats.logical_bytes),
-            first_published_at: stats.and_then(|stats| stats.first_published_at),
+            rows: stats.rows,
+            logical_bytes: stats.logical_bytes,
+            first_published_at: stats.first_published_at,
             // `verify_indices` refuses a version that an index does not cover
             // in full, so a served version has nothing unindexed.
             unindexed: Unindexed {

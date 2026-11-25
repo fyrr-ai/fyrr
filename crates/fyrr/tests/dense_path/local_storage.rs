@@ -291,6 +291,30 @@ async fn lifetime_history_keeps_maintenance_restore_and_receipts_available() {
         .1;
     let mut cleaned_replay = None;
     let mut latest_applied = None;
+    // Every receipt of the template's chain: its checkpoint, the few ids since
+    // and its own envelopes. The later checkpoints of this history carry them on.
+    let mut applied: std::collections::BTreeSet<String> = template
+        .envelope_ids
+        .iter()
+        .chain(&template.envelope_evidence.applied_since)
+        .cloned()
+        .collect();
+    let template_checkpoint: fyrr_core::publication::EnvelopeCheckpoint =
+        fyrr_core::parse_contract(
+            &store
+                .get(&object_store::path::Path::from(format!(
+                    "{namespace}/{}",
+                    template.envelope_evidence.checkpoint.object
+                )))
+                .await
+                .unwrap()
+                .bytes()
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+    applied.extend(template_checkpoint.applied_envelope_ids);
+    let rejected = template_checkpoint.rejected_envelope_ids;
     let mut previous = template.publication_id.clone();
     // Valid immutable history, without thousands of unnecessary native writes.
     // Lifetime receipt evidence exceeds the former aggregate 65,536-entry cap.
@@ -308,8 +332,6 @@ async fn lifetime_history_keeps_maintenance_restore_and_receipts_available() {
         manifest.publication_id = format!("pub-{:032x}", 1_000_000 + offset);
         manifest.previous_publication_id = Some(previous);
         manifest.envelope_ids.clear();
-        // A chain written before manifests carried their envelope evidence.
-        manifest.envelope_evidence = None;
         for id in 0..RECEIPTS_PER_PUBLICATION {
             let mut envelope = member.clone();
             envelope.sequence = 1_000_000 + offset * RECEIPTS_PER_PUBLICATION + id;
@@ -340,6 +362,30 @@ async fn lifetime_history_keeps_maintenance_restore_and_receipts_available() {
             }
             manifest.envelope_ids.push(envelope.envelope_id);
         }
+        // The evidence of this publication: one checkpoint of every receipt up
+        // to it, the way a long history leaves it.
+        applied.extend(manifest.envelope_ids.iter().cloned());
+        let checkpoint = write_contract(&fyrr_core::publication::EnvelopeCheckpoint {
+            schema_version:
+                <fyrr_core::publication::EnvelopeCheckpoint as fyrr_core::Contract>::VERSION,
+            namespace: manifest.namespace.clone(),
+            applied_envelope_ids: applied.iter().cloned().collect(),
+            rejected_envelope_ids: rejected.clone(),
+        });
+        let object = format!("evidence/generation-{}.json", 1_000_000 + offset);
+        manifest.envelope_evidence = fyrr_core::publication::EnvelopeEvidence {
+            checkpoint: fyrr_core::publication::GenerationPointer {
+                generation: 1_000_000 + offset,
+                object: object.clone(),
+                digest: fyrr_core::limits::digest(&checkpoint),
+            },
+            applied_since: Vec::new(),
+            rejected_since: Vec::new(),
+        };
+        seed.push((
+            object_store::path::Path::from(format!("{namespace}/{object}")),
+            checkpoint,
+        ));
         manifest.validate().unwrap();
         seed.push((
             object_store::path::Path::from(format!(
@@ -354,7 +400,7 @@ async fn lifetime_history_keeps_maintenance_restore_and_receipts_available() {
         pointer.manifest = format!("publications/{previous}.json");
         pointer.sequence = manifest.sequence;
     }
-    assert_eq!(seed.len(), 33_000 + PUBLICATIONS as usize);
+    assert_eq!(seed.len(), 33_000 + 2 * PUBLICATIONS as usize);
     fyrr_reader::storage::test_store::seed_local_fixture(&loaded.config, seed).unwrap();
     store
         .put(&namespace.join("head.json"), write_contract(&head).into())

@@ -807,16 +807,12 @@ pub async fn artifact<T: fyrr_core::Contract>(
 }
 
 /// Parses a stored contract. One written by an earlier fyrr is refused with
-/// `NamespaceLayoutOld` whatever it is: a major below the one this build writes
-/// (v0.1.x wrote serving heads 3.0 and policies 2.2), or a connector namespace
-/// without the typed connector columns. Anything else invalid is `other`.
+/// `NamespaceLayoutOld`: a major below the one this build writes (v0.1.x wrote
+/// serving heads 3.0 and policies 2.2). Anything else invalid is `other`.
 pub fn parse_stored<T: Contract>(bytes: &[u8], other: StorageError) -> Result<T, StorageError> {
-    use fyrr_core::ContractError::{Invalid, UnsupportedMajor};
+    use fyrr_core::ContractError::UnsupportedMajor;
     parse_contract(bytes).map_err(|error| match error {
         UnsupportedMajor { found, .. } if found.major < T::VERSION.major => {
-            StorageError::NamespaceLayoutOld
-        }
-        Invalid { message, .. } if message == fyrr_core::publication::CONNECTOR_COLUMNS_MISSING => {
             StorageError::NamespaceLayoutOld
         }
         _ => other,

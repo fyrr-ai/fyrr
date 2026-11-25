@@ -463,7 +463,7 @@
         "tier": "quick",
         "seconds": 0.001
       },
-      "full:fyrr-writer:lib:fyrr_writer/batch::tests::a_contract_1_3_batch_has_no_vector_column": {
+      "full:fyrr-writer:lib:fyrr_writer/batch::tests::a_batch_without_the_vector_column_is_refused": {
         "tier": "quick",
         "seconds": 0.002
       },
@@ -1366,7 +1366,7 @@
         "tier": "quick",
         "seconds": 0.001
       },
-      "full:fyrr-core:test:config/retrieval_config_bounds_and_legacy_digest": {
+      "full:fyrr-core:test:config/retrieval_config_bounds_and_digest": {
         "tier": "quick",
         "seconds": 0.001
       },
@@ -1508,27 +1508,31 @@
         "tier": "quick",
         "seconds": 0.002
       },
-      "full:fyrr-core:test:contracts/a_frozen_policy_is_a_version_that_an_older_build_refuses": {
+      "full:fyrr-core:test:contracts/a_frozen_policy_is_read_at_the_one_version": {
         "tier": "quick",
         "seconds": 0.003
       },
-      "full:fyrr-core:test:contracts/token_positions_need_the_version_an_older_build_refuses": {
+      "full:fyrr-core:test:contracts/the_earlier_majors_of_the_manifest_the_policy_and_the_envelope_are_refused": {
         "tier": "quick",
         "seconds": 0.003
       },
-      "full:fyrr-core:test:contracts/a_vector_metric_and_element_type_need_the_version_an_older_build_refuses": {
+      "full:fyrr-core:test:contracts/token_positions_are_read_at_the_one_version": {
         "tier": "quick",
         "seconds": 0.003
       },
-      "full:fyrr-core:test:contracts/vector_attributes_need_the_version_an_older_build_refuses": {
+      "full:fyrr-core:test:contracts/a_vector_metric_and_element_type_are_read_at_the_one_version": {
         "tier": "quick",
         "seconds": 0.003
       },
-      "full:fyrr-core:test:contracts/attribute_index_options_need_the_version_an_older_build_refuses": {
+      "full:fyrr-core:test:contracts/vector_attributes_are_read_at_the_one_version": {
+        "tier": "quick",
+        "seconds": 0.003
+      },
+      "full:fyrr-core:test:contracts/attribute_index_options_are_read_at_the_one_version": {
         "tier": "quick",
         "seconds": 0.002
       },
-      "full:fyrr-core:test:contracts/connector_columns_need_the_version_an_older_build_refuses": {
+      "full:fyrr-core:test:contracts/a_connector_namespace_needs_its_columns": {
         "tier": "quick",
         "seconds": 0.002
       }

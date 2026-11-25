@@ -149,12 +149,11 @@ pub async fn copy(from: &Config, to: &Config) -> Result<serde_json::Value> {
         .await?;
     }
 
-    let mut new_policy = PolicyArtifact {
+    let new_policy = PolicyArtifact {
         generation: 1,
         read_only: false,
         ..policy
     };
-    new_policy.schema_version = new_policy.current_version();
     let new_identity = IdentityArtifact {
         generation: 1,
         ..identity

@@ -170,7 +170,6 @@ async fn incremental_connector_fields_are_typed_columns_on_storage() {
         !metadata.value(row_of("a")).contains("Alpha"),
         "the title is stored once, in its column"
     );
-    // An older build would read these columns as null: it refuses the namespace.
     let (_, manifest) = publication(&worker).await;
     assert_eq!(manifest.schema_version.to_string(), "5.0");
 
@@ -262,8 +261,9 @@ async fn incremental_connector_title_has_a_full_text_index_on_storage() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
-/// A reader refuses a published namespace whose policy an earlier fyrr wrote, by name:
-/// the policy 2.2 of v0.1.1 and a policy 3.1 without the typed connector columns.
+/// A reader refuses a published namespace whose policy or manifest an earlier
+/// fyrr wrote, by name: the policy 2.2 of v0.1.1, a current policy stamped 3.1
+/// and a current manifest stamped 4.1.
 #[tokio::test]
 #[ignore = "real worker and local storage; scripts/ci"]
 async fn incremental_reader_refuses_a_policy_of_an_earlier_fyrr_by_name_on_storage() {
@@ -282,19 +282,16 @@ async fn incremental_reader_refuses_a_policy_of_an_earlier_fyrr_by_name_on_stora
     let head_path = namespace.join("head.json");
     let mut head: Value = serde_json::from_slice(&std::fs::read(&head_path).unwrap()).unwrap();
     let policy_path = namespace.join(head["policy"]["object"].as_str().unwrap());
-    let mut without_columns: Value =
-        serde_json::from_slice(&std::fs::read(&policy_path).unwrap()).unwrap();
-    without_columns["schema_version"] = "3.1".into();
-    let settings = without_columns["settings"].as_object_mut().unwrap();
-    settings.remove("attributes");
-    settings.remove("attribute_indexes");
+    let current = std::fs::read(&policy_path).unwrap();
+    let mut plain: Value = serde_json::from_slice(&current).unwrap();
+    plain["schema_version"] = "3.1".into();
     let v011 = std::fs::read(
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../fixtures/contracts/compat/v0.1.1-policy-artifact.json"),
     )
     .unwrap();
     // Overwritten in place: the store keeps the version tag the files carry.
-    for bytes in [v011, serde_json::to_vec_pretty(&without_columns).unwrap()] {
+    for bytes in [v011, serde_json::to_vec_pretty(&plain).unwrap()] {
         std::fs::write(&policy_path, &bytes).unwrap();
         head["policy"]["digest"] = fyrr_core::limits::digest(&bytes).into();
         std::fs::write(&head_path, serde_json::to_vec_pretty(&head).unwrap()).unwrap();
@@ -306,6 +303,26 @@ async fn incremental_reader_refuses_a_policy_of_an_earlier_fyrr_by_name_on_stora
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(stderr.contains("error: namespace_layout_old"), "{stderr}");
     }
+    // The current policy again, over a manifest stamped with the plain major.
+    std::fs::write(&policy_path, &current).unwrap();
+    head["policy"]["digest"] = fyrr_core::limits::digest(&current).into();
+    std::fs::write(&head_path, serde_json::to_vec_pretty(&head).unwrap()).unwrap();
+    let manifest_path = namespace.join(head["content"]["manifest"].as_str().unwrap());
+    let mut manifest: Value =
+        serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+    manifest["schema_version"] = "4.1".into();
+    std::fs::write(
+        &manifest_path,
+        serde_json::to_vec_pretty(&manifest).unwrap(),
+    )
+    .unwrap();
+    let output = host_command(&worker)
+        .args(["reader", "check"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("error: namespace_layout_old"), "{stderr}");
     std::fs::remove_dir_all(root).unwrap();
 }
 

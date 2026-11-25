@@ -503,12 +503,12 @@ export interface NamespaceReport {
   dense_element: DenseElement;
   /** Whether the namespace is frozen: writes are refused while it stays readable. */
   read_only: boolean;
-  /** Approximate live rows; `null` for a version published before contract 4.1. */
-  rows: number | bigint | null;
-  /** Approximate bytes of the data files of those rows, without indexes; `null` as `rows`. */
-  logical_bytes: number | bigint | null;
-  /** When the namespace's first content publication was committed; `null` when that is not known. */
-  first_published_at: string | null;
+  /** Approximate live rows. */
+  rows: number | bigint;
+  /** Approximate bytes of the data files of those rows, without indexes. */
+  logical_bytes: number | bigint;
+  /** When the namespace's first content publication was committed. */
+  first_published_at: string;
   /** The data that an index of the version does not cover yet. */
   unindexed: Unindexed;
   /** When the version was published. */
@@ -558,10 +558,7 @@ export interface NamespaceSettings {
    * records the ones that are built.
    */
   attribute_indexes?: Record<string, AttributeIndex>;
-  /**
-   * The named vector attributes, fixed at creation. An older build would
-   * not know their columns and indexes.
-   */
+  /** The named vector attributes, fixed at creation. */
   vectors?: Record<string, VectorAttribute>;
   /**
    * Present: the namespace is written through the HTTP API and takes no

@@ -141,9 +141,8 @@ are not stored in the document's metadata. A file cannot declare them with
 another type. The `title` also has a full-text index, so that a request can rank
 by it with [`query_attributes`](http-api.md#matching-tokens); an entry for
 `title` in `[namespace.attribute_indexes]` replaces that default. A namespace written through the API has none of them. A
-namespace created without them is refused with `namespace_layout_old`:
-recreate it under a new name and sync its sources again
-([operations](operations.md#upgrades)).
+namespace created without them is refused: recreate it under a new name and
+sync its sources again ([operations](operations.md#upgrades)).
 
 A `string`, number, `datetime` or `uuid` attribute gets a B-tree index, a
 `bool` a bitmap index and an array a label-list index. A `bytes` attribute has
@@ -227,11 +226,6 @@ rows whose scores are close may differ from the exact one, and `exact: true`
 scans instead of probing. A namespace with fewer vectors than Lance trains an
 index from (a few hundred) is scanned. The partitions of the index are sized by
 the rows that hold vectors, not by the vectors in them.
-
-A namespace with vector attributes is
-[content-manifest](../CONTRIBUTING.md#rules-for-changes) 5.0 and its policy
-artifact 4.0, which a build that does not know them refuses; one without keeps
-its versions, files and retrieval-policy digest.
 
 ### `[namespace.attribute_indexes]`
 
@@ -453,10 +447,6 @@ rescores them with their stored float16 vectors.
 | `dense_partition_rows` | `550` | 32–4096: target rows per partition of the vector index. Smaller partitions scan fewer rows per probe but give more centroids to route over and a costlier index build; larger ones do the opposite. The value is recorded when the namespace is created and fixed for its life. To change it, create a new namespace. As a namespace grows, `writer maintain` re-partitions it: a partition above four times the target is split and one below a quarter of it is joined. `writer serve` does not do this. It costs about one first-build training of the split partitions in RAM and CPU. The split is one step: if it does not fit `writer.maintenance.step_max_duration`, `writer maintain` fails like any step that runs out of time. Only a vector index of up to `step_max_duration` × 700 rows (210,000 by default) is re-partitioned; a larger one merges its segments in [tiers](reader-writer.md) without re-partitioning. |
 | `dense_metric` | `cosine` | `cosine`, `squared_l2` or `dot`: the distance the vector index, the partition routing, the rescoring and the recall sample measure, and the one the embeddings were trained for. `cosine` ignores the length of a vector; `squared_l2` is the squared Euclidean distance; `dot` ranks by the dot product, so a longer vector ranks higher. Recorded when the namespace is created and fixed for its life, reported by the [namespace report](http-api.md#namespace-report). To change it, create a new namespace. Lance's IVF_RQ index supports all three. Under `dot` the dense lane lets Lance choose the partitions, because the compressed centroid scan of `reader.routing = "rabitq"` ranks by Euclidean distance; the setting then has no effect on that namespace. The `min_gap` of an adaptive `rescore_depth` is measured in the distance of the metric. |
 | `dense_element` | `f16` | `f16` or `f32`: the type a vector is stored in. `f16` halves the column and rounds each number to 16 bits; `f32` keeps the number as sent. Fixed like `dense_metric`. A vector must be finite and not zero; a 16-bit one must also stay so after rounding, so a number of magnitude 65520 or more (it rounds to infinity) is refused (`400 vector_invalid`) by an `f16` namespace and kept by an `f32` one. No number may exceed 1e6 in magnitude, so that a distance of the widest vector stays finite inside the index, and the squares of a vector must sum to a normal 32-bit number (a vector of numbers near 1e-20 or smaller is refused): `400 vector_invalid`. A vector that an embedding provider returns is checked the same way for the namespace's type. Lance's IVF_RQ index builds over both; 8-bit integer and 64-bit float vectors are not offered. |
-
-A namespace with a `dense_metric` or `dense_element` other than the defaults is
-[content-manifest](../CONTRIBUTING.md#rules-for-changes) 5.0 and its policy
-artifact 4.0, which a build that does not know them refuses.
 
 ### `[reader]` search and memory
 

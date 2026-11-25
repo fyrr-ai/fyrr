@@ -153,26 +153,12 @@
       "description": "The incarnation of the namespace that published this version, copied\nfrom the serving head."
     },
     "envelope_evidence": {
-      "anyOf": [
-        {
-          "$ref": "#/$defs/EnvelopeEvidence"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "description": "Which envelopes this publication and every older one committed or\nrejected, so that the newest manifest is enough to tell. Absent from\nmanifests written before it existed: a reader then walks the chain."
+      "$ref": "#/$defs/EnvelopeEvidence",
+      "description": "Which envelopes this publication and every older one committed or\nrejected, so that the newest manifest is enough to tell."
     },
     "stats": {
-      "anyOf": [
-        {
-          "$ref": "#/$defs/PublicationStats"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "description": "What the version holds. Absent from manifests written before 4.1."
+      "$ref": "#/$defs/PublicationStats",
+      "description": "What the version holds."
     }
   },
   "required": [
@@ -194,7 +180,9 @@
     "lineage",
     "identity",
     "policy",
-    "incarnation"
+    "incarnation",
+    "envelope_evidence",
+    "stats"
   ],
   "description": "A content publication manifest.",
   "title": "ContentManifest",
@@ -815,21 +803,19 @@
           "description": "Bytes of the data files of those rows, indexes and deletion files not counted."
         },
         "first_published_at": {
-          "type": [
-            "string",
-            "null"
-          ],
+          "type": "string",
           "format": "date-time",
-          "description": "When the namespace's first content publication was committed, carried\nforward by every later one. Absent when the namespace was published\nbefore 4.1: that time is not known."
+          "description": "When the namespace's first content publication was committed, carried\nforward by every later one."
         }
       },
       "required": [
         "rows",
-        "logical_bytes"
+        "logical_bytes",
+        "first_published_at"
       ],
       "description": "The size of a published version and when its namespace was first published."
     }
   },
   "x-fyrr-contract": "content-manifest",
-  "x-fyrr-schema-version": "4.1"
+  "x-fyrr-schema-version": "5.0"
 }

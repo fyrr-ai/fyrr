@@ -241,8 +241,9 @@ and cursors; each step is idempotent, so an interrupted purge is run again.
 ## Upgrades
 
 The current configuration schema is `6.0`, the MCP contract is `4.0`, the prepared-envelope and
-rejection contracts are `5.0` (an envelope with a write condition is `6.0`, which an older committer refuses and this build reads), and content manifests and serving heads are
-`4.0`, and policy artifacts are `3.0`. Embedding settings are required even
+rejection contracts are `6.0`, content manifests are `5.0`, serving heads are
+`4.1`, and policy artifacts are `4.0`. Each contract has one major; this build
+refuses every other. Embedding settings are required even
 for the default BGE-M3 model. Republish older namespaces before using this
 build.
 
@@ -252,8 +253,7 @@ with `storage_root_old`: the root holds `.fyrr-storage.lock` or
 in a new root with v0.2.0. Remove the two files only once no older writer runs.
 A namespace that v0.1.x or an earlier build wrote is refused with
 `namespace_layout_old`, in any root, S3 included: one of its stored contracts (the serving
-head, the policy) is of an older major than v0.2.0 writes, or
-its connector namespace has no typed connector columns. Recreate the namespace
+head, the policy, the manifest) is of an older major than v0.2.0 writes. Recreate the namespace
 under a new name with v0.2.0 (`writer namespace create`), sync its sources again
 and write again what was written through the API. Or, after stopping every
 writer of the namespace and keeping a recoverable copy, delete its
@@ -270,7 +270,7 @@ Configuration schema `6.0` removes `reader.version_check`,
 `reader.per_request_wait` and `identity.validity_deadline`; delete all three
 keys. The reader checks for a new version every `reader.version_check_interval`
 and catches up by itself after it did not run. The reader has no clock: results
-change only with a new publication. The serving head (`4.0`), the prepared envelope (`5.0`) and the identity
+change only with a new publication. The serving head (`4.1`), the prepared envelope (`6.0`) and the identity
 artifact (`2.0`) carry no
 freshness instants and MCP `4.0` has no `metadata.hidden_sources`. Republish
 older namespaces.

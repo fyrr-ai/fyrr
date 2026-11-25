@@ -564,20 +564,8 @@ impl NamespaceConfig {
             ),
             serde_json::json!(self.fts_settings()),
             serde_json::json!(self.composition),
+            serde_json::json!({"retrieval_v1": self.retrieval}),
         ];
-        // The historical policy omitted these fields. Keep its identity tied
-        // to the original values rather than to defaults that can change.
-        let legacy = RetrievalConfig {
-            rescore_depth: None,
-            dense_weight: 0.25,
-            dense_candidates: 75,
-            lexical_candidates: 50,
-            source_cap: 2,
-            max_documents: 75,
-        };
-        if self.retrieval != legacy {
-            policy.push(serde_json::json!({"retrieval_v1": self.retrieval}));
-        }
         if let Some(rerank) = &self.rerank {
             policy.push(serde_json::json!({"rerank_v2": rerank.settings()}));
         }

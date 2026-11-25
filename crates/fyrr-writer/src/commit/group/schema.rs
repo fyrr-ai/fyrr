@@ -64,7 +64,6 @@ pub(crate) async fn change_schema(
             .ok_or(WriterError::ConfigurationInvalid)?;
         let mut policy = current;
         policy.settings = next;
-        policy.schema_version = policy.current_version();
         policy.generation = head
             .policy
             .generation

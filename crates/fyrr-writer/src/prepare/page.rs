@@ -120,16 +120,8 @@ pub(super) async fn content_page(
     }
     let fragments = rows.columns.fragments(&page).await?;
     let quarantined_count = rows.quarantined.len() as u64;
-    // Only a committer that knows conditions and filter writes may read an
-    // envelope with one.
-    let conditional =
-        rows.filter_writes.is_some() || rows.documents.iter().any(|d| d.condition.is_some());
     let envelope = PreparedEnvelope {
-        schema_version: if conditional {
-            fyrr_core::envelope::CONDITIONAL_ENVELOPE_CONTRACT_VERSION
-        } else {
-            ENVELOPE_CONTRACT_VERSION
-        },
+        schema_version: ENVELOPE_CONTRACT_VERSION,
         envelope_id: id,
         namespace: config.namespace.name.clone(),
         source_id: source.id.clone(),

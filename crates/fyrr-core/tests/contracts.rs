@@ -88,25 +88,20 @@ fn a_manifest_and_a_policy_hold_only_valid_attribute_schemas() {
     }
 }
 
-/// Index options are read only from the versions an older build refuses: it
-/// would ignore them and build or expect the default index of each attribute.
+/// Index options are read at the one version of the manifest and of the policy.
 #[test]
-fn attribute_index_options_need_the_version_an_older_build_refuses() {
+fn attribute_index_options_are_read_at_the_one_version() {
     let options = json!({"title": {"index": false, "full_text": true,
         "analyzer": {"tokenizer": "unicode", "language": "german", "ascii_folding": true}}});
     let mut manifest = common::read_json("fixtures/contracts/content-manifest/manifest.json");
     manifest["attributes"] = json!({"title": "string", "count": "bytes"});
     assert!(parse::<ContentManifest>(&manifest).is_ok());
     manifest["attribute_indexes"] = options.clone();
-    assert!(parse::<ContentManifest>(&manifest).is_err());
-    manifest["schema_version"] = json!("5.0");
     assert!(parse::<ContentManifest>(&manifest).is_ok());
     let mut policy = common::read_json("fixtures/contracts/policy-artifact/valid.json");
     policy["settings"]["attributes"] = json!({"title": "string", "count": "bytes"});
     assert!(parse::<PolicyArtifact>(&policy).is_ok());
     policy["settings"]["attribute_indexes"] = options;
-    assert!(parse::<PolicyArtifact>(&policy).is_err());
-    policy["schema_version"] = json!("4.0");
     assert!(parse::<PolicyArtifact>(&policy).is_ok());
     // An option is of a declared attribute, differs from the default and is one
     // its type can have: a `bytes` has no index and a number no text index.
@@ -153,11 +148,10 @@ fn attribute_index_options_need_the_version_an_older_build_refuses() {
     }
 }
 
-/// Named vector attributes are read only from the versions an older build
-/// refuses: it would not know their columns and indexes. A namespace that
-/// declares none writes no entry, so that an older one keeps its bytes.
+/// Named vector attributes are read at the one version of the manifest and of
+/// the policy. A namespace that declares none writes no entry.
 #[test]
-fn vector_attributes_need_the_version_an_older_build_refuses() {
+fn vector_attributes_are_read_at_the_one_version() {
     let manifest = common::read_json("fixtures/contracts/content-manifest/manifest.json");
     let policy = common::read_json("fixtures/contracts/policy-artifact/valid.json");
     let vectors =
@@ -165,12 +159,10 @@ fn vector_attributes_need_the_version_an_older_build_refuses() {
     let mut manifest = manifest;
     manifest["attributes"] = json!({"title": "string"});
     manifest["vectors"] = vectors.clone();
-    assert!(parse::<ContentManifest>(&manifest).is_err());
-    manifest["schema_version"] = json!("5.0");
     let kept = parse::<ContentManifest>(&manifest).unwrap();
     assert_eq!(serde_json::to_value(&kept).unwrap()["vectors"], vectors);
     // A source that is no `string` attribute, a name an attribute has and a
-    // dimension the model does not have are refused whatever the version.
+    // dimension the model does not have are refused whatever else is set.
     for bad in [
         json!({"v": {"dimensions": 1024, "from": "missing"}}),
         json!({"title": {"dimensions": 8}}),
@@ -195,8 +187,6 @@ fn vector_attributes_need_the_version_an_older_build_refuses() {
     policy["settings"]["write_api"] = json!({});
     policy["settings"]["attributes"] = json!({"title": "string"});
     policy["settings"]["vectors"] = vectors;
-    assert!(parse::<PolicyArtifact>(&policy).is_err());
-    policy["schema_version"] = json!("4.0");
     assert!(parse::<PolicyArtifact>(&policy).is_ok());
     // Without any, there is no entry.
     let plain = common::read_json("fixtures/contracts/content-manifest/manifest.json");
@@ -204,32 +194,22 @@ fn vector_attributes_need_the_version_an_older_build_refuses() {
     assert!(written.get("vectors").is_none());
 }
 
-/// Token positions in the full-text index are read only from the versions an
-/// older build refuses: it would search the positional index as a positionless
-/// one. Without them, the manifest and the policy keep their versions.
+/// Token positions in the full-text index are read at the one version of the
+/// manifest and of the policy.
 #[test]
-fn token_positions_need_the_version_an_older_build_refuses() {
+fn token_positions_are_read_at_the_one_version() {
     let mut manifest = common::read_json("fixtures/contracts/content-manifest/manifest.json");
     manifest["fts"]["with_position"] = json!(true);
-    assert!(parse::<ContentManifest>(&manifest).is_err());
-    manifest["schema_version"] = json!("5.0");
     assert!(parse::<ContentManifest>(&manifest).is_ok());
     let mut policy = common::read_json("fixtures/contracts/policy-artifact/valid.json");
     policy["settings"]["fts"]["with_position"] = json!(true);
-    assert!(parse::<PolicyArtifact>(&policy).is_err());
-    policy["schema_version"] = json!("4.0");
-    let positional = parse::<PolicyArtifact>(&policy).unwrap();
-    assert_eq!(
-        positional.current_version(),
-        fyrr_core::publication::INDEXED_POLICY_CONTRACT_VERSION
-    );
+    assert!(parse::<PolicyArtifact>(&policy).is_ok());
 }
 
-/// A metric other than cosine or a 32-bit element type is read only from the
-/// versions an older build refuses: it would search and write cosine and 16-bit
-/// floats. The defaults are no entry, so that an older namespace keeps its bytes.
+/// A metric other than cosine or a 32-bit element type is read at the one
+/// version of the manifest and of the policy. The defaults are no entry.
 #[test]
-fn a_vector_metric_and_element_type_need_the_version_an_older_build_refuses() {
+fn a_vector_metric_and_element_type_are_read_at_the_one_version() {
     let manifest = common::read_json("fixtures/contracts/content-manifest/manifest.json");
     let policy = common::read_json("fixtures/contracts/policy-artifact/valid.json");
     for (key, value) in [
@@ -239,23 +219,15 @@ fn a_vector_metric_and_element_type_need_the_version_an_older_build_refuses() {
     ] {
         let mut manifest = manifest.clone();
         manifest[key] = json!(value);
-        assert!(
-            parse::<ContentManifest>(&manifest).is_err(),
-            "{key} {value}"
-        );
-        manifest["schema_version"] = json!("5.0");
         let kept = parse::<ContentManifest>(&manifest).unwrap();
         assert_eq!(serde_json::to_value(&kept).unwrap()[key], json!(value));
         let mut policy = policy.clone();
         policy["settings"][key] = json!(value);
-        assert!(parse::<PolicyArtifact>(&policy).is_err(), "{key} {value}");
-        policy["schema_version"] = json!("4.0");
         assert!(parse::<PolicyArtifact>(&policy).is_ok(), "{key} {value}");
     }
     // Only the names the pinned index supports are spelled.
     for (key, value) in [("dense_metric", "hamming"), ("dense_element", "f64")] {
         let mut manifest = manifest.clone();
-        manifest["schema_version"] = json!("5.0");
         manifest[key] = json!(value);
         assert!(
             parse::<ContentManifest>(&manifest).is_err(),
@@ -268,11 +240,9 @@ fn a_vector_metric_and_element_type_need_the_version_an_older_build_refuses() {
     assert!(written.get("dense_metric").is_none() && written.get("dense_element").is_none());
 }
 
-/// A connector namespace has its columns, and they are read only from the
-/// version an older build refuses, which would read their fields as null. A
-/// namespace without them is refused.
+/// A connector namespace has its typed columns; one without them is refused.
 #[test]
-fn connector_columns_need_the_version_an_older_build_refuses() {
+fn a_connector_namespace_needs_its_columns() {
     let mut policy = common::read_json("fixtures/contracts/policy-artifact/valid.json");
     // A namespace written through the API declares what it likes.
     assert!(parse::<PolicyArtifact>(&policy).is_ok());
@@ -281,46 +251,45 @@ fn connector_columns_need_the_version_an_older_build_refuses() {
         .unwrap()
         .remove("write_api");
     policy["settings"]["attributes"] = json!({"title": "string", "team": "string"});
-    policy["schema_version"] = json!("4.0");
     assert!(parse::<PolicyArtifact>(&policy).is_err(), "no columns");
     policy["settings"]["attributes"] = json!({"title": "string", "team": "string",
         "status": "string", "labels": {"array": "string"}, "created_at": "datetime"});
     assert!(parse::<PolicyArtifact>(&policy).is_ok());
-    policy["schema_version"] = json!("3.1");
-    assert!(
-        parse::<PolicyArtifact>(&policy).is_err(),
-        "the columns under 3.1"
-    );
-    let settings = parse::<PolicyArtifact>(&with_version(&policy, "4.0"))
-        .unwrap()
-        .settings;
-    assert!(settings.needs_newer_build());
 }
 
-/// A build that does not know the switch would ignore it and write, so a frozen
-/// policy is a version that it refuses.
+/// A frozen policy is read and written at the one version of the policy.
 #[test]
-fn a_frozen_policy_is_a_version_that_an_older_build_refuses() {
+fn a_frozen_policy_is_read_at_the_one_version() {
     let mut policy = common::read_json("fixtures/contracts/policy-artifact/valid.json");
     policy["read_only"] = json!(true);
-    assert!(
-        parse::<PolicyArtifact>(&policy).is_err(),
-        "the flag under 3.1"
-    );
-    policy["schema_version"] = json!("4.0");
     let frozen = parse::<PolicyArtifact>(&policy).unwrap();
     assert!(frozen.read_only);
-    // Written as the content decides, and read back.
-    let mut stamped = frozen.clone();
-    stamped.schema_version = stamped.current_version();
-    assert_eq!(stamped.schema_version.to_string(), "4.0");
-    stamped.read_only = false;
-    stamped.schema_version = stamped.current_version();
-    assert_eq!(
-        stamped.schema_version,
-        <PolicyArtifact as Contract>::VERSION
+    assert_eq!(frozen.schema_version, <PolicyArtifact as Contract>::VERSION);
+    assert!(parse::<PolicyArtifact>(&serde_json::to_value(&frozen).unwrap()).is_ok());
+}
+
+/// The majors that earlier builds wrote for plain documents are refused, as
+/// every other major but the one of the contract.
+#[test]
+fn the_earlier_majors_of_the_manifest_the_policy_and_the_envelope_are_refused() {
+    let manifest = common::read_json("fixtures/contracts/content-manifest/manifest.json");
+    let error = parse::<ContentManifest>(&with_version(&manifest, "4.1")).unwrap_err();
+    assert!(
+        matches!(error, ContractError::UnsupportedMajor { .. }),
+        "{error}"
     );
-    assert!(parse::<PolicyArtifact>(&serde_json::to_value(&stamped).unwrap()).is_ok());
+    let policy = common::read_json("fixtures/contracts/policy-artifact/valid.json");
+    let error = parse::<PolicyArtifact>(&with_version(&policy, "3.1")).unwrap_err();
+    assert!(
+        matches!(error, ContractError::UnsupportedMajor { .. }),
+        "{error}"
+    );
+    let envelope = common::read_json("fixtures/contracts/prepared-envelope/content.json");
+    let error = parse::<PreparedEnvelope>(&with_version(&envelope, "5.0")).unwrap_err();
+    assert!(
+        matches!(error, ContractError::UnsupportedMajor { .. }),
+        "{error}"
+    );
 }
 
 #[test]
@@ -414,7 +383,7 @@ fn add_future_fields(value: &mut Value) {
 
 /// A version whose major this build does not read.
 fn unread_major<T: Contract>() -> String {
-    format!("{}.0", T::VERSION.major + 1 + T::ALSO_READS.len() as u16)
+    format!("{}.0", T::VERSION.major + 1)
 }
 
 fn unknown_major_rejected<T: Contract + std::fmt::Debug>() -> usize {
@@ -831,23 +800,18 @@ fn semantic_violations_are_refused_without_echoing_values() {
         "envelope ID must follow its derivation"
     );
 
-    // A condition is read only from the version an older committer refuses.
+    // A condition and a write by filter are read at the one version.
     let mut conditional = common::read_json("fixtures/contracts/prepared-envelope/content.json");
     conditional["payload"]["documents"][0]["condition"] =
         json!({"field": "price", "op": "lt", "value": 1});
-    assert!(parse::<PreparedEnvelope>(&conditional).is_err());
-    conditional["schema_version"] = json!("6.0");
     assert!(parse::<PreparedEnvelope>(&conditional).is_ok());
 
-    // So is a write by filter.
     let mut by_filter = common::read_json("fixtures/contracts/prepared-envelope/content.json");
     by_filter["payload"]["filter_writes"] = json!({
         "source_revision": "rev-1",
         "revision_order": 1,
         "delete": {"field": "price", "op": "lt", "value": 1},
     });
-    assert!(parse::<PreparedEnvelope>(&by_filter).is_err());
-    by_filter["schema_version"] = json!("6.0");
     assert!(parse::<PreparedEnvelope>(&by_filter).is_ok());
 
     let base_artifact = common::read_json("fixtures/contracts/identity-artifact/artifact.json");

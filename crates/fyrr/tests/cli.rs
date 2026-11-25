@@ -1366,22 +1366,16 @@ fn a_namespace_stored_by_an_earlier_fyrr_is_refused_by_name() {
     ]);
     std::fs::write(&head_path, &current_head).unwrap();
 
-    // A current head over a policy that v0.1.1 wrote (2.2), then over a policy 3.1
-    // without the connector columns.
+    // A current head over a policy that v0.1.1 wrote (2.2), then over a current
+    // policy stamped with the plain major 3.1 that main wrote before this build.
     let mut head: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&head_path).unwrap()).unwrap();
     let policy_path = namespace.join(head["policy"]["object"].as_str().unwrap());
     let current: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&policy_path).unwrap()).unwrap();
-    let mut without_columns = current.clone();
-    without_columns["schema_version"] = "3.1".into();
-    let settings = without_columns["settings"].as_object_mut().unwrap();
-    settings.remove("attributes");
-    settings.remove("attribute_indexes");
-    for bytes in [
-        old_policy,
-        serde_json::to_vec_pretty(&without_columns).unwrap(),
-    ] {
+    let mut plain = current.clone();
+    plain["schema_version"] = "3.1".into();
+    for bytes in [old_policy, serde_json::to_vec_pretty(&plain).unwrap()] {
         std::fs::write(&policy_path, &bytes).unwrap();
         head["policy"]["digest"] = fyrr_core::limits::digest(&bytes).into();
         std::fs::write(&head_path, serde_json::to_vec_pretty(&head).unwrap()).unwrap();

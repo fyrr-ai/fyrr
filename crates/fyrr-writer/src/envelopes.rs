@@ -38,7 +38,7 @@ async fn applied_page(
     let mut cut = false;
     while let Some(publication) = chain.try_next().await? {
         cut = publication.previous_publication_id.is_some();
-        evidence = evidence.or(publication.envelope_evidence);
+        evidence.get_or_insert(publication.envelope_evidence);
         applied.extend(
             publication
                 .envelope_ids

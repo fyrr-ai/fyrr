@@ -180,10 +180,10 @@ pub(crate) async fn published_evidence(
             .map(|id| format!("publications/{id}.json"));
         // The evidence covers this publication and every older one. A
         // predecessor this process holds is cheaper than its checkpoint.
-        if let Some(evidence) = publication.envelope_evidence
-            && next
-                .as_ref()
-                .is_none_or(|path| known.as_ref().is_none_or(|known| known.manifest != *path))
+        let evidence = publication.envelope_evidence;
+        if next
+            .as_ref()
+            .is_none_or(|path| known.as_ref().is_none_or(|known| known.manifest != *path))
             && let Some(checkpoint) =
                 read_checkpoint(store.as_ref(), &root, &evidence.checkpoint).await?
         {
@@ -1096,7 +1096,7 @@ mod evidence_tests {
             applied_envelope_ids: applied.clone(),
             rejected_envelope_ids: ids('b', 1),
         };
-        manifest.envelope_evidence = Some(EnvelopeEvidence {
+        manifest.envelope_evidence = EnvelopeEvidence {
             checkpoint: crate::prepare::put_generation(
                 store.as_ref(),
                 &root,
@@ -1108,7 +1108,7 @@ mod evidence_tests {
             .unwrap(),
             applied_since: ids('c', since),
             rejected_since: Vec::new(),
-        });
+        };
         store
             .put(
                 &Path::from(format!("{root}/publications/pub-000042.json")),
@@ -1155,10 +1155,7 @@ mod evidence_tests {
         )
         .await
         .unwrap();
-        assert_eq!(
-            carried.checkpoint,
-            manifest.envelope_evidence.as_ref().unwrap().checkpoint
-        );
+        assert_eq!(carried.checkpoint, manifest.envelope_evidence.checkpoint);
         assert_eq!(carried.applied_since.len(), publication::CHECKPOINT_IDS - 1);
         let receipts = ids('e', 2);
         let rolled = publication::envelope_evidence(
@@ -1204,9 +1201,7 @@ mod evidence_tests {
         next.sequence = manifest.sequence + 1;
         next.previous_publication_id = Some(manifest.publication_id.clone());
         next.envelope_ids = ids('f', 1);
-        let mut evidence = next.envelope_evidence.clone().unwrap();
-        evidence.checkpoint.object = "evidence/missing.json".into();
-        next.envelope_evidence = Some(evidence);
+        next.envelope_evidence.checkpoint.object = "evidence/missing.json".into();
         store
             .put(
                 &Path::from(format!("{root}/publications/pub-000043.json")),
@@ -1235,18 +1230,12 @@ mod evidence_tests {
     async fn a_missing_checkpoint_is_read_from_the_manifests_and_a_wrong_one_is_refused() {
         let (config, head, manifest, _) = namespace(3, 2).await;
         let (store, root) = namespace_store(&config).unwrap();
-        let pointer = manifest
-            .envelope_evidence
-            .as_ref()
-            .unwrap()
-            .checkpoint
-            .clone();
+        let pointer = manifest.envelope_evidence.checkpoint.clone();
         let mut older = manifest.clone();
         older.publication_id = "pub-000041".into();
         older.sequence = manifest.sequence - 1;
         older.previous_publication_id = None;
         older.envelope_ids = ids('9', 2);
-        older.envelope_evidence = None;
         store
             .put(
                 &Path::from(format!("{root}/publications/pub-000041.json")),
