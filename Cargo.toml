@@ -62,7 +62,10 @@ async-trait = "0.1"
 lance-index = { version = "=14.0.3", default-features = false }
 lance-core = { version = "=14.0.3", default-features = false }
 lance-io = { version = "=14.0.3", default-features = false }
-lance-linalg = { version = "=14.0.3", default-features = false }
+# `fp16kernels`: SIMD kernels for `f16` distances, where IVF training and re-encoding spend
+# most of their time (#319). Lance picks the kernel at run time. Needs a C compiler with
+# `_Float16` (GCC 12+ or Clang 6+).
+lance-linalg = { version = "=14.0.3", default-features = false, features = ["fp16kernels"] }
 httpdate = "=1.0.3"
 hmac = "0.13"
 constant_time_eq = "=0.6.1"
