@@ -140,10 +140,8 @@ count toward the 128, are filtered and sorted by like any other attribute, and
 are not stored in the document's metadata. A file cannot declare them with
 another type. The `title` also has a full-text index, so that a request can rank
 by it with [`query_attributes`](http-api.md#matching-tokens); an entry for
-`title` in `[namespace.attribute_indexes]` replaces that default. A namespace written through the API has none of them, and a
-namespace created before them keeps the fields in its documents' metadata, as
-it was written, and cannot be filtered by them. One created with the columns
-but before the index has no index on its `title`.
+`title` in `[namespace.attribute_indexes]` replaces that default. A namespace written through the API has none of them. A
+namespace created without them is refused: create it again.
 
 A `string`, number, `datetime` or `uuid` attribute gets a B-tree index, a
 `bool` a bitmap index and an array a label-list index. A `bytes` attribute has

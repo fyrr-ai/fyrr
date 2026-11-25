@@ -125,6 +125,9 @@ pub(crate) fn finish(result: Result<()>) -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("error: {error}");
+            if let Some(hint) = crate::storage::code_hint(error.as_str()) {
+                eprintln!("{hint}");
+            }
             ExitCode::from(exit::FAILURE)
         }
     }

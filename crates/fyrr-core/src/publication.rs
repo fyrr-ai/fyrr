@@ -16,8 +16,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::attributes::{
-    AttributeIndexes, AttributeSchema, VectorAttributes, check_indexes, check_schema,
-    check_vectors, has_connector_columns,
+    AttributeIndexes, AttributeSchema, VectorAttributes, check_indexes, check_schema, check_vectors,
 };
 use crate::config::{
     CompositionSettings, DenseElement, DenseMetric, NamespaceConfig, RerankSettings,
@@ -95,7 +94,7 @@ impl NamespaceSettings {
         !self.attribute_indexes.is_empty()
             || self.fts.with_position
             || self.fts.analyzer.is_some()
-            || (self.write_api.is_none() && has_connector_columns(&self.attributes))
+            || self.write_api.is_none()
             || !self.dense_metric.is_default()
             || !self.dense_element.is_default()
             || !self.vectors.is_empty()
@@ -175,6 +174,11 @@ pub struct RetiredSource {
     pub purged_at: Option<DateTime<Utc>>,
 }
 
+/// The message of a policy that is refused because its connector namespace
+/// lacks the typed connector columns: a namespace of v0.1.x or an earlier
+/// build. Readers map it to a named error.
+pub const CONNECTOR_COLUMNS_MISSING: &str = "connector_columns_missing";
+
 impl PolicyArtifact {
     /// Whether an older build would misread this policy.
     fn needs_newer_build(&self) -> bool {
@@ -199,6 +203,13 @@ impl Contract for PolicyArtifact {
     const ALSO_READS: &'static [u16] = &[INDEXED_POLICY_CONTRACT_VERSION.major];
     fn validate(&self) -> Result<(), String> {
         check_id("namespace", &self.namespace)?;
+        if self.settings.write_api.is_none()
+            && crate::attributes::CONNECTOR_COLUMNS
+                .iter()
+                .any(|(name, kind)| self.settings.attributes.get(*name) != Some(kind))
+        {
+            return Err(CONNECTOR_COLUMNS_MISSING.into());
+        }
         if self.needs_newer_build()
             && self.schema_version.major != INDEXED_POLICY_CONTRACT_VERSION.major
         {

@@ -1263,3 +1263,108 @@ fn every_writer_command_rejects_invalid_cross_field_configuration() {
     );
     assert_eq!(output.status.code(), Some(2));
 }
+
+/// A local root that releases before 0.2.0 wrote holds a lock file in it: the
+/// writer and the reader refuse it with `storage_root_old`, never with a
+/// generic storage error.
+#[test]
+#[cfg(feature = "writer")]
+fn a_local_root_written_before_0_2_0_is_refused_by_name() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = common::target_tmp().join(format!("old-root-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::fs::write(root.join(".fyrr-storage.lock"), b"").unwrap();
+    let config = temp_config(
+        "old-root",
+        &format!(
+            "[namespace]\nname='notes'\n[storage]\nuri='file://{}'\n[embedding]\nendpoint='http://127.0.0.1:9/v1'\nmodel='m'\ndimensions=1024\n[identity]\nstdio_user='me'\nstdio_readers=['usr:me']\nhashing_key={{env='FYRR_IDENTITY_KEY'}}\n",
+            root.display()
+        ),
+    );
+    let config = config_arg(&config);
+    for args in [
+        &["writer", "namespace", "create"][..],
+        &["writer", "status"],
+        &["reader", "check"],
+    ] {
+        let mut command = common::fyrr();
+        command
+            .env("FYRR_IDENTITY_KEY", "ab".repeat(32))
+            .args(["--config", &config])
+            .args(args);
+        let output = command.output().unwrap();
+        let (stdout, stderr) = text(&output);
+        assert!(!output.status.success(), "{stdout}{stderr}");
+        assert!(
+            stderr.contains("error: storage_root_old"),
+            "{args:?}: {stderr}"
+        );
+        assert!(
+            stderr.contains(".fyrr-storage.lock") && stderr.contains("v0.2.0"),
+            "{stderr}"
+        );
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// A connector namespace of v0.1.x has no typed connector columns, and its policy is
+/// 3.1: `writer namespace create` and `writer status` refuse it with
+/// `namespace_layout_old`, not with a generic authorization error.
+#[test]
+#[cfg(feature = "writer")]
+fn a_connector_namespace_without_the_typed_columns_is_refused_by_name() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = common::target_tmp().join(format!("old-layout-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let config = temp_config(
+        "old-layout",
+        &format!(
+            "[namespace]\nname='notes'\n[storage]\nuri='file://{}'\n[embedding]\nendpoint='http://127.0.0.1:9/v1'\nmodel='m'\ndimensions=1024\n[identity]\nstdio_user='me'\nstdio_readers=['usr:me']\nhashing_key={{env='FYRR_IDENTITY_KEY'}}\n",
+            root.display()
+        ),
+    );
+    let config = config_arg(&config);
+    let run = |args: &[&str]| {
+        let mut command = common::fyrr();
+        command
+            .env("FYRR_IDENTITY_KEY", "ab".repeat(32))
+            .args(["--config", &config])
+            .args(args);
+        let output = command.output().unwrap();
+        let (stdout, stderr) = text(&output);
+        (output.status.success(), format!("{stdout}{stderr}"))
+    };
+    assert!(run(&["writer", "namespace", "create"]).0);
+
+    // Rewrite the policy as v0.1.x wrote it: version 3.1, no connector columns.
+    let namespace = root.join("namespaces/notes");
+    let head_path = namespace.join("head.json");
+    let mut head: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&head_path).unwrap()).unwrap();
+    let policy_path = namespace.join(head["policy"]["object"].as_str().unwrap());
+    let mut policy: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&policy_path).unwrap()).unwrap();
+    policy["schema_version"] = "3.1".into();
+    let settings = policy["settings"].as_object_mut().unwrap();
+    settings.remove("attributes");
+    settings.remove("attribute_indexes");
+    let bytes = serde_json::to_vec_pretty(&policy).unwrap();
+    std::fs::write(&policy_path, &bytes).unwrap();
+    head["policy"]["digest"] = fyrr_core::limits::digest(&bytes).into();
+    std::fs::write(&head_path, serde_json::to_vec_pretty(&head).unwrap()).unwrap();
+
+    for args in [
+        &["writer", "namespace", "create"][..],
+        &["writer", "status"],
+    ] {
+        let (success, output) = run(args);
+        assert!(!success, "{args:?}: {output}");
+        assert!(
+            output.contains("error: namespace_layout_old") && output.contains("v0.2.0"),
+            "{args:?}: {output}"
+        );
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}

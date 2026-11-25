@@ -54,15 +54,6 @@ pub const CONNECTOR_COLUMNS: [(&str, AttributeType); 5] = [
     ("created_at", AttributeType::Datetime),
 ];
 
-/// Whether `schema` declares every [`CONNECTOR_COLUMNS`] column with its type:
-/// the layout of a connector namespace created with them. An older namespace
-/// declares none of them and keeps the fields in its documents' metadata.
-pub fn has_connector_columns(schema: &AttributeSchema) -> bool {
-    CONNECTOR_COLUMNS
-        .iter()
-        .all(|(name, kind)| schema.get(*name) == Some(kind))
-}
-
 /// The type of an attribute.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]

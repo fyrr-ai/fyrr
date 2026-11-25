@@ -4,7 +4,7 @@ use object_store::{ObjectStoreExt, UpdateVersion};
 use std::collections::BTreeSet;
 use std::fs::OpenOptions;
 use std::io::ErrorKind;
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::PermissionsExt;
 use std::process::{Child, Command};
 use std::time::Duration;
 
@@ -546,26 +546,6 @@ async fn local_store_e_tags_never_repeat_and_conditions_fail_closed() {
         "{untagged:?}"
     );
 
-    // A tag is only compared for equality, so one issued by a release that
-    // numbered versions from a counter stays valid for its holder.
-    let numbered = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(&file)
-        .unwrap();
-    set_version(&numbered, 7).unwrap();
-    assert_eq!(store.head(&path).await.unwrap().e_tag, Some(version_tag(7)));
-    previous = store
-        .put_opts(
-            &path,
-            payload(401, 0).into(),
-            PutMode::Update(version(Some(version_tag(7)))).into(),
-        )
-        .await
-        .unwrap()
-        .e_tag;
-    assert!(seen.insert(previous.clone().unwrap()));
-    assert_eq!(store.head(&path).await.unwrap().e_tag, previous);
     // A control object whose tag disappeared is not an untagged Lance file;
     // reads must fail rather than invent an e-tag.
     let file = store.inner.path_to_filesystem(&path).unwrap();
@@ -587,18 +567,6 @@ async fn local_store_root_is_private_and_behaves_like_s3() {
         let mode = std::fs::metadata(directory).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o700, "{}", directory.display());
     }
-    // An earlier release's first opener, killed after it initialized its
-    // version counter and before it wrote its marker, left an empty lock file.
-    let initial = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(root.join(LOCK))
-        .unwrap();
-    set_version(&initial, 0).unwrap();
-    initial.sync_all().unwrap();
-    drop(initial);
     for name in ["b/2", "a/1", "c", "b/1"] {
         let path = at(&store, &format!("namespaces/ns/{name}"));
         store
@@ -626,7 +594,7 @@ async fn local_store_root_is_private_and_behaves_like_s3() {
             "namespaces/ns/b/2",
             "namespaces/ns/c"
         ],
-        "sorted like S3, without the lock file"
+        "sorted like S3"
     );
     let delimited = store
         .list_with_delimiter(Some(&at(&store, "namespaces/ns")))
@@ -641,9 +609,16 @@ async fn local_store_root_is_private_and_behaves_like_s3() {
             .collect::<Vec<_>>(),
         ["namespaces/ns/a", "namespaces/ns/b"]
     );
-    // The root lists like a bucket: the lock file and the staging directory
-    // are neither objects nor prefixes.
-    assert!(root.join(STAGES).is_dir() && root.join(LOCK).is_file());
+    // The root lists like a bucket: the staging directory is neither an
+    // object nor a prefix. The earlier release opened the root lock file with
+    // `O_CREAT` in every put, so the puts above leaving no file means that none
+    // of them opened it; the test store does not record opens.
+    let mut entries: Vec<_> = std::fs::read_dir(&root)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect();
+    entries.sort();
+    assert_eq!(entries, [STAGES, "namespaces"]);
     let top = store.list_with_delimiter(None).await.unwrap();
     assert!(top.objects.is_empty());
     assert_eq!(
@@ -660,12 +635,9 @@ async fn local_store_root_is_private_and_behaves_like_s3() {
         .unwrap();
     assert!(empty.is_empty());
     let gone = at(&store, "namespaces/ns/c");
-    // Abandoned staging files: one of this layout, one of the single-file
-    // layout of earlier releases.
-    for abandoned in [root.join(STAGES).join("abandoned"), root.join(LEGACY_STAGE)] {
-        std::fs::write(&abandoned, b"retired private content").unwrap();
-        std::fs::set_permissions(&abandoned, std::fs::Permissions::from_mode(0o600)).unwrap();
-    }
+    let abandoned = root.join(STAGES).join("abandoned");
+    std::fs::write(&abandoned, b"retired private content").unwrap();
+    std::fs::set_permissions(&abandoned, std::fs::Permissions::from_mode(0o600)).unwrap();
     let staged_listing: Vec<_> = store.list(None).try_collect().await.unwrap();
     assert!(
         staged_listing
@@ -674,7 +646,7 @@ async fn local_store_root_is_private_and_behaves_like_s3() {
     );
     store.delete(&gone).await.unwrap();
     assert!(
-        staged(&root).is_empty() && !root.join(LEGACY_STAGE).exists(),
+        staged(&root).is_empty(),
         "purge must reap abandoned staged content"
     );
     store.delete(&gone).await.unwrap();
@@ -759,13 +731,6 @@ async fn local_store_root_is_private_and_behaves_like_s3() {
     let link = root.with_file_name("link");
     std::os::unix::fs::symlink(&root, &link).unwrap();
     assert!(LocalStore::open(&link).is_err());
-    // So must the lock file; a symlink there is never followed.
-    let lock = root.join(LOCK);
-    std::fs::remove_file(&lock).unwrap();
-    std::os::unix::fs::symlink(root.join("elsewhere"), &lock).unwrap();
-    let refused = store.put(&gone, b"c".to_vec().into()).await;
-    assert!(refused.is_err());
-    assert!(!root.join("elsewhere").exists());
     std::fs::remove_dir_all(scratch_root(&root)).unwrap();
 }
 
@@ -904,104 +869,19 @@ async fn local_store_recreated_objects_never_match_earlier_tags() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
-/// What a release that numbered versions from a counter on the lock file
-/// does before every mutation: a non-empty lock file must carry the counter.
-fn counter_release_refuses(root: &std::path::Path) -> bool {
-    let lock = File::open(root.join(LOCK)).unwrap();
-    lock.metadata().unwrap().len() > 0 && read_version(&lock).is_err()
-}
-
-/// A root written by a release with a version counter is taken over by the
-/// first mutation: the counter is removed, so that release fails closed from
-/// then on, and the objects and tags it wrote stay valid.
-#[tokio::test]
-async fn local_store_takes_a_root_over_from_the_version_counter() {
-    let root = scratch("handover");
-    let store = LocalStore::open(&root).unwrap();
-    let path = object(&store);
-    // The earlier release's root: a marked lock file with its counter at 5,
-    // and an object carrying version 5.
-    let lock = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(root.join(LOCK))
-        .unwrap();
-    std::io::Write::write_all(&mut &lock, b"fyrr local version counter\n").unwrap();
-    set_version(&lock, 5).unwrap();
-    drop(lock);
-    let file = store.inner.path_to_filesystem(&path).unwrap();
-    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-    let old = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&file)
-        .unwrap();
-    std::io::Write::write_all(&mut &old, b"written before").unwrap();
-    set_version(&old, 5).unwrap();
-    drop(old);
-    assert!(!counter_release_refuses(&root));
-
-    // Reads need no handover and report the old version as the tag.
-    let held = store.head(&path).await.unwrap().e_tag;
-    assert_eq!(held, Some(version_tag(5)));
-    assert!(!counter_release_refuses(&root));
-
-    // The first mutation hands the root over; the old tag still matches once.
-    let other = at(&store, "namespaces/ns/other.json");
-    store.put(&other, b"other".to_vec().into()).await.unwrap();
-    assert!(counter_release_refuses(&root));
-    let updated = store
-        .put_opts(
-            &path,
-            b"written after".to_vec().into(),
-            PutMode::Update(version(held.clone())).into(),
-        )
-        .await
-        .unwrap()
-        .e_tag;
-    assert_ne!(updated, held);
-    let stale = store
-        .put_opts(
-            &path,
-            b"stale holder".to_vec().into(),
-            PutMode::Update(version(held)).into(),
-        )
-        .await;
-    assert!(
-        matches!(stale, Err(Error::Precondition { .. })),
-        "{stale:?}"
-    );
-
-    // A root that lost its lock file needs no counter to stay safe: writes
-    // continue with new tags, and the lock file is marked again.
-    std::fs::remove_file(root.join(LOCK)).unwrap();
-    for store in [store.clone(), LocalStore::open(&root).unwrap()] {
-        let written = store
-            .put(&other, b"again".to_vec().into())
-            .await
-            .unwrap()
-            .e_tag;
-        assert_ne!(written, updated);
-        assert!(counter_release_refuses(&root));
+/// A root that a release serialized by a root lock may still write to is
+/// refused.
+#[test]
+fn local_store_refuses_a_root_of_a_release_that_locked_the_root() {
+    for name in OLD_ROOT_FILES {
+        let root = scratch("old-root");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::write(root.join(name), b"").unwrap();
+        let error = LocalStore::open(&root).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Unsupported, "{error}");
+        std::fs::remove_dir_all(root).unwrap();
     }
-    assert_eq!(store.head(&path).await.unwrap().e_tag, updated);
-    assert_eq!(
-        store.get(&path).await.unwrap().bytes().await.unwrap(),
-        b"written after".as_slice()
-    );
-
-    // A new root is marked by its first mutation, before any object exists.
-    let fresh = scratch("handover-fresh");
-    let store = LocalStore::open(&fresh).unwrap();
-    store
-        .put(&object(&store), b"first".to_vec().into())
-        .await
-        .unwrap();
-    assert!(counter_release_refuses(&fresh));
-    std::fs::remove_dir_all(fresh).unwrap();
-    std::fs::remove_dir_all(root).unwrap();
 }
 
 /// A staging file is abandoned exactly when nobody holds its lock. The

@@ -70,19 +70,7 @@ async fn repeat_create(
     settings: &NamespaceSettings,
 ) -> Result<()> {
     let policy: PolicyArtifact = fyrr_reader::storage::artifact(store, root, &head.policy).await?;
-    let mut asked = settings.clone();
-    // A namespace created before the connector columns has none of them, and
-    // a file that asks for them again still repeats its creation.
-    if policy.settings.write_api.is_none()
-        && !fyrr_core::attributes::has_connector_columns(&policy.settings.attributes)
-    {
-        for (name, _) in fyrr_core::attributes::CONNECTOR_COLUMNS {
-            if !policy.settings.attributes.contains_key(name) {
-                asked.attributes.remove(name);
-            }
-        }
-    }
-    if policy.settings == asked {
+    if policy.settings == *settings {
         Ok(())
     } else {
         Err(WriterError::NamespaceSettingsFixed)
@@ -95,7 +83,7 @@ pub async fn create(config: &Config) -> Result<()> {
 
 /// `create` with the settings the caller chose, which a configuration file
 /// only supplies the defaults of.
-pub async fn create_with(config: &Config, settings: NamespaceSettings) -> Result<()> {
+pub(crate) async fn create_with(config: &Config, settings: NamespaceSettings) -> Result<()> {
     let (store, root) = namespace_store(config)?;
     if let Some(head) = fyrr_reader::storage::optional_head(config).await? {
         return repeat_create(store.as_ref(), &root, &head, &settings).await;

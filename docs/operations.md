@@ -246,6 +246,14 @@ rejection contracts are `5.0` (an envelope with a write condition is `6.0`, whic
 for the default BGE-M3 model. Republish older namespaces before using this
 build.
 
+v0.2.0 refuses every local storage root that v0.1.x or an earlier build wrote,
+with `storage_root_old`: the root holds `.fyrr-storage.lock` or
+`.fyrr-storage.stage`, which this build never creates. Recreate its namespaces
+in a new root with v0.2.0. Remove the two files only once no older writer runs.
+A connector namespace of v0.1.x has no typed connector columns and is refused
+with `namespace_layout_old`, in any root: create it again with v0.2.0 and sync
+its sources. The command line prints what to do under `error: <code>`.
+
 Configuration schema `4.0` changed the default retrieval policy to
 `dense_weight = 0.5` and `lexical_candidates = 200`. A namespace created from
 a file that omits them gets those values. An existing namespace keeps the

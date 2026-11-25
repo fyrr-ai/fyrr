@@ -13,6 +13,13 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   times the dense lane depth, which for one-bit codes grows with the rows the
   probes inspect. A configuration that sets `{ mode = "legacy" }` is refused.
   See [tuning](docs/tuning.md).
+- **Breaking (v0.2.0):** every local storage root written by v0.1.x or an
+  earlier build (it holds `.fyrr-storage.lock` or `.fyrr-storage.stage`) is
+  refused with `storage_root_old`. Recreate its namespaces in a new root with
+  v0.2.0; remove those files only once no older writer runs. A connector
+  namespace of v0.1.x (no typed connector columns) is refused with
+  `namespace_layout_old`: create it again. A local put no longer opens a root
+  lock file. See [operations](docs/operations.md#upgrades).
 - The excerpt of a hit in a namespace with an `[namespace.analyzer]`, or with
   `fts_stem`, `fts_remove_stop_words` or `fts_ascii_folding`, is chosen with the
   tokens of its full-text index, as the lexical lane and `highlights` already
@@ -23,8 +30,9 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   `labels` (an array of `string`) and `created_at` (`datetime`) of its
   documents as typed columns, declared with the namespace like the attributes
   of the file, so a filter or `order_by` can use them. `search`, `fetch` and
-  `list_filters` return the same fields as before. A namespace created before
-  keeps its layout and works as it did. A manifest of the new layout is
+  `list_filters` return the same fields as before. A connector namespace
+  created without the columns (v0.1.x, or an earlier build) is refused:
+  recreate it with v0.2.0. A manifest of the new layout is
   content-manifest 5.0 and its policy artifact 4.0, the versions of attribute
   index options and of the read-only switch, so an older build refuses it
   instead of reading nulls. The
@@ -34,7 +42,7 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   typed attributes (#225) and this change can be refused: one that declares the
   five connector names with exactly their types, one at the limit of declared
   attributes (the five count), or one that sets one of the five to another type.
-  Released v0.1.x has no custom attributes and is unaffected. See
+  Namespaces and roots of v0.1.x are refused, as above. See
   [tuning](docs/tuning.md#namespaceattributes).
 
 ### Added

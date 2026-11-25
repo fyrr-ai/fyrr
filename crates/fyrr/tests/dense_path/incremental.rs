@@ -262,71 +262,6 @@ async fn incremental_connector_title_has_a_full_text_index_on_storage() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
-/// A namespace created before the connector columns keeps its layout: its
-/// documents keep the fields in their metadata, an older publication version
-/// stays, and the tools return the fields as before. Creating it again with a
-/// file that asks for the columns repeats it.
-#[tokio::test]
-#[ignore = "real worker and local storage; scripts/ci"]
-async fn incremental_namespace_created_before_the_connector_columns_keeps_its_layout_on_storage() {
-    let setup = setup();
-    for row in 8..768 {
-        std::fs::remove_file(setup.1.join("sources").join(format!("{row}.txt"))).unwrap();
-    }
-    let (worker, commit, root) = fixture_host_created(8, true, "legacy-fixture", setup, |config| {
-        let loaded = fyrr_core::config::load(config).unwrap();
-        let mut settings = fyrr_writer::commit::namespace_settings(&loaded.config);
-        for (name, _) in fyrr_core::attributes::CONNECTOR_COLUMNS {
-            settings.attributes.remove(name);
-        }
-        settings.attribute_indexes.remove("title");
-        let config = loaded.config.clone();
-        std::thread::spawn(move || {
-            tokio::runtime::Runtime::new()
-                .unwrap()
-                .block_on(fyrr_writer::commit::create_with(&config, settings))
-                .unwrap();
-        })
-        .join()
-        .unwrap();
-    });
-    field_documents(&root);
-    sync_fields(&worker);
-    publish(&commit);
-
-    let batch = rows(&worker).await;
-    assert!(batch.column_by_name("title").is_none(), "no typed columns");
-    let metadata = fyrr_writer::apply::strings(&batch, "metadata_json").unwrap();
-    assert!(
-        (0..metadata.len()).any(|row| metadata.value(row).contains("Alpha")),
-        "the fields stay in the metadata"
-    );
-    let (_, manifest) = publication(&worker).await;
-    assert_eq!(manifest.schema_version.to_string(), "4.1");
-    command(&worker, &["writer", "namespace", "create"]);
-    // A title index the file asks for is not one the namespace has.
-    let text = std::fs::read_to_string(&worker).unwrap();
-    std::fs::write(
-        &worker,
-        format!("{text}\n[namespace.attribute_indexes.title]\nfull_text = true\n"),
-    )
-    .unwrap();
-    let refused = host_command(&worker)
-        .args(["writer", "namespace", "create"])
-        .output()
-        .unwrap();
-    assert!(!refused.status.success());
-    assert!(
-        String::from_utf8_lossy(&refused.stderr).contains("namespace_settings_fixed"),
-        "{refused:?}"
-    );
-    std::fs::write(&worker, text).unwrap();
-
-    // Filtering by the fields is what the new layout adds.
-    read_fields(&worker, json!({"field":"root_id","op":"eq","value":"a"}));
-    std::fs::remove_dir_all(root).unwrap();
-}
-
 pub(super) fn fixture() -> (PathBuf, PathBuf, FixtureRoot) {
     fixture_size(768)
 }
@@ -356,19 +291,7 @@ pub(super) fn fixture_host_at(
     namespace: &str,
     setup: (PathBuf, FixtureRoot),
 ) -> (PathBuf, PathBuf, FixtureRoot) {
-    fixture_host_created(documents, publish_initial, namespace, setup, |config| {
-        super::coordination::command(config, &["writer", "namespace", "create"]);
-    })
-}
-
-/// `fixture_host_at` with its own way to create the namespace.
-fn fixture_host_created(
-    documents: usize,
-    publish_initial: bool,
-    namespace: &str,
-    (config, root): (PathBuf, FixtureRoot),
-    create: impl FnOnce(&Path),
-) -> (PathBuf, PathBuf, FixtureRoot) {
+    let (config, root) = setup;
     for row in 768..documents {
         std::fs::write(
             root.join("sources").join(format!("{row}.txt")),
@@ -388,7 +311,7 @@ fn fixture_host_created(
         );
     std::fs::write(&config, format!("{text}\n[[sources]]\nid='incremental'\ntype='incremental-test'\npermissions='sync'\ndocument_max_bytes='64B'\n[sources.intervals]\npermissions='5m'\nmembers='5m'\n[sources.scope]\nfixture='{}'\n", root.join("input.json").display())).unwrap();
     input(&root, json!({"epoch":0}));
-    create(&config);
+    super::coordination::command(&config, &["writer", "namespace", "create"]);
     worker_sync(&config, &["allowed", "denied", "--full"]);
     let commit = committer_host(&config, &root);
     if publish_initial {

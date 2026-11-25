@@ -78,21 +78,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const VERSION: &str = "user.fyrr.version";
 
 const STORE: &str = "fyrr local storage";
-/// In the root, outside `namespaces/`, so no namespace listing returns it.
-/// Releases that serialized every mutation held a `flock` on this file and
-/// kept a version counter in its xattr. Nothing locks it any more, except
-/// once to take a root over from such a release.
-const LOCK: &str = ".fyrr-storage.lock";
-/// The content of a lock file that carries no version counter. Releases
-/// that numbered versions from a counter on this file refuse a non-empty
-/// lock file without one, so they cannot write beside this release.
-const NO_COUNTER: &[u8] = b"fyrr local storage lock; object tags are random\n";
+/// Files that releases before 0.2.0 kept in the root, which they serialized
+/// writes through. A root with one is refused with `ErrorKind::Unsupported`;
+/// a root where they cannot be checked for is refused with the error of the check.
+const OLD_ROOT_FILES: [&str; 2] = [".fyrr-storage.lock", ".fyrr-storage.stage"];
 /// The staging directory, outside all namespaces: one file per write in
 /// progress, named by the write's tag and locked by its writer.
 const STAGES: &str = ".fyrr-storage.stage.d";
-/// The single staging file of releases that staged under the root lock. One
-/// left behind by a killed writer is removed after the handover.
-const LEGACY_STAGE: &str = ".fyrr-storage.stage";
 /// How long a mutation polls for a `flock` before it fails without writing.
 /// Nothing is flushed under a lock, so a live holder is done in far less.
 /// Only time spent waiting for a lock counts; a slow system call does not.
@@ -257,6 +249,16 @@ impl LocalStore {
         }
         let directory = Arc::new(File::open(root)?);
         let metadata = directory.metadata()?;
+        // The markers are looked up in the directory this handle holds, so a
+        // root swapped meanwhile cannot pass. A marker found is `Unsupported`;
+        // a marker that cannot be checked is any other error, and refuses too.
+        for name in OLD_ROOT_FILES {
+            match rustix::fs::statat(&*directory, name, rustix::fs::AtFlags::SYMLINK_NOFOLLOW) {
+                Err(rustix::io::Errno::NOENT) => {}
+                Ok(_) => return Err(std::io::Error::from(ErrorKind::Unsupported)),
+                Err(error) => return Err(error.into()),
+            }
+        }
         Ok(Self {
             inner: Arc::new(LocalFileSystem::new().with_fsync(true)),
             root: Path::from_absolute_path(root).map_err(std::io::Error::other)?,
@@ -342,8 +344,7 @@ impl LocalStore {
                 .root_directory()
                 .map_err(|error| failure(&store.root_path, error))?;
             store
-                .hand_over(&root)
-                .and_then(|()| store.reap(&root))
+                .reap(&root)
                 .map_err(|error| failure(&store.root_path, error))?;
             #[cfg(feature = "test-store")]
             super::test_store::sync::acknowledged("cleanup", &store.root_path)
@@ -360,8 +361,9 @@ impl LocalStore {
 
     fn is_internal(&self, location: &Path) -> bool {
         location.prefix_match(&self.root).is_some_and(|mut rest| {
-            rest.next()
-                .is_some_and(|part| matches!(part.as_ref(), LOCK | STAGES | LEGACY_STAGE))
+            rest.next().is_some_and(|part| {
+                part.as_ref() == STAGES || OLD_ROOT_FILES.contains(&part.as_ref())
+            })
         })
     }
 
@@ -452,53 +454,6 @@ impl LocalStore {
         Ok(Place { chain, name, path })
     }
 
-    /// Makes sure no release that serialized mutations through the root lock
-    /// can write to this root: the lock file is non-empty and carries no
-    /// version counter, which such a release refuses at its counter check.
-    /// A root in that state costs one open and two reads here. Otherwise the
-    /// root lock is taken once, so that a mutation such a release has in
-    /// progress finishes first; then the counter is removed. The tags it
-    /// wrote stay valid, because a tag is only ever compared for equality.
-    fn hand_over(&self, root: &Directory) -> std::io::Result<()> {
-        let mut file = File::from(rustix::fs::openat(
-            &root.file,
-            LOCK,
-            OFlags::RDWR | OFlags::CREATE | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
-            Mode::RUSR | Mode::WUSR,
-        )?);
-        let meta = file.metadata()?;
-        if !meta.is_file()
-            || meta.uid() != rustix::process::getuid().as_raw()
-            || meta.mode() & 0o077 != 0
-        {
-            return Err(std::io::Error::other("storage lock is not private"));
-        }
-        let counted = match rustix::fs::fgetxattr(&file, VERSION, &mut [0u8; 0][..]) {
-            Ok(_) => true,
-            Err(rustix::io::Errno::NODATA) => false,
-            Err(error) => return Err(error.into()),
-        };
-        if meta.len() > 0 && !counted {
-            return Ok(());
-        }
-        lock_exclusive(&file)?;
-        let mut changed = false;
-        if file.metadata()?.len() == 0 {
-            file.write_all(NO_COUNTER)?;
-            changed = true;
-        }
-        match rustix::fs::fremovexattr(&file, VERSION) {
-            Ok(()) => changed = true,
-            Err(rustix::io::Errno::NODATA) => {}
-            Err(error) => return Err(error.into()),
-        }
-        if changed {
-            sync_file(&file, &root.path.join(LOCK))?;
-            root.sync()?;
-        }
-        Ok(())
-    }
-
     fn put_blocking(
         &self,
         location: &Path,
@@ -512,8 +467,6 @@ impl LocalStore {
         let root = self
             .root_directory()
             .map_err(|error| failure(&self.root_path, error))?;
-        self.hand_over(&root)
-            .map_err(|error| failure(&self.root_path.join(LOCK), error))?;
         let place = self.place(location, true)?;
         let io = |error| failure(&place.path, error);
         if !self.reaped.swap(true, std::sync::atomic::Ordering::SeqCst) {
@@ -857,16 +810,6 @@ impl LocalStore {
                 && entry.st_mode & 0o077 == 0
         };
         let foreign = || std::io::Error::other("staging object is not a private regular file");
-        // Releases that staged under the root lock cannot write after the
-        // handover, so their single staging file has no live writer.
-        match root.entry(LEGACY_STAGE)? {
-            Some(entry) if private(&entry) => {
-                root.unlink(LEGACY_STAGE)?;
-                root.sync()?;
-            }
-            Some(_) => return Err(foreign()),
-            None => {}
-        }
         let Some(stages) = self.stages(root, false)? else {
             return Ok(());
         };
@@ -1041,7 +984,6 @@ impl LocalStore {
             let place = store.place(&location, false)?;
             let io = |error| failure(&place.path, error);
             let (root, parent) = (&place.chain[0], place.parent());
-            store.hand_over(root).map_err(io)?;
             store.reap(root).map_err(io)?;
             let Some(key) = store.key(&place).map_err(io)? else {
                 return Err(io(ErrorKind::NotFound.into()));
@@ -1073,7 +1015,6 @@ impl LocalStore {
         };
         let io = |error| failure(&place.path, error);
         let (root, parent) = (&place.chain[0], place.parent());
-        self.hand_over(root).map_err(io)?;
         if self.cleanup_directories.is_none()
             || !self.reaped.swap(true, std::sync::atomic::Ordering::SeqCst)
         {
@@ -1359,7 +1300,7 @@ impl ObjectStore for LocalStore {
         let prefix = prefix.unwrap_or(&self.root);
         let mut result = self.inner.list_with_delimiter(Some(prefix)).await?;
         result.objects = self.current(result.objects)?;
-        // The staging directory is no object prefix, like the lock file.
+        // Neither the staging directory nor a file of an older release is an object prefix.
         result
             .common_prefixes
             .retain(|prefix| !self.is_internal(prefix));

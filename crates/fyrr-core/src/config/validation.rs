@@ -298,14 +298,10 @@ pub(crate) fn namespace_settings(
     }
     if namespace.write_api.is_none() {
         for (name, kind) in crate::attributes::CONNECTOR_COLUMNS {
-            if namespace
-                .attributes
-                .get(name)
-                .is_some_and(|got| *got != kind)
-            {
+            if namespace.attributes.get(name) != Some(&kind) {
                 error(
                     "namespace.attributes",
-                    format!("{name} is a connector column and has no other type"),
+                    format!("the connector column {name} is missing or has another type"),
                 );
             }
         }

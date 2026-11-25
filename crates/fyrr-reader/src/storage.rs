@@ -265,6 +265,12 @@ pub enum StorageError {
     StaleCursor,
     PublicationUnavailable,
     TooManyNamespaces,
+    /// The local root was written by v0.1.x or an earlier build: it holds
+    /// `.fyrr-storage.lock` or `.fyrr-storage.stage`. [`code_hint`] says what to do.
+    StorageRootOld,
+    /// A connector namespace of v0.1.x or an earlier build lacks the typed
+    /// connector columns. [`code_hint`] says what to do.
+    NamespaceLayoutOld,
 }
 impl StorageError {
     pub const fn as_str(self) -> &'static str {
@@ -276,6 +282,8 @@ impl StorageError {
             Self::StaleCursor => "stale_cursor",
             Self::PublicationUnavailable => "publication_unavailable",
             Self::TooManyNamespaces => "too_many_namespaces",
+            Self::StorageRootOld => "storage_root_old",
+            Self::NamespaceLayoutOld => "namespace_layout_old",
         }
     }
 }
@@ -313,8 +321,8 @@ pub async fn persist_native_files(
         return Ok(());
     }
     let namespace = config.namespace.name.clone();
+    let store = open_local(&root)?;
     tokio::task::spawn_blocking(move || {
-        let store = local::LocalStore::open(&root)?;
         let dataset = store
             .root()
             .clone()
@@ -326,6 +334,32 @@ pub async fn persist_native_files(
     .await
     .map_err(|_| StorageError::StorageUnavailable)?
     .map_err(|_| StorageError::StorageUnavailable)
+}
+
+const OLD_LAYOUT_HINT: &str = "namespace_layout_old: the namespace was created by v0.1.x or an earlier build and has no typed connector columns. Recreate it with v0.2.0: create the namespace again in a new root and sync its sources.";
+const OLD_ROOT_HINT: &str = "storage_root_old: the local storage root was written by v0.1.x or an earlier build (it holds .fyrr-storage.lock or .fyrr-storage.stage). Recreate its namespaces in a new root with v0.2.0; remove those files only once no older writer runs.";
+
+/// What an operator does about an error code that needs more than its name,
+/// for the command line to print under `error: <code>`.
+pub fn code_hint(code: &str) -> Option<&'static str> {
+    if code == StorageError::StorageRootOld.as_str() {
+        Some(OLD_ROOT_HINT)
+    } else if code == StorageError::NamespaceLayoutOld.as_str() {
+        Some(OLD_LAYOUT_HINT)
+    } else {
+        None
+    }
+}
+
+/// Opens the local root; one that releases before 0.2.0 wrote is `StorageRootOld`.
+fn open_local(root: &std::path::Path) -> Result<local::LocalStore, StorageError> {
+    local::LocalStore::open(root).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::Unsupported {
+            StorageError::StorageRootOld
+        } else {
+            StorageError::StorageUnavailable
+        }
+    })
 }
 
 /// Makes durable what a writer observed before it publishes a reference to
@@ -355,7 +389,7 @@ pub fn observed_durability(config: &Config) -> Result<ObservedDurability, Storag
     let Some(StorageBackend::Local { root }) = config.storage.backend() else {
         return Ok(ObservedDurability(None));
     };
-    let store = local::LocalStore::open(&root).map_err(|_| StorageError::StorageUnavailable)?;
+    let store = open_local(&root)?;
     let namespace = store
         .root()
         .clone()
@@ -386,9 +420,7 @@ pub fn cleanup_namespace_store(
     config: &Config,
 ) -> Result<(Arc<dyn ObjectStore>, Path, CleanupDurability), StorageError> {
     if let Some(StorageBackend::Local { root }) = config.storage.backend() {
-        let local = local::LocalStore::open(&root)
-            .map_err(|_| StorageError::StorageUnavailable)?
-            .cleanup_batch();
+        let local = open_local(&root)?.cleanup_batch();
         let root = local
             .root()
             .clone()
@@ -411,8 +443,7 @@ pub fn cleanup_namespace_store(
 pub fn namespace_store(config: &Config) -> Result<(Arc<dyn ObjectStore>, Path), StorageError> {
     match config.storage.backend() {
         Some(StorageBackend::Local { root }) => {
-            let store =
-                local::LocalStore::open(&root).map_err(|_| StorageError::StorageUnavailable)?;
+            let store = open_local(&root)?;
             let root = store
                 .root()
                 .clone()
@@ -769,7 +800,14 @@ pub async fn artifact<T: fyrr_core::Contract>(
     if digest(&bytes) != pointer.digest {
         return Err(StorageError::AuthorizationUnavailable);
     }
-    parse_contract(&bytes).map_err(|_| StorageError::AuthorizationUnavailable)
+    parse_contract(&bytes).map_err(|error| match error {
+        fyrr_core::ContractError::Invalid { message, .. }
+            if message == fyrr_core::publication::CONNECTOR_COLUMNS_MISSING =>
+        {
+            StorageError::NamespaceLayoutOld
+        }
+        _ => StorageError::AuthorizationUnavailable,
+    })
 }
 
 /// `config` with the settings its namespace was created with in place of the

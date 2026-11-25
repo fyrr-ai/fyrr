@@ -336,7 +336,7 @@ impl<'a> DocumentRows<'a> {
         let mut common = change.metadata.clone();
         let map = common.as_mut().and_then(|m| m.connector_map.take());
         let mut typed = serde_json::Map::new();
-        if page.config.namespace.typed_connector_fields()
+        if page.config.namespace.write_api.is_none()
             && let Some(metadata) = &mut common
         {
             typed.insert("title".into(), metadata.title.take().into());
@@ -537,7 +537,7 @@ impl RowColumns {
                 self.updated
                     .push(common.updated_at.map(|t| t.timestamp_micros()));
                 self.attributes.push(change.attributes.clone());
-                if config.namespace.typed_connector_fields() {
+                if config.namespace.write_api.is_none() {
                     // Connector namespaces never change their schema: the table's
                     // columns are in name order.
                     self.typed

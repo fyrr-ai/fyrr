@@ -319,20 +319,7 @@ pub fn run(command: &WriterCommand, path: &Path) -> ExitCode {
             WriterCommand::Namespace {
                 action: NamespaceAction::Create,
             } => runtime_command(async {
-                let mut settings = crate::commit::namespace_settings(config);
-                // A namespace created before its title had a full-text index
-                // keeps none: the index the file only derives is not asked
-                // for again, one the file sets is, and a mismatch is refused.
-                if !loaded.sets_attribute_index("title")
-                    && fyrr_reader::storage::with_namespace_settings(config)
-                        .await?
-                        .is_some_and(|recorded| {
-                            !recorded.namespace.attribute_indexes.contains_key("title")
-                        })
-                {
-                    settings.attribute_indexes.remove("title");
-                }
-                crate::commit::create_with(config, settings)
+                crate::commit::create(config)
                     .await
                     .map(|()| serde_json::json!({"created":true}))
             }),
@@ -420,6 +407,15 @@ pub fn run(command: &WriterCommand, path: &Path) -> ExitCode {
     })
 }
 
+/// The closed error code, and what to do about it when it needs more than its name.
+#[allow(clippy::print_stderr)]
+fn report_error(error: &WriterError) {
+    eprintln!("error: {error}");
+    if let Some(hint) = fyrr_reader::storage::code_hint(error.as_str()) {
+        eprintln!("{hint}");
+    }
+}
+
 #[allow(clippy::print_stdout, clippy::print_stderr)]
 fn runtime_command(
     future: impl std::future::Future<Output = Result<serde_json::Value>>,
@@ -433,7 +429,7 @@ fn runtime_command(
             ExitCode::SUCCESS
         }
         Err(error) => {
-            eprintln!("error: {error}");
+            report_error(&error);
             ExitCode::from(if error == WriterError::CommitterBusy {
                 exit::BUSY
             } else {
@@ -464,7 +460,7 @@ fn with_config(
                 // No runtime, Lance call or worker thread exists yet.
                 crate::threads::apply(&loaded.config.writer);
                 if existing && let Err(error) = take_namespace_settings(&mut loaded) {
-                    eprintln!("error: {error}");
+                    report_error(&error);
                     return ExitCode::from(exit::FAILURE);
                 }
                 body(&loaded)

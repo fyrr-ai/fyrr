@@ -45,6 +45,16 @@ fn every_reader_error_preserves_legacy_mcp_mapping() {
             "too_many_namespaces",
         ),
         (
+            S::StorageRootOld,
+            ReaderError::StorageRootOld,
+            "storage_root_old",
+        ),
+        (
+            S::NamespaceLayoutOld,
+            ReaderError::NamespaceLayoutOld,
+            "namespace_layout_old",
+        ),
+        (
             S::PublicationUnavailable,
             ReaderError::PublicationUnavailable,
             "publication_unavailable",
