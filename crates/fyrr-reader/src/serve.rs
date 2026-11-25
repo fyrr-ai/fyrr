@@ -325,14 +325,22 @@ pub(crate) use recall::SampleSkip;
 use recall::{SampleResult, SampleWork, recall_telemetry};
 pub(crate) use scheduler::{start, start_guarded};
 
+/// How the reader answers a namespace that asked for room in the mirror.
+#[derive(Default)]
+pub(crate) struct RoomReply {
+    /// Woken once room has been made.
+    pub(crate) made: tokio::sync::Notify,
+    /// Set when no room could be made: the next failure may ask again.
+    pub(crate) denied: std::sync::atomic::AtomicBool,
+}
+
 /// How a namespace asks the reader that holds it for the room of another one
-/// in the mirror: `asks` carries its `name` and the `retry` that the reader
-/// wakes once room has been made.
+/// in the mirror: `asks` carries its `name` and where to `reply`.
 #[derive(Clone)]
 pub(crate) struct Room {
     pub(crate) name: String,
-    pub(crate) asks: mpsc::UnboundedSender<(String, Arc<tokio::sync::Notify>)>,
-    pub(crate) retry: Arc<tokio::sync::Notify>,
+    pub(crate) asks: mpsc::UnboundedSender<(String, Arc<RoomReply>)>,
+    pub(crate) reply: Arc<RoomReply>,
 }
 pub(crate) use stdio::serve;
 

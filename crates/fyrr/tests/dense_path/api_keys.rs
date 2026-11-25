@@ -1307,8 +1307,9 @@ async fn namespaces_opened_by_path_stay_inside_the_mirror_budget() {
     // The third finds none: it closes the one used least recently, the first,
     // never itself and never the second, and warms in its place.
     ask(names[2].clone()).await;
+    // Within the first retry delay of 30 s: only a warming at once passes.
     assert!(
-        warmed(&reader, &names[2], 120).await,
+        warmed(&reader, &names[2], 25).await,
         "the namespace was not warmed after the mirror ran out of room:\n{}",
         reader.stderr_text()
     );

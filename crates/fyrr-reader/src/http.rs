@@ -120,7 +120,7 @@ struct Namespaces {
     /// Woken when a namespace has ended and returned what it held.
     closed: Arc<tokio::sync::Notify>,
     /// Where a namespace asks for room in the mirror.
-    asks: tokio::sync::mpsc::UnboundedSender<(String, Arc<tokio::sync::Notify>)>,
+    asks: tokio::sync::mpsc::UnboundedSender<(String, Arc<crate::serve::RoomReply>)>,
 }
 /// A place among the live namespaces. It goes with the scheduler of the
 /// namespace, which has stopped by then.
@@ -186,7 +186,7 @@ impl Namespaces {
         budget: crate::generation::MemoryPool,
         api_keys: crate::storage::HeadCache<fyrr_core::identity::ApiKeysArtifact>,
         configured: Arc<Served>,
-        asks: tokio::sync::mpsc::UnboundedSender<(String, Arc<tokio::sync::Notify>)>,
+        asks: tokio::sync::mpsc::UnboundedSender<(String, Arc<crate::serve::RoomReply>)>,
     ) -> Self {
         Self {
             process,
@@ -238,15 +238,30 @@ impl Namespaces {
         true
     }
     /// Makes the room that `requester` asked for in the mirror: closes the
-    /// least recently used namespace but it that serves nothing and, once that
-    /// has ended and its files are free, lets the requester warm again.
-    async fn make_room(&self, requester: &str, retry: &tokio::sync::Notify) {
+    /// least recently used namespace but it that serves nothing and, once a
+    /// namespace has ended, lets the requester warm again. A requester that
+    /// has been closed since it asked gets nothing.
+    async fn make_room(&self, requester: &str, reply: &crate::serve::RoomReply) {
+        let open = requester == self.configured.config.namespace.name
+            || crate::sync::lock(&self.open)
+                .iter()
+                .any(|(name, _)| name == requester);
+        if !open {
+            return;
+        }
         let closed = self.closed.notified();
         tokio::pin!(closed);
         closed.as_mut().enable();
         if self.close_idle(Some(requester), "mirror_capacity") {
+            // shortcut: any close or the timeout wakes the requester, which may
+            // warm before the victim's pins are gone and then close one more
+            // namespace than needed; wait for that victim itself if it shows.
             let _ = tokio::time::timeout(IO_TIMEOUT, closed).await;
-            retry.notify_one();
+            reply.made.notify_one();
+        } else {
+            reply
+                .denied
+                .store(true, std::sync::atomic::Ordering::Relaxed);
         }
     }
     /// The namespace `name`, opened if it is not; `None` when it has no head
@@ -316,7 +331,7 @@ impl Namespaces {
                 let room = crate::serve::Room {
                     name: name.clone(),
                     asks: this.asks.clone(),
-                    retry: Arc::default(),
+                    reply: Arc::default(),
                 };
                 let service = crate::serve::start_guarded(reader, slot, true, Some(room)).await?;
                 Ok(Arc::new(Served {
@@ -1201,7 +1216,7 @@ pub(crate) async fn serve(reader: crate::search::PreparedReader) -> Result<()> {
     let room = crate::serve::Room {
         name: config.namespace.name.clone(),
         asks: asks.clone(),
-        retry: Arc::default(),
+        reply: Arc::default(),
     };
     let service = crate::serve::start_guarded(reader, (), false, Some(room)).await?;
     let namespaces = Arc::new(Namespaces::new(
@@ -1221,11 +1236,11 @@ pub(crate) async fn serve(reader: crate::search::PreparedReader) -> Result<()> {
     // the namespaces that ask.
     let held = Arc::downgrade(&namespaces);
     tokio::spawn(async move {
-        while let Some((requester, retry)) = wants.recv().await {
+        while let Some((requester, reply)) = wants.recv().await {
             let Some(namespaces) = held.upgrade() else {
                 break;
             };
-            namespaces.make_room(&requester, &retry).await;
+            namespaces.make_room(&requester, &reply).await;
         }
     });
     let state = HttpState {

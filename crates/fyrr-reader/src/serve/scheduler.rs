@@ -354,12 +354,12 @@ impl Scheduler {
             {
                 break;
             }
-            let made = self.room.as_ref().map(|room| room.retry.clone());
+            let made = self.room.as_ref().map(|room| room.reply.clone());
             tokio::select! {
                 _ = self.tick.tick() => {},
                 () = async {
                     match &made {
-                        Some(made) => made.notified().await,
+                        Some(made) => made.made.notified().await,
                         None => std::future::pending().await,
                     }
                 } => {
@@ -673,9 +673,15 @@ impl Scheduler {
                         ));
                         self.warm_loss = Some(reason);
                     }
-                    // Once for a loss, and again only when room was made and
-                    // was not enough.
-                    if capacity && (first || std::mem::take(&mut self.room_made)) {
+                    // Once for a loss, and again only when room was made and was
+                    // not enough, or when none could be made.
+                    let made = std::mem::take(&mut self.room_made);
+                    let denied = self.room.as_ref().is_some_and(|room| {
+                        room.reply
+                            .denied
+                            .swap(false, std::sync::atomic::Ordering::Relaxed)
+                    });
+                    if capacity && (first || made || denied) {
                         self.ask_for_room();
                     }
                 }
@@ -691,9 +697,12 @@ impl Scheduler {
         let (Some(room), Some(reader)) = (&self.room, &self.template) else {
             return;
         };
+        // shortcut: the pins of the configured namespace, which cannot be
+        // closed, are not counted, so a namespace can close every other one
+        // and still not warm; count them when that is seen in operation.
         let files: u64 = reader.manifest.files.iter().map(|f| f.size_bytes).sum();
         if files <= reader.config.reader.mirror_max_bytes {
-            let _ = room.asks.send((room.name.clone(), room.retry.clone()));
+            let _ = room.asks.send((room.name.clone(), room.reply.clone()));
         }
     }
     fn on_finished(&mut self, result: ExecutionResult, sampling_idle: bool) -> Option<SampleWork> {
