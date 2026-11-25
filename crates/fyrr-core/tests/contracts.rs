@@ -13,7 +13,7 @@ use fyrr_core::connector::{
     document_changes_arrow_schema,
 };
 use fyrr_core::directory::DirectorySnapshot;
-use fyrr_core::envelope::PreparedEnvelope;
+use fyrr_core::envelope::{PreparedEnvelope, RejectionMarker};
 use fyrr_core::identity::{ApiKeysArtifact, IdentityArtifact};
 use fyrr_core::provider::ProviderInfo;
 use fyrr_core::publication::{
@@ -346,6 +346,7 @@ macro_rules! for_each_contract {
         fixtures += $check::<ConnectorBatch>("connector-batch");
         fixtures += $check::<CursorState>("connector-cursor");
         fixtures += $check::<PreparedEnvelope>("prepared-envelope");
+        fixtures += $check::<RejectionMarker>("envelope-rejection");
         fixtures += $check::<ContentManifest>("content-manifest");
         fixtures += $check::<ServingHead>("serving-head");
         fixtures += $check::<PolicyArtifact>("policy-artifact");

@@ -1,0 +1,11 @@
+{
+  "schema_version": "5.0",
+  "envelope_id": "env-c0ffee00c0ffee00c0ffee00c0ffee00",
+  "source_id": "docs",
+  "kind": "permissions",
+  "sequence": 7,
+  "rejection_generation": 1,
+  "restore_sequence": 0,
+  "start_cursor": "cursor-6",
+  "reason": "permission_read_incomplete"
+}

@@ -483,6 +483,21 @@ fn published_files(arrow: &Value) -> Vec<GeneratedFile> {
             contents: pretty(&contract_schema::<RejectionMarker>()),
         },
         GeneratedFile {
+            path: "fixtures/contracts/envelope-rejection/valid.json",
+            contents: String::from_utf8(fyrr_core::write_contract(&RejectionMarker {
+                schema_version: <RejectionMarker as Contract>::VERSION,
+                envelope_id: "env-c0ffee00c0ffee00c0ffee00c0ffee00".into(),
+                source_id: "docs".into(),
+                kind: fyrr_core::connector::SyncKind::Permissions,
+                sequence: 7,
+                rejection_generation: 1,
+                restore_sequence: 0,
+                start_cursor: Some("cursor-6".into()),
+                reason: "permission_read_incomplete".into(),
+            }))
+            .unwrap_or_else(|_| unreachable!("JSON serialization is UTF-8")),
+        },
+        GeneratedFile {
             path: "schemas/prepared-envelope.schema.json",
             contents: pretty(&contract_schema::<PreparedEnvelope>()),
         },
