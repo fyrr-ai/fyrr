@@ -322,19 +322,20 @@ pub async fn persist_native_files(
         return Ok(());
     }
     let namespace = config.namespace.name.clone();
-    let store = open_local(&root)?;
     tokio::task::spawn_blocking(move || {
+        let store = open_local(&root)?;
         let dataset = store
             .root()
             .clone()
             .join("namespaces")
             .join(namespace.as_str())
             .join("dataset.lance");
-        store.persist_native(&dataset, &files)
+        store
+            .persist_native(&dataset, &files)
+            .map_err(|_| StorageError::StorageUnavailable)
     })
     .await
     .map_err(|_| StorageError::StorageUnavailable)?
-    .map_err(|_| StorageError::StorageUnavailable)
 }
 
 const OLD_LAYOUT_HINT: &str = "the namespace was written by v0.1.x or an earlier build, in a stored format v0.2.0 does not read. Recreate it with v0.2.0: delete its namespaces/<name>/ prefix with the storage tool (or choose a new namespace name), then run writer namespace create and sync its sources.";

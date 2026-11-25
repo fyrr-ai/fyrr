@@ -262,6 +262,53 @@ async fn incremental_connector_title_has_a_full_text_index_on_storage() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
+/// A reader refuses a published namespace whose policy an earlier fyrr wrote, by name:
+/// the policy 2.2 of v0.1.1 and a policy 3.1 without the typed connector columns.
+#[tokio::test]
+#[ignore = "real worker and local storage; scripts/ci"]
+async fn incremental_reader_refuses_a_policy_of_an_earlier_fyrr_by_name_on_storage() {
+    let setup = setup();
+    for row in 8..768 {
+        std::fs::remove_file(setup.1.join("sources").join(format!("{row}.txt"))).unwrap();
+    }
+    let (worker, _commit, root) = fixture_host_at(8, true, "earlier-fixture", setup);
+    let loaded = fyrr_core::config::load(&worker).unwrap();
+    let Some(fyrr_core::config::StorageBackend::Local { root: storage }) =
+        loaded.config.storage.backend()
+    else {
+        panic!("local storage")
+    };
+    let namespace = storage.join("namespaces/earlier-fixture");
+    let head_path = namespace.join("head.json");
+    let mut head: Value = serde_json::from_slice(&std::fs::read(&head_path).unwrap()).unwrap();
+    let policy_path = namespace.join(head["policy"]["object"].as_str().unwrap());
+    let mut without_columns: Value =
+        serde_json::from_slice(&std::fs::read(&policy_path).unwrap()).unwrap();
+    without_columns["schema_version"] = "3.1".into();
+    let settings = without_columns["settings"].as_object_mut().unwrap();
+    settings.remove("attributes");
+    settings.remove("attribute_indexes");
+    let v011 = std::fs::read(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/contracts/compat/v0.1.1-policy-artifact.json"),
+    )
+    .unwrap();
+    // Overwritten in place: the store keeps the version tag the files carry.
+    for bytes in [v011, serde_json::to_vec_pretty(&without_columns).unwrap()] {
+        std::fs::write(&policy_path, &bytes).unwrap();
+        head["policy"]["digest"] = fyrr_core::limits::digest(&bytes).into();
+        std::fs::write(&head_path, serde_json::to_vec_pretty(&head).unwrap()).unwrap();
+        let output = host_command(&worker)
+            .args(["reader", "check"])
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("error: namespace_layout_old"), "{stderr}");
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 pub(super) fn fixture() -> (PathBuf, PathBuf, FixtureRoot) {
     fixture_size(768)
 }

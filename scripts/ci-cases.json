@@ -2648,6 +2648,10 @@
         "tier": "full",
         "seconds": 30.0
       },
+      "full:fyrr:test:dense_path/incremental::incremental_reader_refuses_a_policy_of_an_earlier_fyrr_by_name_on_storage": {
+        "tier": "full",
+        "seconds": 20.0
+      },
       "full:fyrr:test:dense_path/incremental::incremental_read_only_namespace_refuses_syncs_and_commits_what_was_prepared_on_storage": {
         "tier": "full",
         "seconds": 60
