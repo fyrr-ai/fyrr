@@ -1299,6 +1299,16 @@ fn the_text_analyzer_is_one_effective_setting_of_the_publication() {
         "[namespace.analyzer]\nngram_min_length = 4\n",
         "namespace.analyzer",
     );
+    // A language with no stop words: stemming alone.
+    let stemming = parse(&format!(
+        "{MINIMAL}\n[namespace.analyzer]\nlanguage = \"english\"\nstop_words = []\n"
+    ))
+    .unwrap();
+    assert!(errors(&stemming).is_empty(), "{:?}", errors(&stemming));
+    assert_eq!(
+        stemming.config.namespace.analyzer.stop_words,
+        Some(Vec::new())
+    );
     assert_error(
         "[namespace.analyzer]\ntokenizer = \"ngram\"\n",
         "namespace.analyzer",
@@ -1585,8 +1595,6 @@ fn rescore_depth_defaults_to_the_pool_rule_and_expands_only_at_small_gaps() {
     use fyrr_core::config::RescoreDepth;
     let namespace = parse(MINIMAL).unwrap().config.namespace;
     // Pinned: a namespace that sets nothing keeps the identity its publications carry.
-    // It was sha256:8a1c2558… (computed on main 7c1626c4) until the effective analyzer
-    // of the text, the default included, became part of the digest.
     assert_eq!(
         namespace.retrieval_digest(),
         "sha256:1c55c2e89c3747c21d7120d347ce856ac078ee4e8cbc57c11ee0ee5733d69546"

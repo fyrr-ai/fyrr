@@ -164,6 +164,39 @@ fn selection_follows_the_analyzer() {
     assert!(hard.text.contains("Häuser"), "{hard:?}");
 }
 
+/// The index keeps a token of fewer bytes than `max_token_length` and drops one of that many.
+#[test]
+fn a_token_as_long_as_max_token_length_is_dropped_one_byte_less_is_kept() {
+    for (length, found) in [(39, true), (40, false)] {
+        let word = "a".repeat(length);
+        let text = format!("First sentence. {word}. Last.");
+        let excerpt = select(&text, &word, 52);
+        assert_eq!(excerpt.start == 16, found, "{length}: {excerpt:?}");
+    }
+    let analyzer = serde_json::json!({"analyzer": {"max_token_length": 8}});
+    let text = "First sentence. 1234567. Last.";
+    assert_eq!(select_in(analyzer.clone(), text, "1234567", 20).start, 16);
+    let text = "First sentence. 12345678. Last.";
+    assert_eq!(select_in(analyzer, text, "12345678", 20).start, 0);
+}
+
+/// `stop_words = []` keeps the stemming of a language and removes no stop word.
+#[test]
+fn a_language_with_no_stop_words_stems_and_keeps_them() {
+    let text = "Cats sleep. The dogs ran home.";
+    let english = serde_json::json!({"analyzer": {"language": "english"}});
+    // The stop word is no term: nothing is found, the prefix is taken.
+    assert_eq!(select_in(english, text, "the", 14).start, 0);
+    let stemming_only = serde_json::json!({"analyzer": {"language": "english", "stop_words": []}});
+    let found = select_in(stemming_only.clone(), text, "the", 20);
+    assert_eq!(
+        (found.start, found.text.as_str()),
+        (12, "The dogs ran home.")
+    );
+    // And it still stems: `dog` finds `dogs`.
+    assert_eq!(select_in(stemming_only, text, "dog", 20).start, 12);
+}
+
 #[test]
 fn a_default_namespace_selects_with_the_tokens_of_the_index() {
     // The index drops a token over 40 bytes, so the analyzer finds no term in

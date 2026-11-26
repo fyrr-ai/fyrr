@@ -54,7 +54,6 @@ pub const KMS_KEY_ID_PATTERN: &str = r"^[A-Za-z0-9:/_.+=@-]{1,2048}$";
 pub const SOURCE_ID_PATTERN: &str = r"^[a-z0-9][a-z0-9_-]{0,62}$";
 /// Connector provider names.
 pub const PROVIDER_PATTERN: &str = r"^[a-z0-9][a-z0-9-]{0,62}$";
-pub const FTS_MAX_TOKEN_LENGTH_MAX: u64 = 1024;
 /// Bit widths Lance accepts for an IVF_RQ index.
 pub const DENSE_RQ_BITS_MAX: u64 = 9;
 /// Smallest and largest target rows per IVF_RQ partition. The floor keeps
@@ -163,7 +162,7 @@ pub struct NamespaceConfig {
     /// How the full-text index of `searchable_text` cuts a text into terms: the
     /// tokenizer, the language, the stop words and the other settings of an
     /// attribute's analyzer. The index, the highlights and the excerpts of a hit
-    /// all use it. Absent: the `simple` tokenizer, lowercase, tokens up to 40 bytes,
+    /// all use it. Absent: the `simple` tokenizer, lowercase, tokens under 40 bytes,
     /// no stemming, stop words or folding. Fixed when the namespace is created.
     #[serde(default)]
     pub analyzer: crate::attributes::analyzer::Analyzer,
@@ -1969,9 +1968,6 @@ fn holds_table(value: &toml::Value) -> bool {
     }
 }
 
-pub(crate) fn default_fts_max_token_length() -> u32 {
-    40
-}
 fn default_dense_rq_bits() -> u8 {
     1
 }

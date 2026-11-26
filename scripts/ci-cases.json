@@ -103,6 +103,14 @@
         "tier": "quick",
         "seconds": 0.001
       },
+      "full:fyrr-reader:lib:fyrr_reader/excerpt::tests::a_token_as_long_as_max_token_length_is_dropped_one_byte_less_is_kept": {
+        "tier": "quick",
+        "seconds": 0.001
+      },
+      "full:fyrr-reader:lib:fyrr_reader/excerpt::tests::a_language_with_no_stop_words_stems_and_keeps_them": {
+        "tier": "quick",
+        "seconds": 0.001
+      },
       "full:fyrr-reader:lib:fyrr_reader/excerpt::tests::a_default_namespace_selects_with_the_tokens_of_the_index": {
         "tier": "quick",
         "seconds": 0.001

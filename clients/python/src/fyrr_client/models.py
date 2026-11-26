@@ -530,7 +530,9 @@ class Analyzer(TypedDict):
     """
     ascii_folding: bool
     max_token_length: int
-    """Tokens longer than this, in UTF-8 bytes, are dropped."""
+    """Tokens of this many UTF-8 bytes or more are dropped: a token is kept when it is
+    shorter than this.
+    """
     ngram_min_length: int
     """Only with the `ngram` tokenizer."""
     ngram_max_length: int

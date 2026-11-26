@@ -3,14 +3,16 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::config::FTS_MAX_TOKEN_LENGTH_MAX;
-
 /// The longest n-gram an index may ask for: every position of every token
 /// yields up to this many terms.
 pub const NGRAM_LENGTH_MAX: u32 = 16;
 /// The most words, and the most bytes in one, of a custom stop-word list.
 pub const STOP_WORDS_MAX: usize = 1024;
 pub const STOP_WORD_BYTES_MAX: usize = 64;
+/// The most bytes `max_token_length` may name.
+const FTS_MAX_TOKEN_LENGTH_MAX: u64 = 1024;
+/// The tokens of an index are shorter than this many bytes when none is asked for.
+const MAX_TOKEN_LENGTH_DEFAULT: u32 = 40;
 /// Lance's n-gram lengths when none is asked for.
 const NGRAM_LENGTH_DEFAULT: u32 = 3;
 
@@ -103,8 +105,9 @@ pub struct Analyzer {
     pub stop_words: Option<Vec<String>>,
     #[serde(default)]
     pub ascii_folding: bool,
-    /// Tokens longer than this, in UTF-8 bytes, are dropped.
-    #[serde(default = "crate::config::default_fts_max_token_length")]
+    /// Tokens of this many UTF-8 bytes or more are dropped: a token is kept when it is
+    /// shorter than this.
+    #[serde(default = "max_token_length")]
     #[schemars(range(min = 1, max = FTS_MAX_TOKEN_LENGTH_MAX))]
     pub max_token_length: u32,
     /// Only with the `ngram` tokenizer.
@@ -120,6 +123,10 @@ pub struct Analyzer {
     pub prefix_only: bool,
 }
 
+fn max_token_length() -> u32 {
+    MAX_TOKEN_LENGTH_DEFAULT
+}
+
 fn ngram_length() -> u32 {
     NGRAM_LENGTH_DEFAULT
 }
@@ -131,7 +138,7 @@ impl Default for Analyzer {
             language: None,
             stop_words: None,
             ascii_folding: false,
-            max_token_length: crate::config::default_fts_max_token_length(),
+            max_token_length: MAX_TOKEN_LENGTH_DEFAULT,
             ngram_min_length: NGRAM_LENGTH_DEFAULT,
             ngram_max_length: NGRAM_LENGTH_DEFAULT,
             prefix_only: false,

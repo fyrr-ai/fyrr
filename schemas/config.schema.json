@@ -150,7 +150,7 @@
         },
         "analyzer": {
           "$ref": "#/$defs/Analyzer",
-          "description": "How the full-text index of `searchable_text` cuts a text into terms: the\ntokenizer, the language, the stop words and the other settings of an\nattribute's analyzer. The index, the highlights and the excerpts of a hit\nall use it. Absent: the `simple` tokenizer, lowercase, tokens up to 40 bytes,\nno stemming, stop words or folding. Fixed when the namespace is created.",
+          "description": "How the full-text index of `searchable_text` cuts a text into terms: the\ntokenizer, the language, the stop words and the other settings of an\nattribute's analyzer. The index, the highlights and the excerpts of a hit\nall use it. Absent: the `simple` tokenizer, lowercase, tokens under 40 bytes,\nno stemming, stop words or folding. Fixed when the namespace is created.",
           "default": {
             "tokenizer": "simple",
             "ascii_folding": false,
@@ -492,7 +492,7 @@
           "type": "integer",
           "format": "uint32",
           "minimum": 1,
-          "description": "Tokens longer than this, in UTF-8 bytes, are dropped.",
+          "description": "Tokens of this many UTF-8 bytes or more are dropped: a token is kept when it is\nshorter than this.",
           "maximum": 1024,
           "default": 40
         },

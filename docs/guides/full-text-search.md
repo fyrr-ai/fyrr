@@ -28,7 +28,7 @@ Every row's `text` is full-text indexed. The first write also declares a `title`
 attribute with a full-text index of its own. Stemming is a setting of the
 namespace, the `language` of `[namespace.analyzer]` in the
 [configuration](../tuning.md#the-analyzer-of-the-text), and the guides'
-configuration sets it to English; the namespace takes it from the file when its
+configuration sets it to English with no stop words removed; the namespace takes it from the file when its
 first write creates it and keeps it for life:
 
 ```sh

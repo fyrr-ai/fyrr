@@ -9,9 +9,10 @@
 
 [namespace]
 name = "main"
-# Defaults of every namespace this process creates. An English analyzer makes
-# `restore` match `restores` and `restoring` (full-text guide).
-analyzer = { language = "english" }
+# Defaults of every namespace this process creates. English stemming, with no
+# stop words removed, makes `restore` match `restores` and `restoring`
+# (full-text guide).
+analyzer = { language = "english", stop_words = [] }
 
 [storage]
 uri = "file:///home/you/.local/share/fyrr/guides"

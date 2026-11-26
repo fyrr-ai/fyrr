@@ -14,17 +14,16 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   `fts_ascii_folding` and `fts_max_token_length` are gone (a file that sets one
   is refused): use `[namespace.analyzer]` with `language`, `stop_words`,
   `ascii_folding` and `max_token_length`. Its default, the `simple` tokenizer
-  with tokens up to 40 bytes, is recorded in the policy and the manifest
+  with tokens under 40 bytes, is recorded in the policy and the manifest
   (`fts.analyzer`, replacing `tokenizer`, `max_token_length`, `lowercase`,
   `stem`, `remove_stop_words` and `ascii_folding`), so the manifest tells what
-  its index does. `fts_positions` stays. A `language` stems and removes stop
-  words together; there is no stemming alone. The excerpt of a hit in a namespace
-  with the default analyzer is now chosen with the tokens of the index, not the
-  literal words of the query: a word the index drops (over 40 bytes) or cuts (at
-  `_`) no longer counts. On a default namespace the selection takes about 0.8 to
-  1.0 times the time it took (0.5 times on text with non-ASCII letters), in a
-  debug build. The retrieval digest of every namespace changes: a namespace of
-  an unreleased build is refused; recreate it.
+  its index does. `fts_positions` stays. A `language` stems and removes its
+  stop words; `stop_words = []` with it stems and removes none. The excerpt of a
+  hit in a namespace with the default analyzer is now chosen with the tokens of
+  the index, not the literal words of the query: a word the index drops (40
+  bytes or more) or cuts (at `_`) no longer counts. The retrieval digest of
+  every namespace changes: a namespace of an unreleased build is refused;
+  recreate it.
 - An explicit `null` for a member of a JSON `query` request that is no tool
   argument (`fields`, `fusion`, `rerank`, `sub_queries`, `query_match`,
   `query_attributes`, `phrase`, `contains`, `boosts`, `group_documents`,
@@ -61,12 +60,10 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   documents again. A
   local put no longer opens a root lock file. See
   [operations](docs/operations.md#upgrades).
-- The excerpt of a hit in a namespace with an `[namespace.analyzer]`, or with
-  `fts_stem`, `fts_remove_stop_words` or `fts_ascii_folding`, is chosen with the
-  tokens of its full-text index, as the lexical lane and `highlights` already
-  are. A passage whose only match is a stemmed or folded word can now be the
-  one returned. Any other namespace keeps its excerpts, chosen by the literal
-  words of the query. See [tuning](docs/tuning.md#the-analyzer-of-the-text).
+- The excerpt of a hit is chosen with the tokens of the full-text index of its
+  namespace, as the lexical lane and `highlights` are. A passage whose only
+  match is a stemmed or folded word can be the one returned. See
+  [tuning](docs/tuning.md#the-analyzer-of-the-text).
 - A namespace created for connectors stores `title`, `team`, `status`,
   `labels` (an array of `string`) and `created_at` (`datetime`) of its
   documents as typed columns, declared with the namespace like the attributes
@@ -92,12 +89,8 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   settings of an attribute's analyzer: the tokenizer (`simple`, `whitespace`,
   `unicode`, `ngram`), one of 18 languages for stemming and stop words, stop
   words of its own, ASCII folding and the maximum token length. The lexical
-  lane, `phrase` and `highlights` follow it. It replaces `fts_stem`,
-  `fts_remove_stop_words`, `fts_ascii_folding` and `fts_max_token_length`,
-  which stay as they were: a namespace without an analyzer keeps its index and
-  its policy digest. The analyzer is fixed when the namespace is created, like
-  those keys; a namespace with one writes the indexed policy and manifest
-  versions. See [tuning](docs/tuning.md#the-analyzer-of-the-text).
+  lane, `phrase` and `highlights` follow it. The analyzer is fixed when the
+  namespace is created. See [tuning](docs/tuning.md#the-analyzer-of-the-text).
 
 - A namespace can store token positions in the full-text index of
   `searchable_text` (`fts_positions = true` in `[namespace]`), and the JSON
@@ -308,7 +301,7 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   (content-manifest 5.0, policy-artifact 4.0). A change of it is a schema
   change: the next maintenance builds the index again and publishes it, and the
   index it replaces serves until then. An index without an analyzer takes the
-  namespace's `fts_*` settings, as before. See [Analyzer](docs/tuning.md#analyzer-of-a-full-text-index).
+  analyzer of the namespace. See [Analyzer](docs/tuning.md#analyzer-of-a-full-text-index).
 - The write API takes `delete_where` and `patch_where`: a filter whose matching
   documents are deleted, or patched with the attributes or readers of `set`.
   The committer evaluates it once against the state the request is applied to;
@@ -462,7 +455,7 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 - **Breaking: a namespace keeps its own index and retrieval settings.**
   `writer namespace create` records the embedding profile (`model`,
   `dimensions`, prefixes, `roles`, `send_dimensions`), the analyzer
-  (`namespace.fts_*`), the vector index (`dense_rq_bits`,
+  (`namespace.analyzer`, `fts_positions`), the vector index (`dense_rq_bits`,
   `dense_partition_rows`), `composition`, `retrieval` and the reranker's
   `model`, `candidates`, `weight` and `text_chars` from the configuration file in the namespace's policy artifact (policy
   artifact contract 3.0; republish older namespaces). The file only supplies

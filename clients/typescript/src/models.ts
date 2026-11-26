@@ -634,7 +634,10 @@ export interface Analyzer {
    */
   stop_words?: string[] | null;
   ascii_folding: boolean;
-  /** Tokens longer than this, in UTF-8 bytes, are dropped. */
+  /**
+   * Tokens of this many UTF-8 bytes or more are dropped: a token is kept when it is
+   * shorter than this.
+   */
   max_token_length: number;
   /** Only with the `ngram` tokenizer. */
   ngram_min_length: number;
