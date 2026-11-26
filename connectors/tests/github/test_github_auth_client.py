@@ -37,6 +37,15 @@ def test_a_token_request_that_may_have_been_sent_is_not_sent_again(github, index
     assert len([m for m, _, _ in github.requests if m == "POST"]) == 1
 
 
+@pytest.mark.parametrize("status", [403, 429])
+def test_a_token_request_refused_for_the_rate_limit_is_sent_again(github, index, status):
+    github.fail("/app/installations/20/access_tokens", status, headers={"Retry-After": "1"})
+    auth = AppAuth(Client(github.origin), Settings.parse(index.settings))
+    assert auth.token() == github.token
+    assert github.sleeps == [1]
+    assert len([m for m, _, _ in github.requests if m == "POST"]) == 2
+
+
 def test_a_token_request_is_sent_again_after_a_failed_connection(github, index, monkeypatch):
     import requests
     import urllib3

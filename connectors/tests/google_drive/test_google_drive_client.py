@@ -309,6 +309,8 @@ def test_listing_over_aggregate_limit_never_completes(drive, index, monkeypatch)
         ("Wednesday, 21-Oct-15 07:28:00 GMT", 10),
         ("Wed Oct 21 07:28:00 2015", 10),
         ("Wed Oct 21 07:27:00 2015", 0),
+        ("Wed, 21 Oct 2015 07:28:00 garbage", None),
+        ("Wed, 21 Oct 2015 07:28:00", None),
         ("soon", None),
         ("nan", None),
         ("-1", None),
@@ -335,6 +337,22 @@ def test_jitter_never_carries_a_wait_past_the_cap(monkeypatch):
     retries.wait = 60
     next(attempts)
     assert sleeps == [60]
+
+
+def test_the_budget_is_read_against_one_clock_reading_per_attempt(monkeypatch):
+    from fyrr_connectors import _http
+
+    sleeps = []
+    ticks = iter(0.25 * step for step in range(100))
+    monkeypatch.setattr(_http.time, "sleep", sleeps.append)
+    monkeypatch.setattr(_http.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(_http.random, "uniform", lambda low, high: high)
+    retries = _http.Retries(_http.RetryPolicy(jitter="wait", budget=300), ValueError("budget"))
+    attempts = iter(retries)
+    next(attempts)
+    retries.wait = 299
+    next(attempts)  # the jitter is clipped to what the budget leaves: 299.5 s after 0.5 s
+    assert sleeps == [299.5]
 
 
 def test_retry_after_over_remaining_budget_fails_without_sleep(monkeypatch):

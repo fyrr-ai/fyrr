@@ -2995,6 +2995,26 @@
         "tier": "quick",
         "seconds": null
       },
+      "python:connectors/tests/github/test_github_auth_client.py::test_a_token_request_refused_for_the_rate_limit_is_sent_again[403]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/github/test_github_auth_client.py::test_a_token_request_refused_for_the_rate_limit_is_sent_again[429]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/google_drive/test_google_drive_client.py::test_shared_retry_after_parser[Wed, 21 Oct 2015 07:28:00 garbage-None]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/google_drive/test_google_drive_client.py::test_shared_retry_after_parser[Wed, 21 Oct 2015 07:28:00-None]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/google_drive/test_google_drive_client.py::test_the_budget_is_read_against_one_clock_reading_per_attempt": {
+        "tier": "quick",
+        "seconds": null
+      },
       "python:connectors/tests/github/test_github_auth_client.py::test_a_retry_after_date_in_the_past_is_no_wait_and_retries_are_bounded[403]": {
         "tier": "quick",
         "seconds": null

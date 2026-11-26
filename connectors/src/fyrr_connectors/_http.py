@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import random
+import re
 import time
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
@@ -20,6 +21,8 @@ import urllib3
 MAX_RESPONSE = 16 << 20
 MAX_PAGES = 10_000
 MAX_ENTRIES = 100_000
+#: The zone-less HTTP date: `Sun Nov  6 08:49:37 1994`.
+ASCTIME = re.compile(r"[A-Z][a-z]{2} [A-Z][a-z]{2} [ 0-9]\d \d\d:\d\d:\d\d \d{4}")
 
 
 class ApiError(Exception):
@@ -51,8 +54,11 @@ def retry_after(value: str) -> float | None:
         return numeric
     try:
         date = parsedate_to_datetime(value)
-        # All three HTTP date formats are GMT (RFC 9110, 5.6.7); asctime names no zone.
         if date.tzinfo is None:
+            # All three HTTP date formats are GMT (RFC 9110, 5.6.7); only asctime names no
+            # zone. Any other date without a zone, or with one that is unknown, is invalid.
+            if ASCTIME.fullmatch(value) is None:
+                return None
             date = date.replace(tzinfo=UTC)
         return max(0.0, date.timestamp() - time.time())
     except (ValueError, TypeError, OverflowError):
@@ -84,15 +90,15 @@ class Retries:
     def __iter__(self) -> Iterator[int]:
         began = time.monotonic()
         for attempt in range(self.policy.attempts):
-            wait = self.wait
+            wait, elapsed = self.wait, time.monotonic() - began
             if wait > self.policy.wait_cap:
                 raise self.error
             if attempt and self.policy.jitter == "wait":
                 # The jitter never carries a wait past the cap or the budget.
-                room = min(self.policy.wait_cap, self.policy.budget - (time.monotonic() - began))
+                room = min(self.policy.wait_cap, self.policy.budget - elapsed)
                 wait += max(0.0, min(random.uniform(0, 1), room - wait))
             if wait:
-                if wait + time.monotonic() - began > self.policy.budget:
+                if wait + elapsed > self.policy.budget:
                     raise self.error
                 time.sleep(wait)
             self.wait = min(2**attempt, self.policy.backoff_cap)
@@ -104,6 +110,8 @@ class Retries:
 class Retry:
     error: Exception
     wait: float | None = None
+    #: The server refused the request for its rate limit: it did nothing with it.
+    refusal: bool = False
 
 
 def unsent(error: Exception) -> bool:
@@ -121,8 +129,9 @@ def unsent(error: Exception) -> bool:
 def retry(policy: RetryPolicy, transport_error, budget_error=None):
     """Retry a provider operation while keeping its exceptions and wait policy.
 
-    A call made with `_unsent_only=True` repeats only after a failed connection, never after
-    an answer or a failure that may have come after the request was sent."""
+    A call made with `_unsent_only=True` repeats only after a failed connection or a rate-limit
+    refusal, never after another answer or a failure that may have come after the request was
+    sent."""
 
     def decorate(operation):
         @wraps(operation)
@@ -134,7 +143,7 @@ def retry(policy: RetryPolicy, transport_error, budget_error=None):
                     result = operation(self, *args, _retry=retries, **kwargs)
                     if not isinstance(result, Retry):
                         return result
-                    if _unsent_only:
+                    if _unsent_only and not result.refusal:
                         raise result.error
                     failure = result.error
                     if budget_error is None:

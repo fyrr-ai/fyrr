@@ -154,7 +154,7 @@ class Client:
                     if _retry.attempt + 1 < ATTEMPTS
                     else None
                 )
-                return _http.Retry(ApiError(status, transient=True), wait)
+                return _http.Retry(ApiError(status, transient=True), wait, refusal=limited)
             location = urlsplit(response_headers.get("Location", ""))
             target = urlsplit(self.origin)
             moved = status in (301, 308) and (
