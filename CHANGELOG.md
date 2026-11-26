@@ -9,6 +9,9 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Changed
 
+- The reader's workers share the dataset its generation opened instead of
+  each opening the pinned version again. Each worker still counts its own
+  storage reads.
 - An explicit `null` for a member of a JSON `query` request that is no tool
   argument (`fields`, `fusion`, `rerank`, `sub_queries`, `query_match`,
   `query_attributes`, `phrase`, `contains`, `boosts`, `group_documents`,
@@ -581,9 +584,9 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   `source_id`, which has no index.
 - The reader no longer asks storage for a version manifest its publication
   does not list. Lance looks for a version under its other manifest name
-  each time it opens the dataset, once per worker of every generation; the
-  mirror now answers that miss from the publication's file list. Opening a
-  100,000-row namespace on an empty mirror made 35 fewer storage requests.
+  each time it opens the dataset, once per generation; the mirror now answers
+  that miss from the publication's file list. Opening a 100,000-row namespace
+  on an empty mirror made 35 fewer storage requests.
 - The reader's mirror reads data files in 4 KiB pages: a read of part of a
   data file fetches only the pages it lacks, instead of the whole file, and
   checks each kept page against its digest once per process before serving
