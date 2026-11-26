@@ -66,45 +66,6 @@ pub(super) async fn content_page(
     } else {
         attributes
     };
-    let mut maps = std::collections::BTreeMap::new();
-    for change in &changes {
-        if let ContentChange::Write(change, _) = change
-            && quarantine_reason(config, source, change).is_none()
-            && let Some(map) = change
-                .metadata
-                .as_ref()
-                .and_then(|metadata| metadata.connector_map.as_ref())
-        {
-            let bytes = serde_json::to_vec(map).map_err(|_| WriterError::DocumentInvalid)?;
-            maps.entry(digest(&bytes)).or_insert(bytes);
-        }
-    }
-    let metadata_store = store.as_ref();
-    let metadata_root = &root;
-    crate::io::bounded(maps, |(reference, bytes)| async move {
-        lease.state().await?;
-        let path = metadata_root
-            .clone()
-            .join("document-metadata")
-            .join(format!("{}.json", &reference[7..]));
-        match metadata_store
-            .put_opts(
-                &path,
-                bytes.into(),
-                PutOptions {
-                    mode: PutMode::Create,
-                    ..Default::default()
-                },
-            )
-            .await
-        {
-            Ok(_)
-            | Err(object_store::Error::AlreadyExists { .. })
-            | Err(object_store::Error::Precondition { .. }) => Ok(()),
-            Err(_) => Err(WriterError::StorageUnavailable),
-        }
-    })
-    .await?;
     let page = Page {
         config,
         source,
@@ -138,7 +99,7 @@ pub(super) async fn content_page(
         payload: EnvelopePayload::Content(ContentPayload {
             embedding: identity(&config.embedding),
             chunk_profile: chunk_identity(),
-            table_schema_version: SchemaVersion::new(1, 2),
+            table_schema_version: fyrr_core::envelope::TABLE_SCHEMA_VERSION,
             documents: rows.documents,
             fragments,
             quarantined: rows.quarantined,
@@ -198,7 +159,7 @@ struct RowColumns {
     texts: Vec<String>,
     metadata: Vec<String>,
     record_orders: Vec<u64>,
-    map_refs: Vec<Option<String>>,
+    maps: Vec<Option<Vec<u8>>>,
     uris: Vec<String>,
     types: Vec<String>,
     projects: Vec<Option<String>>,
@@ -270,7 +231,7 @@ struct DocumentRows<'a> {
     /// A connector document's metadata fields that are typed columns, which
     /// its stored metadata no longer holds.
     typed: serde_json::Map<String, serde_json::Value>,
-    map_ref: Option<String>,
+    map: Option<Vec<u8>>,
     section_ids: Vec<String>,
     silent: bool,
 }
@@ -346,13 +307,10 @@ impl<'a> DocumentRows<'a> {
                     .into(),
             );
         }
-        let map_ref = if let Some(map) = map {
-            let bytes = serde_json::to_vec(&map).map_err(|_| WriterError::DocumentInvalid)?;
-            let reference = digest(&bytes);
-            Some(reference)
-        } else {
-            None
-        };
+        let map = map
+            .map(|map| serde_json::to_vec(&map))
+            .transpose()
+            .map_err(|_| WriterError::DocumentInvalid)?;
         // A connector location identifies its own section, never a sibling's position.
         // An unlocated whole unit keeps the frozen v5 root:chunk identity.
         let section_ids = change
@@ -396,7 +354,7 @@ impl<'a> DocumentRows<'a> {
             change,
             common,
             typed,
-            map_ref,
+            map,
             section_ids,
             silent,
         })
@@ -466,7 +424,6 @@ impl RowColumns {
         let source = page.source;
         let change = rows.change;
         let common = &rows.common;
-        let map_ref = &rows.map_ref;
         let section_ids = &rows.section_ids;
         let silent = rows.silent;
         let mut count = 0;
@@ -523,7 +480,7 @@ impl RowColumns {
                 let common = common.as_ref().ok_or(WriterError::DocumentInvalid)?;
                 self.record_orders
                     .push(((section_number as u64) << 32) | chunk_number as u64);
-                self.map_refs.push(map_ref.clone());
+                self.maps.push(rows.map.clone());
                 self.uris.push(common.source_uri.clone());
                 self.types.push(common.source_type.clone());
                 self.projects.push(common.project.clone());
@@ -575,7 +532,7 @@ impl RowColumns {
                 Arc::new(StringArray::from(self.texts)),
                 Arc::new(StringArray::from(self.metadata)),
                 Arc::new(UInt64Array::from(self.record_orders)),
-                Arc::new(StringArray::from(self.map_refs)),
+                Arc::new(LargeBinaryArray::from_iter(self.maps)),
                 Arc::new(StringArray::from(self.uris)),
                 Arc::new(StringArray::from(self.types)),
                 Arc::new(StringArray::from(self.projects)),

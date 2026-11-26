@@ -1255,6 +1255,14 @@
         "tier": "quick",
         "seconds": 0.0
       },
+      "full:fyrr-writer:lib:fyrr_writer/prepare::tests::a_page_holds_the_connector_map_of_every_record_within_its_bounds": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
+      "full:fyrr-writer:lib:fyrr_writer/prepare::tests::only_a_table_of_this_major_with_connector_maps_is_committed": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
       "full:fyrr-reader:lib:fyrr_reader/search::open_tests::an_attribute_must_be_a_nullable_column_of_its_type_with_its_index_on_it": {
         "tier": "quick",
         "seconds": 0.0
@@ -1918,11 +1926,7 @@
         "tier": "full",
         "seconds": 10.0
       },
-      "full:fyrr:test:dense_path/metadata_io::page_metadata_coalesces_equal_keys_and_bounds_independent_puts": {
-        "tier": "full",
-        "seconds": 10.0
-      },
-      "full:fyrr:test:dense_path/metadata_io::metadata_failure_keeps_cursor_lease_until_admitted_write_finishes": {
+      "full:fyrr:test:dense_path/metadata_io::connector_maps_are_stored_in_their_rows_and_fetched_with_them": {
         "tier": "full",
         "seconds": 10.0
       },

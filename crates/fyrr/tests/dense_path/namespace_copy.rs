@@ -115,7 +115,7 @@ fn visible(config: &Path) {
         json!([]),
         "{denied}"
     );
-    // A document with a connector map, which is read from beside the dataset.
+    // A document with a connector map, which the copied rows hold.
     let map = client.call(
         "fetch",
         json!({"source_id": "metadata", "root_id": "doc-0"}),
@@ -144,8 +144,7 @@ fn fetched(config: &Path, root_id: &str) -> String {
 async fn local_copy_is_one_version_independent_and_completes_after_interruption() {
     let (config, root) = setup_on(Backend::Local);
     let storage = storage_of(&config);
-    // A source whose documents carry a connector map, which a reader loads
-    // from beside the dataset.
+    // A source whose documents carry a connector map.
     let mapped = root.join("documents.json");
     let documents: Vec<_> = (0..2)
         .map(|n| json!({"id": format!("doc-{n}"), "title": "document", "author": "Ada", "readers": ["grp:allow"], "note": format!("note-{n}"), "text": format!("fixture document {n}")}))

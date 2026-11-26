@@ -9,7 +9,7 @@ use arrow_array::builder::{ListBuilder, StringBuilder};
 use arrow_array::types::{Float16Type, Float32Type};
 use arrow_array::{
     ArrayRef, BinaryArray, BooleanArray, FixedSizeBinaryArray, FixedSizeListArray, Float64Array,
-    Int64Array, ListArray, RecordBatch, RecordBatchIterator, StringArray,
+    Int64Array, LargeBinaryArray, ListArray, RecordBatch, RecordBatchIterator, StringArray,
     TimestampMicrosecondArray, UInt64Array,
 };
 use arrow_buffer::{Buffer, NullBuffer, OffsetBuffer};
@@ -19,7 +19,7 @@ use fyrr_core::connector::{
     CONNECTOR_CONTRACT_VERSION, ChangeOp, ConnectorBatch, CursorState, DocumentChange, SyncKind,
 };
 use fyrr_core::envelope::*;
-use fyrr_core::{Contract, SchemaVersion, write_contract};
+use fyrr_core::{Contract, write_contract};
 use fyrr_reader::embedding::{digest, identity};
 use fyrr_reader::storage::{dataset_uri, namespace_store};
 use lance::dataset::WriteParams;
@@ -142,7 +142,7 @@ pub fn schema_with(dimensions: u32, element: DenseElement, extra: Vec<Field>) ->
         Field::new("searchable_text", DataType::Utf8, false),
         Field::new("metadata_json", DataType::Utf8, false),
         Field::new("record_order", DataType::UInt64, true),
-        Field::new("connector_map_ref", DataType::Utf8, true),
+        Field::new("connector_map", DataType::LargeBinary, true),
         Field::new("source_uri", DataType::Utf8, true),
         Field::new("source_type", DataType::Utf8, true),
         Field::new("project", DataType::Utf8, true),
@@ -369,9 +369,20 @@ fn weigh_change(config: &Config, change: &DocumentChange) -> Result<(u64, u64)> 
             .sum::<u64>()
     };
     let encoded = serde_json::to_vec(change).map_err(|_| WriterError::DocumentInvalid)?;
+    // Every record of the document holds its connector map.
+    let map = match change
+        .metadata
+        .as_ref()
+        .and_then(|m| m.connector_map.as_ref())
+    {
+        Some(map) => serde_json::to_vec(map)
+            .map_err(|_| WriterError::DocumentInvalid)?
+            .len() as u64,
+        None => 0,
+    };
     Ok((
         work,
-        encoded.len() as u64 + work.saturating_mul(record_estimate(config)),
+        encoded.len() as u64 + work.saturating_mul(record_estimate(config).saturating_add(map)),
     ))
 }
 
@@ -517,18 +528,9 @@ pub async fn atomic(
 
 /// Split provider batches by actual inserted-record/delete-intent work, without
 /// advancing the opaque provider cursor until the final durable sub-envelope.
-#[allow(clippy::too_many_arguments)]
-pub async fn content(
-    config: &Config,
-    source: &fyrr_core::config::SourceConfig,
-    batch: &ConnectorBatch,
-    changes: Vec<ContentChange>,
-    state: &mut CursorState,
-    lease: &crate::sync_lease::CursorLease,
-    base_head: Option<BaseHead>,
-    cache: &mut WriterEmbedding,
-    permission_stream: bool,
-) -> Result<u64> {
+/// `changes` in pages that each fit the bounds of a commit group, a change
+/// that alone exceeds them in a page of its own.
+fn pages(config: &Config, changes: Vec<ContentChange>) -> Result<Vec<Vec<ContentChange>>> {
     let mut pages = Vec::new();
     let mut page = Vec::new();
     let mut rows = 0u64;
@@ -550,6 +552,22 @@ pub async fn content(
     if !page.is_empty() || pages.is_empty() {
         pages.push(page);
     }
+    Ok(pages)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn content(
+    config: &Config,
+    source: &fyrr_core::config::SourceConfig,
+    batch: &ConnectorBatch,
+    changes: Vec<ContentChange>,
+    state: &mut CursorState,
+    lease: &crate::sync_lease::CursorLease,
+    base_head: Option<BaseHead>,
+    cache: &mut WriterEmbedding,
+    permission_stream: bool,
+) -> Result<u64> {
+    let pages = pages(config, changes)?;
     let count = pages.len();
     let mut quarantined = 0;
     for (index, page) in pages.into_iter().enumerate() {
@@ -1458,6 +1476,90 @@ mod tests {
         );
         assert_eq!(listed_bytes(&multi, &[]), 0);
         assert_eq!(listed_bytes(&plain, &attributes), 0);
+    }
+    #[test]
+    fn a_page_holds_the_connector_map_of_every_record_within_its_bounds() {
+        let config = fyrr_core::config::parse(
+            "[namespace]\nname='maps'\n[storage]\nuri='file:///x'\n\
+             [embedding]\nendpoint='http://127.0.0.1:9/v1'\ndimensions=8\n\
+             [writer]\ndocument_max_bytes='64KiB'\nenvelope_max_bytes='1MiB'\n\
+             [writer.commit]\ngroup_max_bytes='1MiB'\n",
+        )
+        .unwrap()
+        .config;
+        let map = "m".repeat(16_000);
+        let change = |n: usize| -> DocumentChange {
+            serde_json::from_value(serde_json::json!({
+                "op": "upsert", "root_id": format!("doc-{n}"), "source_revision": "r1",
+                "metadata": {"source_uri": "u", "source_type": "t", "connector_map": {"m": map}},
+                "sections": [{"text": "a"}, {"text": "b"}, {"text": "c"}],
+            }))
+            .unwrap()
+        };
+        let pages = pages(
+            &config,
+            (0..64)
+                .map(|n| ContentChange::Write(Box::new(change(n)), None))
+                .collect(),
+        )
+        .unwrap();
+        // 64 documents of three records hold 3 MiB of maps: no page of 1 MiB
+        // takes them all.
+        assert!(pages.len() > 3, "{} pages", pages.len());
+        assert_eq!(pages.iter().map(Vec::len).sum::<usize>(), 64);
+        let stored = serde_json::to_vec(&serde_json::json!({"m": map}))
+            .unwrap()
+            .len();
+        for page in &pages {
+            assert!(
+                (page.len() * 3 * stored) as u64 <= config.writer.commit.group_max_bytes.as_u64()
+            );
+        }
+    }
+    #[tokio::test]
+    async fn only_a_table_of_this_major_with_connector_maps_is_committed() {
+        let envelope: PreparedEnvelope = fyrr_core::parse_contract(include_bytes!(
+            "../../../fixtures/contracts/prepared-envelope/content.json"
+        ))
+        .unwrap();
+        let EnvelopePayload::Content(mut payload) = envelope.payload else {
+            panic!("a content envelope");
+        };
+        payload.table_schema_version = fyrr_core::SchemaVersion::new(1, 2);
+        assert!(matches!(
+            crate::apply::check_table(&payload, None),
+            Err(WriterError::NamespaceLayoutOld)
+        ));
+        payload.table_schema_version = fyrr_core::envelope::TABLE_SCHEMA_VERSION;
+        assert!(crate::apply::check_table(&payload, None).is_ok());
+        let table = |name: &'static str, schema: Arc<Schema>| async move {
+            let rows = RecordBatch::new_empty(schema.clone());
+            lance::Dataset::write(
+                RecordBatchIterator::new(vec![Ok(rows)], schema),
+                &format!("memory://{name}"),
+                None,
+            )
+            .await
+            .unwrap()
+        };
+        let current = schema(8, DenseElement::F16);
+        // The table before 2.0 held a digest of the map in `connector_map_ref`.
+        let old = Arc::new(Schema::new(
+            current
+                .fields()
+                .iter()
+                .filter(|f| f.name() != "connector_map")
+                .map(|f| f.as_ref().clone())
+                .chain([Field::new("connector_map_ref", DataType::Utf8, true)])
+                .collect::<Vec<_>>(),
+        ));
+        assert!(matches!(
+            crate::apply::check_table(&payload, Some(&table("old", old).await)),
+            Err(WriterError::NamespaceLayoutOld)
+        ));
+        assert!(
+            crate::apply::check_table(&payload, Some(&table("current", current).await)).is_ok()
+        );
     }
     #[test]
     fn the_table_holds_exactly_the_reserved_built_in_columns() {

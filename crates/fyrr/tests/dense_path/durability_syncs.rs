@@ -150,7 +150,7 @@ fn references_are_synced_before_real_prepare_and_publication() {
     for n in 8..768 {
         std::fs::remove_file(root.join("sources").join(format!("{n}.txt"))).unwrap();
     }
-    // A source with connector maps, so the page path writes document metadata.
+    // A connector source beside the local files.
     let documents = |revision: &str| {
         let documents: Vec<_> = (0..8)
             .map(|n| {
@@ -204,7 +204,7 @@ fn references_are_synced_before_real_prepare_and_publication() {
     );
     command(&config, &["writer", "commit"], &log, false);
     std::fs::write(root.join("sources/0.txt"), "fixture document 1").unwrap();
-    // New revisions with the same connector maps: their metadata objects exist.
+    // New revisions: a second prepare and publication.
     documents("r2");
     command(
         &config,
@@ -225,25 +225,11 @@ fn references_are_synced_before_real_prepare_and_publication() {
     let mut manifest_envelopes = BTreeMap::<PathBuf, Vec<PathBuf>>::new();
     let mut reachable = std::collections::BTreeSet::<PathBuf>::new();
     let mut observed_envelopes = 0;
-    let mut existing = 0;
     for (index, line) in std::fs::read_to_string(&log).unwrap().lines().enumerate() {
         let event: Value = serde_json::from_str(line).unwrap();
         let path = PathBuf::from(event["path"].as_str().unwrap());
         let pid = event["pid"].as_u64().unwrap();
         match event["event"].as_str().unwrap() {
-            "exists" => {
-                // "It exists" is an acknowledgement: the process that says so
-                // flushed the name itself, after the winner published it.
-                let published = files.get(&path).map_or(0, |(publish, _)| *publish);
-                assert!(
-                    own_syncs
-                        .get(&(pid, path.parent().unwrap().to_path_buf()))
-                        .is_some_and(|sync| *sync > published),
-                    "existing object reported before its directory was synced: {}",
-                    path.display()
-                );
-                existing += 1;
-            }
             "sync" => {
                 if event["directory"] == true {
                     own_syncs.insert((pid, path.clone()), index);
@@ -335,18 +321,13 @@ fn references_are_synced_before_real_prepare_and_publication() {
         "real prepare and publication paths were not exercised"
     );
     assert!(
-        observed_envelopes >= 2 && existing >= 8,
-        "observed envelopes {observed_envelopes}, existing objects {existing}"
+        observed_envelopes >= 2,
+        "observed envelopes {observed_envelopes}"
     );
-    // The page path (document metadata, envelopes) and the publication path
-    // (manifests, the head) each acknowledged durable puts.
+    // The page path (envelopes) and the publication path (manifests, the
+    // head) each acknowledged durable puts.
     let puts = acknowledged_puts(&log, &storage);
-    for (directory, least) in [
-        ("document-metadata", 8),
-        ("envelopes", 2),
-        ("publications", 2),
-        ("dense-fixture", 2),
-    ] {
+    for (directory, least) in [("envelopes", 2), ("publications", 2), ("dense-fixture", 2)] {
         assert!(
             puts.get(directory).copied().unwrap_or(0) >= least,
             "{directory}: too few acknowledged puts in {puts:?}"
