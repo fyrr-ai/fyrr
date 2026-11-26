@@ -105,6 +105,35 @@ fn underestimated_roots_degrade_and_do_not_retry_the_bad_estimate() {
     );
 }
 
+/// A second subject's admission settles again after searches grew the roots'
+/// scratch (3,387,392 to 3,858,243 bytes at 3,000,000 rows): that must not
+/// turn the serving generation cold.
+#[test]
+fn only_the_first_settlement_decides() {
+    let config = fyrr_core::config::parse(
+        "[namespace]\nname='budget'\n[storage]\nuri='s3://budget'\n[embedding]\n\
+            endpoint='https://cache.invalid'\n",
+    )
+    .unwrap()
+    .config;
+    let manifest: ContentManifest = serde_json::from_str(include_str!(
+        "../../../../fixtures/contracts/content-manifest/manifest.json"
+    ))
+    .unwrap();
+    let pool = Arc::new(tokio::sync::Semaphore::new(1024 * 1024));
+    let reservation = PreparationReservation::acquire(&config, &manifest, 1, pool).unwrap();
+    assert!(reservation.settle(0).unwrap());
+    let settled = reservation.bytes();
+    // Alone, this size degrades (see the test above).
+    assert!(reservation.settle(settled + 1).unwrap());
+    assert!(reservation.warm());
+    assert_eq!(
+        reservation.bytes(),
+        settled,
+        "a later call moves no permits"
+    );
+}
+
 #[test]
 fn reservation_falls_back_and_stays_owned_until_last_reference() {
     let config = fyrr_core::config::parse(
