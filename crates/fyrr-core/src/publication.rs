@@ -398,8 +398,8 @@ pub struct IndexIdentity {
     pub kind: String,
     pub column: String,
     pub uuid: String,
-    /// The IVF partitions of a vector index (`ivf_rq`), as Lance built or
-    /// rebalanced it; absent for every other kind.
+    /// The IVF partitions of the model of a vector index segment
+    /// (`ivf_rq`); absent for every other kind.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub partitions: Option<u32>,
 }

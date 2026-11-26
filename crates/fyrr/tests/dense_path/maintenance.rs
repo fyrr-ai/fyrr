@@ -1907,7 +1907,7 @@ async fn maintenance_repartitions_the_vector_index_of_a_growing_namespace_on_sto
         })
         .collect();
     assert_eq!(sizes.iter().sum::<usize>(), FINAL_ROWS);
-    // The publication records the count Lance rebalanced to.
+    // The publication records the count of the model maintenance trained.
     assert_eq!(recorded().await, lance_counts(&after), "{after}");
     assert_eq!(recorded().await, [Some(sizes.len() as u32)], "{after}");
     assert!(
@@ -1985,19 +1985,82 @@ async fn vector_segment_rows(config: &Path, version: Option<u64>) -> Vec<usize> 
         .collect()
 }
 
-/// A namespace of 24 publications of 250 rows has 24 vector segments. With
-/// `step_max_duration = 8s` a merge step may rewrite 5,600 rows (half the
-/// step at 1,400 rows/s), so `writer maintain` merges the segments in runs of
-/// at most that many rows and leaves a segment that large alone: 22 segments
-/// become one of 5,500 rows, and the last two one of 500. Every version the
-/// steps publish holds segments of at most that many rows, and the namespace
-/// answers like before.
+/// Four writes of 100 rows of 32-row partitions have models of 4 partitions.
+/// A run stopped after its first step trains one of 12 into the newest
+/// segment. Rewriting that write's 100 rows deletes the segment's only
+/// fragment, and Lance drops the segment with the model in the same commit:
+/// the rewritten rows follow the model of 4, and the next run trains the model
+/// of 12 again and brings every segment to it.
 #[tokio::test]
 #[ignore = "real executable and local storage; scripts/ci"]
-async fn maintenance_merges_the_vector_segments_in_tiers_on_storage() {
-    const COMMITS: usize = 24;
-    const COMMIT_ROWS: usize = 250;
-    const STEP_ROWS: usize = 5_600;
+async fn maintenance_trains_again_a_model_whose_segment_lost_its_rows_on_storage() {
+    let (config, root) = setup_on(Backend::Local);
+    let text = std::fs::read_to_string(&config)
+        .unwrap()
+        .split("[[sources]]")
+        .next()
+        .unwrap()
+        .replace("[namespace]\n", "[namespace]\ndense_partition_rows = 32\n");
+    let sources = root.join("sources");
+    std::fs::remove_dir_all(&sources).unwrap();
+    std::fs::create_dir_all(&sources).unwrap();
+    std::fs::write(
+        &config,
+        format!(
+            "{text}\n[writer]\nthreads = 2\n\n[writer.maintenance]\nstep_max_duration = \"10m\"\n\n[[sources]]\nid = \"docs\"\ntype = \"local-files\"\npermissions = \"fixed\"\nreaders = [\"grp:allow\"]\n[sources.scope]\npaths = [\"{}\"]\n",
+            sources.display()
+        ),
+    )
+    .unwrap();
+    success(&config, &["writer", "namespace", "create"]);
+    let write = |rows: std::ops::Range<usize>, version: &str| {
+        for row in rows {
+            let text = format!("model doc {row} {version}");
+            std::fs::write(sources.join(format!("{row}.txt")), &text).unwrap();
+            root.embedding.insert_both(&text, clustered(row % 64, row));
+        }
+        success(&config, &["writer", "sync"]);
+        success(&config, &["writer", "commit"]);
+    };
+    for first in [0, 100, 200, 300] {
+        write(first..first + 100, "a");
+    }
+    assert_eq!(vector_partitions(&config).await, [Some(4); 4]);
+    let output = run_with(
+        &config,
+        &["writer", "maintain"],
+        &[("FYRR_TEST_VECTOR_STEPS", "1")],
+    );
+    assert!(output.status.success(), "{}", report(&output));
+    assert_eq!(
+        vector_partitions(&config).await,
+        [Some(4), Some(4), Some(4), Some(12)]
+    );
+    write(300..400, "b");
+    assert_eq!(vector_partitions(&config).await, [Some(4); 4]);
+    let output = run(&config, &["writer", "maintain"]);
+    assert!(output.status.success(), "{}", report(&output));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("index_model=trained"), "{stderr}");
+    let partitions = vector_partitions(&config).await;
+    assert_eq!(partitions, vec![Some(12); partitions.len()]);
+    let mut client = tools::Mcp::open(&config);
+    let found = tools::body(client.call("search", json!({"query": "model doc 377 b", "limit": 3})));
+    assert!(found.to_string().contains("model doc 377 b"), "{found}");
+    drop(client);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// 66 writes of 10 rows leave 66 vector segments, more than `writer serve`
+/// lets an index keep before it maintains it. With `FYRR_TEST_STEP_ROWS = 15`
+/// (debug builds) no step can copy two of them into one: `writer maintain`
+/// merges none, and the `writer serve` that follows finds no maintenance due,
+/// so its ticks write nothing.
+#[tokio::test]
+#[ignore = "real executable and local storage; scripts/ci"]
+async fn a_crowded_index_that_no_step_can_merge_makes_no_writes_on_storage() {
+    const COMMITS: usize = 66;
+    const COMMIT_ROWS: usize = 10;
     let (config, root) = setup_on(Backend::Local);
     let text = std::fs::read_to_string(&config)
         .unwrap()
@@ -2012,14 +2075,14 @@ async fn maintenance_merges_the_vector_segments_in_tiers_on_storage() {
     std::fs::write(
         &config,
         format!(
-            "{text}\n[writer]\nthreads = 2\nenvelope_max_rows = {COMMIT_ROWS}\n\n[writer.commit]\ngroup_max_rows = {COMMIT_ROWS}\n\n[writer.maintenance]\nstep_max_duration = \"8s\"\n\n[[sources]]\nid = \"docs\"\ntype = \"local-files\"\npermissions = \"fixed\"\nreaders = [\"grp:allow\"]\n[sources.scope]\npaths = [\"{}\"]\n",
+            "{text}\n[writer]\nthreads = 2\nenvelope_max_rows = {COMMIT_ROWS}\n\n[writer.commit]\ngroup_max_rows = {COMMIT_ROWS}\ncoalescing_timer = \"1s\"\n\n[writer.maintenance]\nstep_max_duration = \"10m\"\n\n[[sources]]\nid = \"docs\"\ntype = \"local-files\"\npermissions = \"fixed\"\nreaders = [\"grp:allow\"]\n[sources.scope]\npaths = [\"{}\"]\n",
             sources.display()
         ),
     )
     .unwrap();
     success(&config, &["writer", "namespace", "create"]);
     for row in 0..COMMITS * COMMIT_ROWS {
-        let text = format!("seg doc {row}");
+        let text = format!("crowd doc {row}");
         std::fs::write(sources.join(format!("{row}.txt")), &text).unwrap();
         root.embedding.insert_both(&text, clustered(row % 64, row));
         if (row + 1) % COMMIT_ROWS == 0 {
@@ -2027,40 +2090,230 @@ async fn maintenance_merges_the_vector_segments_in_tiers_on_storage() {
             success(&config, &["writer", "commit"]);
         }
     }
+    let output = run_with(
+        &config,
+        &["writer", "maintain"],
+        &[("FYRR_TEST_STEP_ROWS", "15")],
+    );
+    assert!(output.status.success(), "{}", report(&output));
+    assert_eq!(
+        vector_segment_rows(&config, None).await,
+        [COMMIT_ROWS; COMMITS]
+    );
+    let version = publication(&config).await.1.lance_version;
+
+    let log = root.join("service.log");
+    let mut service = Command::new(crate::common::binary())
+        .arg("--config")
+        .arg(&config)
+        .args(["writer", "serve", "--jobs", "1"])
+        .env("FYRR_TEST_STEP_ROWS", "15")
+        .env(
+            "VIRTUAL_ENV",
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../connectors/.venv"),
+        )
+        .stdout(Stdio::null())
+        .stderr(std::fs::File::create(&log).unwrap())
+        .spawn()
+        .unwrap();
+    let events = |event: &str| {
+        std::fs::read_to_string(&log)
+            .unwrap()
+            .matches(&format!("writer_service event={event}"))
+            .count()
+    };
+    let deadline = Instant::now() + Duration::from_secs(120);
+    while events("idle") < 5 {
+        assert!(Instant::now() < deadline, "the service did not tick");
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    let _ = Command::new("kill")
+        .args(["-TERM", &service.id().to_string()])
+        .status();
+    let _ = service.wait();
+    assert_eq!(events("published"), 0);
+    assert_eq!(events("maintained"), 0);
+    assert_eq!(publication(&config).await.1.lance_version, version);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// The partitions of each vector segment, in publication order.
+async fn vector_partitions(config: &Path) -> Vec<Option<u32>> {
+    publication(config)
+        .await
+        .1
+        .indexes
+        .into_iter()
+        .filter(|index| index.kind == "ivf_rq")
+        .map(|index| index.partitions)
+        .collect()
+}
+
+/// The rows of each `train` and `encode` step that `writer maintain` reported.
+fn encoded_rows(stderr: &str, kind: &str) -> Vec<u64> {
+    stderr
+        .lines()
+        .filter(|line| line.contains(&format!("index_merge=done kind={kind} ")))
+        .map(|line| {
+            line.split_whitespace()
+                .find_map(|word| word.strip_prefix("rows="))
+                .unwrap()
+                .parse()
+                .unwrap()
+        })
+        .collect()
+}
+
+/// A namespace of 24 writes of 500 rows has 24 vector segments of the model
+/// of the first write. With `FYRR_TEST_STEP_ROWS = 4800` (debug builds), so
+/// that no step depends on how fast the host is, `writer maintain` trains a
+/// model of 21 partitions for the 12,000 rows and encodes the newest segment
+/// against it, at most 2,400 rows in the step that trains, then the oldest
+/// segments in steps of at most 4,800 rows, and copies neighbors into segments
+/// of at most 4,800.
+/// No version has more segments than the one before, and a later write follows
+/// the new model. 22 more writes ask for 42 partitions. A run that stops after
+/// two steps of at most 2,400 rows leaves segments of both models, and the one
+/// of 4,500 rows answers for the fragments the second step did not reach. In
+/// that state a query finds rows of every segment, a write follows the newest
+/// model, and a deleted row is compacted away; the next run encodes the rest
+/// in steps of at most 2,400 rows, and the namespace answers like before.
+#[tokio::test]
+#[ignore = "real executable and local storage; scripts/ci"]
+async fn maintenance_grows_the_vector_model_in_bounded_steps_on_storage() {
+    const COMMITS: usize = 24;
+    const COMMIT_ROWS: usize = 500;
+    let (config, root) = setup_on(Backend::Local);
+    let text = std::fs::read_to_string(&config)
+        .unwrap()
+        .split("[[sources]]")
+        .next()
+        .unwrap()
+        .to_owned();
+    let sources = root.join("sources");
+    std::fs::remove_dir_all(&sources).unwrap();
+    std::fs::create_dir_all(&sources).unwrap();
+    // A commit of exactly `group_max_rows` rows keeps its fragment out of compaction.
+    std::fs::write(
+        &config,
+        format!(
+            "{text}\n[writer]\nthreads = 2\nenvelope_max_rows = {COMMIT_ROWS}\n\n[writer.commit]\ngroup_max_rows = {COMMIT_ROWS}\n\n[writer.maintenance]\nstep_max_duration = \"10m\"\n\n[[sources]]\nid = \"docs\"\ntype = \"local-files\"\npermissions = \"fixed\"\nreaders = [\"grp:allow\"]\n[sources.scope]\npaths = [\"{}\"]\n",
+            sources.display()
+        ),
+    )
+    .unwrap();
+    success(&config, &["writer", "namespace", "create"]);
+    let write = |rows: std::ops::Range<usize>| {
+        for row in rows {
+            let text = format!("seg doc {row}");
+            std::fs::write(sources.join(format!("{row}.txt")), &text).unwrap();
+            root.embedding.insert_both(&text, clustered(row % 64, row));
+            if (row + 1) % COMMIT_ROWS == 0 {
+                success(&config, &["writer", "sync"]);
+                success(&config, &["writer", "commit"]);
+            }
+        }
+    };
+    let maintain = |env: &[(&str, &str)]| {
+        let output = run_with(&config, &["writer", "maintain"], env);
+        assert!(output.status.success(), "{}", report(&output));
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        assert!(!stderr.contains("index_merge=skipped"), "{stderr}");
+        stderr
+    };
+    let found = |query: &str| {
+        let mut client = tools::Mcp::open(&config);
+        let found = tools::body(client.call("search", json!({"query": query, "limit": 3})));
+        found.to_string().contains(query)
+    };
+    write(0..COMMITS * COMMIT_ROWS);
     assert_eq!(
         vector_segment_rows(&config, None).await,
         vec![COMMIT_ROWS; COMMITS]
     );
     let first = publication(&config).await.1.lance_version + 1;
 
-    let maintained = success(&config, &["writer", "maintain"]);
-    let after = vector_segment_rows(&config, None).await;
-    assert_eq!(after, [22 * COMMIT_ROWS, 2 * COMMIT_ROWS], "{maintained}");
-    assert!(maintained["index_merge_steps"].as_u64().unwrap() >= 2);
-    // No step rewrote more than the budget: every version a step published has
-    // segments of at most that many rows, and never more segments than before.
+    let stderr = maintain(&[("FYRR_TEST_STEP_ROWS", "4800")]);
+    assert!(stderr.contains("index_model=trained"), "{stderr}");
+    assert!(
+        encoded_rows(&stderr, "train")
+            .iter()
+            .all(|&rows| rows <= 2_400),
+        "{stderr}"
+    );
+    assert!(
+        encoded_rows(&stderr, "encode")
+            .iter()
+            .all(|&rows| rows <= 4_800),
+        "{stderr}"
+    );
+    assert_eq!(
+        vector_segment_rows(&config, None).await,
+        [9 * COMMIT_ROWS, 9 * COMMIT_ROWS, 6 * COMMIT_ROWS]
+    );
+    assert_eq!(vector_partitions(&config).await, [Some(21); 3]);
+    // No step added a segment: every version a step published has at most as many as before.
     let last = publication(&config).await.1.lance_version;
     let mut count = COMMITS;
     for version in first..=last {
         let rows = vector_segment_rows(&config, Some(version)).await;
-        assert!(
-            rows.iter().all(|&rows| rows <= STEP_ROWS),
-            "{version}: {rows:?}"
-        );
         assert!(rows.len() <= count, "{version}: {rows:?}");
         count = rows.len();
     }
-    // No two neighbors fit one step. The manifest records a pair only for a crowded index
-    // (above 64 segments), so `writer serve` has nothing to merge here.
-    assert!(
-        after.windows(2).all(|pair| pair[0] + pair[1] > STEP_ROWS),
-        "{after:?}"
-    );
+    // The manifest records a pair only for a crowded index (above 64 segments).
     assert!(publication(&config).await.1.merge_pair_rows.is_empty());
+    // A later write is encoded against the grown model, not the one of the first write.
+    write(COMMITS * COMMIT_ROWS..(COMMITS + 1) * COMMIT_ROWS);
+    assert_eq!(vector_partitions(&config).await, [Some(21); 4]);
+
+    // Rows that ask for 42 partitions; a run of two vector steps of at most 2,400 rows.
+    write((COMMITS + 1) * COMMIT_ROWS..47 * COMMIT_ROWS);
+    let stderr = maintain(&[
+        ("FYRR_TEST_STEP_ROWS", "2400"),
+        ("FYRR_TEST_VECTOR_STEPS", "2"),
+    ]);
+    assert_eq!(encoded_rows(&stderr, "train"), [500], "{stderr}");
+    assert_eq!(encoded_rows(&stderr, "encode"), [2_000], "{stderr}");
+    let partitions = vector_partitions(&config).await;
+    assert!(
+        partitions.contains(&Some(21)) && partitions.contains(&Some(42)),
+        "{partitions:?}"
+    );
+    // A row the second step encoded, one the large segment still answers for, and one of a
+    // later write of the old model.
+    for query in ["seg doc 77", "seg doc 9001", "seg doc 20000"] {
+        assert!(found(query), "{query}: {partitions:?}");
+    }
+    // The same rows by their vectors alone: no text matches the query, only the dense lane.
+    for row in [77, 9001, 20000] {
+        let query = format!("zzprobe {row}");
+        root.embedding.insert_both(&query, clustered(row % 64, row));
+        let mut client = tools::Mcp::open(&config);
+        let hits = tools::body(client.call("search", json!({"query": query, "limit": 3})));
+        assert!(
+            hits.to_string().contains(&format!("seg doc {row}\"")),
+            "{row}: {hits}"
+        );
+    }
+    write(47 * COMMIT_ROWS..48 * COMMIT_ROWS);
+    assert_eq!(vector_partitions(&config).await.last(), Some(&Some(42)));
+    // A replaced document leaves a deletion in a fragment of the old model: compacted away.
+    std::fs::remove_file(sources.join("9001.txt")).unwrap();
+    success(&config, &["writer", "sync"]);
+    success(&config, &["writer", "commit"]);
+
+    let stderr = maintain(&[("FYRR_TEST_STEP_ROWS", "2400")]);
+    assert!(!stderr.contains("index_model=trained"), "{stderr}");
+    assert!(
+        encoded_rows(&stderr, "encode")
+            .iter()
+            .all(|&rows| rows <= 2_400),
+        "{stderr}"
+    );
+    let partitions = vector_partitions(&config).await;
+    assert_eq!(partitions, vec![Some(42); partitions.len()]);
     assert_eq!(command(&config, &["writer", "verify"])["verified"], true);
-    let mut client = tools::Mcp::open(&config);
-    let found = tools::body(client.call("search", json!({"query": "seg doc 77", "limit": 3})));
-    assert!(found.to_string().contains("seg doc 77"), "{found}");
-    drop(client);
+    assert!(found("seg doc 77"));
+    assert!(!found("seg doc 9001"));
     std::fs::remove_dir_all(root).unwrap();
 }
