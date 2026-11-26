@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .._http import MAX_ENTRIES
 from ..connector import SourceUser
 from ..validate import MAX_READERS
-from .client import MAX_ENTRIES, Client, object_id
+from .client import Client, object_id
 from .feeds import Repository
 
 

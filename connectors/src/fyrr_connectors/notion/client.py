@@ -44,8 +44,6 @@ _CODES = frozenset(
         "gateway_timeout",
     }
 )
-MAX_LIST_PAGES = 10_000
-MAX_RESPONSE_BYTES = 16 << 20
 
 
 class ApiError(_http.ApiError):
@@ -90,72 +88,61 @@ class Client:
         #: Notion's clock when it last answered (the `Date` header).
         self.server_time = datetime.now(UTC)
 
+    @_http.retry(
+        _http.RetryPolicy(
+            ATTEMPTS,
+            float("inf"),
+            MAX_WAIT_SECONDS,
+            jitter="wait",
+            budget=300,
+            retry_statuses=(409, 429),
+        ),
+        lambda: ApiError(0, "transport", transient=True),
+    )
     def _request(
         self,
         method: str,
         path: str,
         params: dict[str, Any] | None = None,
         body: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        status, code = 0, "transport"
-        retries = _http.Retries(
-            _http.RetryPolicy(
-                ATTEMPTS,
-                float("inf"),
-                MAX_WAIT_SECONDS,
-                jitter="wait",
-                budget=300,
-                retry_statuses=(409, 429),
-            ),
-            ApiError(0, "transport", transient=True),
+        *,
+        _retry: _http.Retries,
+    ) -> dict[str, Any] | _http.Retry:
+        pause = self._ready - time.monotonic()
+        if pause > 0:
+            time.sleep(pause)
+        self._ready = time.monotonic() + MIN_INTERVAL_SECONDS
+        response = self._session.request(
+            method,
+            f"{self._endpoint}/v1/{path}",
+            params=params,
+            json=body,
+            timeout=TIMEOUT_SECONDS,
+            stream=True,
         )
-        for _attempt in retries:
-            pause = self._ready - time.monotonic()
-            if pause > 0:
-                time.sleep(pause)
-            self._ready = time.monotonic() + MIN_INTERVAL_SECONDS
+        try:
+            response._content = _http.read_body(
+                response, _http.MAX_RESPONSE, ValueError("notion_response_limit")
+            )
+        finally:
+            response.close()
+        status = response.status_code
+        if status < 300:
             try:
-                response = self._session.request(
-                    method,
-                    f"{self._endpoint}/v1/{path}",
-                    params=params,
-                    json=body,
-                    timeout=TIMEOUT_SECONDS,
-                    stream=True,
-                )
-                try:
-                    response._content = _http.read_body(
-                        response, MAX_RESPONSE_BYTES, ValueError("notion_response_limit")
-                    )
-                finally:
-                    response.close()
-            except (
-                requests.ConnectionError,
-                requests.Timeout,
-                requests.exceptions.ChunkedEncodingError,
-            ):
-                status, code = 0, "transport"
-                continue
-            status = response.status_code
-            if status < 300:
-                try:
-                    answer = response.json()
-                except ValueError:
-                    answer = None
-                if isinstance(answer, dict):
-                    self._clock(response)
-                    return answer
-                code = "body"  # Not Notion's JSON: a proxy in between.
-                continue
-            code = _code(response)
-            retries.error = ApiError(status, code, transient=True)
-            if retries.policy.retryable(status):
-                after = _http.retry_after(response.headers.get("Retry-After", ""))
-                if after is not None:
-                    retries.wait = max(after, retries.wait)
-                continue
-            raise ApiError(status, code)
-        raise ApiError(status, code, transient=True)
+                answer = response.json()
+            except ValueError:
+                answer = None
+            if isinstance(answer, dict):
+                self._clock(response)
+                return answer
+            # Not Notion's JSON: a proxy in between.
+            return _http.Retry(ApiError(status, "body", transient=True))
+        code = _code(response)
+        if _retry.policy.retryable(status):
+            after = _http.retry_after(response.headers.get("Retry-After", ""))
+            wait = None if after is None else max(after, _retry.wait)
+            return _http.Retry(ApiError(status, code, transient=True), wait)
+        raise ApiError(status, code)
 
     def _clock(self, response: requests.Response) -> None:
         try:
@@ -173,7 +160,7 @@ class Client:
         `query` the call is a POST (search, data-source query)."""
         cursor: str | None = None
         seen: set[str] = set()
-        for _ in range(MAX_LIST_PAGES):
+        for _ in range(_http.MAX_PAGES):
             paging: dict[str, Any] = {"page_size": PAGE_SIZE}
             if cursor is not None:
                 paging["start_cursor"] = cursor

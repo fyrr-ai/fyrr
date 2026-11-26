@@ -10,7 +10,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from fake_drive import FakeDrive
 
-from fyrr_connectors import bundled, runtime
+from fyrr_connectors import _http, bundled, runtime
 from fyrr_connectors.google_drive import client
 from fyrr_connectors.google_drive.client import ATTEMPTS, ApiError, Client
 
@@ -156,7 +156,7 @@ def test_json_response_body_is_bounded_and_closed(drive, monkeypatch, status):
 
     session.get = get
     monkeypatch.setattr(client, "authorized_session", lambda *_: session)
-    monkeypatch.setattr(client, "MAX_RESPONSE_BYTES", 8, raising=False)
+    monkeypatch.setattr(_http, "MAX_RESPONSE", 8)
     if status != 200:
         drive.fail(_files, status, "insufficientFilePermissions")
     with pytest.raises(ApiError, match="response_limit"):
@@ -168,7 +168,7 @@ def test_json_response_body_is_bounded_and_closed(drive, monkeypatch, status):
 def test_page_limit_refuses_an_incomplete_listing(drive, monkeypatch):
     for number in range(5):
         drive.put(f"doc-{number}", owner=ALICE)
-    monkeypatch.setattr(client, "MAX_PAGES", 1, raising=False)
+    monkeypatch.setattr(_http, "MAX_PAGES", 1)
     with pytest.raises(ApiError, match="pagination_limit"):
         list(_client().pages(ALICE, "files", corpora="user", fields="nextPageToken,files(id)"))
 
@@ -215,7 +215,7 @@ def test_large_listing_completes_reconciliation(drive, index, monkeypatch):
 def test_sync_paths_propagate_pagination_failure(drive, index, monkeypatch, kind):
     for number in range(5):
         drive.put(f"doc-{number}", owner=ALICE)
-    monkeypatch.setattr(client, "MAX_PAGES", 1)
+    monkeypatch.setattr(_http, "MAX_PAGES", 1)
     batches = []
     with pytest.raises(ApiError, match="pagination_limit"):
         for batch in index.run(kind, "sync", owners=[ALICE]):
@@ -305,6 +305,12 @@ def test_listing_over_aggregate_limit_never_completes(drive, index, monkeypatch)
         ("7", 7),
         ("Wed, 21 Oct 2015 07:28:00 GMT", 10),
         ("Wed, 21 Oct 2015 07:27:00 GMT", 0),
+        # The other two HTTP date formats (RFC 9110, 5.6.7) are GMT too, asctime without a zone.
+        ("Wednesday, 21-Oct-15 07:28:00 GMT", 10),
+        ("Wed Oct 21 07:28:00 2015", 10),
+        ("Wed Oct 21 07:27:00 2015", 0),
+        ("Wed, 21 Oct 2015 07:28:00 garbage", None),
+        ("Wed, 21 Oct 2015 07:28:00", None),
         ("soon", None),
         ("nan", None),
         ("-1", None),
@@ -315,6 +321,38 @@ def test_shared_retry_after_parser(value, expected, monkeypatch):
 
     monkeypatch.setattr(_http.time, "time", lambda: 1445412470)
     assert _http.retry_after(value) == expected
+
+
+def test_jitter_never_carries_a_wait_past_the_cap(monkeypatch):
+    from fyrr_connectors import _http
+
+    sleeps = []
+    monkeypatch.setattr(_http.time, "sleep", sleeps.append)
+    monkeypatch.setattr(_http.random, "uniform", lambda low, high: high)
+    retries = _http.Retries(
+        _http.RetryPolicy(wait_cap=60, jitter="wait", budget=300), ValueError("budget")
+    )
+    attempts = iter(retries)
+    next(attempts)
+    retries.wait = 60
+    next(attempts)
+    assert sleeps == [60]
+
+
+def test_the_budget_is_read_against_one_clock_reading_per_attempt(monkeypatch):
+    from fyrr_connectors import _http
+
+    sleeps = []
+    ticks = iter(0.25 * step for step in range(100))
+    monkeypatch.setattr(_http.time, "sleep", sleeps.append)
+    monkeypatch.setattr(_http.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(_http.random, "uniform", lambda low, high: high)
+    retries = _http.Retries(_http.RetryPolicy(jitter="wait", budget=300), ValueError("budget"))
+    attempts = iter(retries)
+    next(attempts)
+    retries.wait = 299
+    next(attempts)  # the jitter is clipped to what the budget leaves: 299.5 s after 0.5 s
+    assert sleeps == [299.5]
 
 
 def test_retry_after_over_remaining_budget_fails_without_sleep(monkeypatch):

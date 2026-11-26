@@ -2,7 +2,7 @@
 
 import pytest
 
-from fyrr_connectors.github import client
+from fyrr_connectors import _http
 from fyrr_connectors.github.auth import AppAuth
 from fyrr_connectors.github.client import ATTEMPTS, ApiError, Client
 from fyrr_connectors.github.config import Settings
@@ -17,6 +17,53 @@ def test_auth_verifies_installation_and_mints_read_only_token(github, index):
     assert len(calls) == 1 and set(calls[0]["permissions"].values()) == {"read"}
     assert auth.token() == github.token
     assert len([method for method, _, _ in github.requests if method == "POST"]) == 1
+
+
+def test_a_token_request_that_may_have_been_sent_is_not_sent_again(github, index, monkeypatch):
+    import requests
+
+    handled = github.handle
+
+    def lost(method, path, params, headers):
+        reply = handled(method, path, params, headers)  # the server issued a token ...
+        if method == "POST":
+            raise requests.ReadTimeout("slow")  # ... and the answer was lost
+        return reply
+
+    monkeypatch.setattr(github, "handle", lost)
+    auth = AppAuth(Client(github.origin), Settings.parse(index.settings))
+    with pytest.raises(ApiError):
+        auth.refresh()
+    assert len([m for m, _, _ in github.requests if m == "POST"]) == 1
+
+
+@pytest.mark.parametrize("status", [403, 429])
+def test_a_token_request_refused_for_the_rate_limit_is_sent_again(github, index, status):
+    github.fail("/app/installations/20/access_tokens", status, headers={"Retry-After": "1"})
+    auth = AppAuth(Client(github.origin), Settings.parse(index.settings))
+    assert auth.token() == github.token
+    assert github.sleeps == [1]
+    assert len([m for m, _, _ in github.requests if m == "POST"]) == 2
+
+
+def test_a_token_request_is_sent_again_after_a_failed_connection(github, index, monkeypatch):
+    import requests
+    import urllib3
+
+    handled = github.handle
+    refused = []
+
+    def unreachable(method, path, params, headers):
+        if method == "POST" and not refused:
+            refused.append(path)
+            reason = urllib3.exceptions.NewConnectionError(None, "refused")
+            raise requests.ConnectionError(urllib3.exceptions.MaxRetryError(None, "/", reason))
+        return handled(method, path, params, headers)
+
+    monkeypatch.setattr(github, "handle", unreachable)
+    auth = AppAuth(Client(github.origin), Settings.parse(index.settings))
+    assert auth.token() == github.token
+    assert len([m for m, _, _ in github.requests if m == "POST"]) == 1
 
 
 @pytest.mark.parametrize(
@@ -58,6 +105,29 @@ def test_rate_limits_honor_server_waits(github, index, status, headers, expected
     github.fail("/installation/repositories", status, headers=headers)
     index.sync()
     assert github.sleeps == [expected]
+
+
+@pytest.mark.parametrize("status", [403, 429])
+def test_a_retry_after_date_in_the_past_is_no_wait_and_retries_are_bounded(github, index, status):
+    past = {"Retry-After": "Wed, 21 Oct 2015 07:28:00 GMT"}
+    github.fail("/installation/repositories", status, headers=past)
+    index.sync()
+    assert github.sleeps == []
+    github.requests.clear()
+    github.fail("/installation/repositories", status, headers=past, times=ATTEMPTS + 3)
+    with pytest.raises(ApiError) as caught:
+        index.sync()
+    assert caught.value.status == status and caught.value.transient
+    asked = [path for _, path, _ in github.requests if path == "/installation/repositories"]
+    assert len(asked) == ATTEMPTS  # the first call and five retries
+
+
+@pytest.mark.parametrize("value", ["-1", "nan", "soon"])
+def test_an_invalid_retry_after_is_refused_without_a_wait(github, index, value):
+    github.fail("/installation/repositories", 429, headers={"Retry-After": value})
+    with pytest.raises(ValueError, match="rate_header_invalid"):
+        index.sync()
+    assert github.sleeps == []
 
 
 def test_plain_permission_403_is_not_retried(github, index):
@@ -107,7 +177,7 @@ def test_hostile_pages_are_refused(github, index, monkeypatch, corruption):
 
 
 def test_response_size_is_bounded(github, index, monkeypatch):
-    monkeypatch.setattr(client, "MAX_RESPONSE_BYTES", 64)
+    monkeypatch.setattr(_http, "MAX_RESPONSE", 64)
     with pytest.raises(ValueError, match="response_limit"):
         index.sync()
 
@@ -115,7 +185,7 @@ def test_response_size_is_bounded(github, index, monkeypatch):
 def test_page_work_is_bounded(github, index, monkeypatch):
     github.repo(2)
     github.repo(3)
-    monkeypatch.setattr(client, "MAX_PAGES", 1)
+    monkeypatch.setattr(_http, "MAX_PAGES", 1)
     with pytest.raises(ValueError, match="listing_limit"):
         index.sync()
 

@@ -9,9 +9,6 @@ from .._http import time as time
 
 ATTEMPTS = 6
 WAIT_BUDGET = 300
-MAX_RESPONSE = 16 << 20
-MAX_ENTRIES = 100_000
-MAX_PAGES = 10_000
 GONE = frozenset({"channel_not_found", "not_in_channel"})
 
 
@@ -53,7 +50,7 @@ class Client:
         with _http.response(
             self.session, verb, self.origin + "/api/" + method, self.token, params=params
         ) as response:
-            body = _http.json_response(response, _retry, ApiError, MAX_RESPONSE)
+            body = _http.json_response(response, _retry, ApiError, _http.MAX_RESPONSE)
             if isinstance(body, _http.Retry):
                 return body
             try:
@@ -90,7 +87,7 @@ class Client:
 
     def pages(self, method, key, **params):
         cursor, seen, count = "", set(), 0
-        for _ in range(MAX_PAGES):
+        for _ in range(_http.MAX_PAGES):
             body = self.get(method, **params, limit=100, cursor=cursor)
             if body.get("is_limited") is True:
                 raise ApiError("history_limited")
@@ -100,7 +97,7 @@ class Client:
                 str if method == "conversations.members" else dict,
             )
             count += len(entries)
-            if count > MAX_ENTRIES:
+            if count > _http.MAX_ENTRIES:
                 raise ApiError("entry_limit")
             yield entries
             metadata = body.get("response_metadata", {})

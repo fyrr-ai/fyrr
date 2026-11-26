@@ -197,6 +197,13 @@ def encode(
     return header, rows
 
 
+def header_bytes(source_id: str, kind: SyncKind, start: str | None, batch: Batch) -> int:
+    """The exact size of the header that `run` sends for this batch, in bytes: what a
+    provider checks against `limits.max_bytes` before it yields the batch."""
+    header, _ = encode(source_id, kind, start, batch)
+    return len(json.dumps(header).encode())
+
+
 def contract_document(header: dict[str, Any], rows: pa.RecordBatch | None) -> dict[str, Any]:
     """The full contract (JSON) form of a batch, as in the golden fixtures."""
     if rows is None:

@@ -2995,6 +2995,82 @@
         "tier": "quick",
         "seconds": null
       },
+      "python:connectors/tests/github/test_github_auth_client.py::test_a_token_request_refused_for_the_rate_limit_is_sent_again[403]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/github/test_github_auth_client.py::test_a_token_request_refused_for_the_rate_limit_is_sent_again[429]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/google_drive/test_google_drive_client.py::test_shared_retry_after_parser[Wed, 21 Oct 2015 07:28:00 garbage-None]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/google_drive/test_google_drive_client.py::test_shared_retry_after_parser[Wed, 21 Oct 2015 07:28:00-None]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/google_drive/test_google_drive_client.py::test_the_budget_is_read_against_one_clock_reading_per_attempt": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/github/test_github_auth_client.py::test_a_retry_after_date_in_the_past_is_no_wait_and_retries_are_bounded[403]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/github/test_github_auth_client.py::test_a_retry_after_date_in_the_past_is_no_wait_and_retries_are_bounded[429]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/github/test_github_auth_client.py::test_a_token_request_is_sent_again_after_a_failed_connection": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/github/test_github_auth_client.py::test_a_token_request_that_may_have_been_sent_is_not_sent_again": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/github/test_github_auth_client.py::test_an_invalid_retry_after_is_refused_without_a_wait[-1]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/github/test_github_auth_client.py::test_an_invalid_retry_after_is_refused_without_a_wait[nan]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/github/test_github_auth_client.py::test_an_invalid_retry_after_is_refused_without_a_wait[soon]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/github/test_github_permissions.py::test_later_batches_are_measured_from_the_end_cursor_before_them": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/google_drive/test_google_drive_client.py::test_jitter_never_carries_a_wait_past_the_cap": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/google_drive/test_google_drive_client.py::test_shared_retry_after_parser[Wed Oct 21 07:27:00 2015-0]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/google_drive/test_google_drive_client.py::test_shared_retry_after_parser[Wed Oct 21 07:28:00 2015-10]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/google_drive/test_google_drive_client.py::test_shared_retry_after_parser[Wednesday, 21-Oct-15 07:28:00 GMT-10]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/jira/test_jira_boundaries.py::test_jira_rate_wait_at_and_over_the_budget": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/slack/test_slack_client.py::test_slack_rate_wait_at_the_budget_leaves_no_time_to_retry": {
+        "tier": "quick",
+        "seconds": null
+      },
       "python:connectors/tests/github/test_github_auth_client.py::test_wrong_app_installation_or_account_fails[account_id-99]": {
         "tier": "quick",
         "seconds": null

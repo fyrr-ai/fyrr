@@ -123,6 +123,18 @@ def test_jira_rate_limit_retry_after(jira, jira_index):
     assert 7 <= jira.sleeps[0] <= 8
 
 
+def test_jira_rate_wait_at_and_over_the_budget(jira, jira_index):
+    # A wait that fills the budget leaves no time for the next attempt; a longer one is
+    # refused when the header is read. Neither sleeps.
+    jira.fail("/serverInfo", 429, headers={"Retry-After": "300"})
+    with pytest.raises(ApiError, match="rate_wait_budget"):
+        jira_index.sync()
+    jira.fail("/serverInfo", 429, headers={"Retry-After": "301"})
+    with pytest.raises(ApiError, match="rate_header_invalid"):
+        jira_index.sync()
+    assert jira.sleeps == []
+
+
 @pytest.mark.parametrize("status", [401, 403, 302])
 def test_jira_global_failures_are_not_empty_source(jira, jira_index, status):
     jira.fail("/serverInfo", status)

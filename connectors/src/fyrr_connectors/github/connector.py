@@ -10,6 +10,7 @@ from collections.abc import Callable, Iterator, Sequence
 from dataclasses import replace
 from typing import Any, TypeVar
 
+from .._http import MAX_ENTRIES
 from ..arrow import Delete, Metadata, Section, Upsert, document_changes
 from ..connector import (
     Connector,
@@ -24,7 +25,7 @@ from ..connector import (
 from ..validate import ContractViolation
 from . import render
 from .auth import AppAuth
-from .client import MAX_ENTRIES, ApiError, Client, ResponseLimit, instant, object_id
+from .client import ApiError, Client, ResponseLimit, instant, object_id
 from .config import RepositoryScope, Scope, Settings
 from .feeds import (
     ConversationRef,
@@ -51,10 +52,6 @@ class GitHub(Connector[Settings, Scope]):
     def _open(self):
         settings, scope = self.context.settings, self.context.scope
         assert isinstance(settings, Settings) and isinstance(scope, Scope)
-        if self.context.permissions == "fixed" and not self.context.readers:
-            raise ValueError("github_fixed_readers_required")
-        if self.context.permissions not in ("fixed", "sync"):
-            raise ValueError("github_permissions_invalid")
         self.client = Client(settings.api_endpoint)
         self.auth = AppAuth(self.client, settings)
         self.tree = Tree(self.client)
@@ -527,9 +524,16 @@ class GitHub(Connector[Settings, Scope]):
         batches: list[PermissionBatch] = []
         # Seal all frames before yielding, including their serialization bounds.
         # No provider call follows the first yield.
-        from ..runtime import encode
+        from ..runtime import header_bytes
 
         width = min(256, self.context.limits.max_rows)
+        limit = self.context.limits.max_bytes
+
+        def measure(batch: PermissionBatch) -> int:
+            # The first batch starts at the cursor of the call, every later one at the end of
+            # the batch before it: the frontier.
+            start = frontier if batches else cursor
+            return header_bytes(self.context.source_id, SyncKind.PERMISSIONS, start, batch)
 
         def seal(
             collection: Sequence[EntryT], make: Callable[[Sequence[EntryT]], PermissionBatch]
@@ -537,20 +541,13 @@ class GitHub(Connector[Settings, Scope]):
             pending: list[EntryT] = []
             for entry in collection:
                 candidate = make([*pending, entry])
-                header, _ = encode(self.context.source_id, SyncKind.PERMISSIONS, cursor, candidate)
-                if (
-                    len(json.dumps(header).encode()) > self.context.limits.max_bytes
-                    or len(pending) >= width
-                ):
+                if measure(candidate) > limit or len(pending) >= width:
                     if not pending:
                         raise ValueError("github_permission_batch_limit")
                     batches.append(make(pending))
                     pending = []
                     candidate = make([entry])
-                    header, _ = encode(
-                        self.context.source_id, SyncKind.PERMISSIONS, cursor, candidate
-                    )
-                    if len(json.dumps(header).encode()) > self.context.limits.max_bytes:
+                    if measure(candidate) > limit:
                         raise ValueError("github_permission_batch_limit")
                 pending.append(entry)
             if pending:
@@ -584,10 +581,12 @@ class GitHub(Connector[Settings, Scope]):
             )
             for part, users in enumerate(pages)
         ]
-        from ..runtime import encode
+        from ..runtime import header_bytes
 
+        start = cursor
         for batch in batches:
-            header, _ = encode(self.context.source_id, SyncKind.MEMBERS, cursor, batch)
-            if len(json.dumps(header).encode()) > self.context.limits.max_bytes:
+            size = header_bytes(self.context.source_id, SyncKind.MEMBERS, start, batch)
+            if size > self.context.limits.max_bytes:
                 raise ValueError("github_member_batch_limit")
+            start = batch.cursor
         yield from batches

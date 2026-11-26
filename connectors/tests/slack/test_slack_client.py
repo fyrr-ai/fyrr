@@ -22,6 +22,13 @@ def test_slack_retry_after_and_transient_retry(slack, status):
     assert slack.sleeps == before
 
 
+def test_slack_rate_wait_at_the_budget_leaves_no_time_to_retry(slack):
+    slack.fail("auth.test", status=429, headers={"Retry-After": "300"})
+    with pytest.raises(ApiError, match="rate_wait_budget"):
+        Client(slack.origin, slack.token).get("auth.test")
+    assert not slack.sleeps
+
+
 def test_slack_refuses_early_retry_past_the_wait_budget(slack):
     slack.fail("auth.test", status=429, headers={"Retry-After": "301"})
     with pytest.raises(ApiError, match="rate_header_invalid"):

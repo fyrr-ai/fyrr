@@ -10,7 +10,8 @@ from pathlib import PurePosixPath
 from typing import Any
 from urllib.parse import quote
 
-from .client import MAX_ENTRIES, Client
+from .._http import MAX_ENTRIES
+from .client import Client
 from .config import RepositoryScope
 from .feeds import Repository
 
