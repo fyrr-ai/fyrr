@@ -410,7 +410,7 @@ impl PreparedReader {
         let preparation_reservation = self.preparation_reservation.clone();
         let control_backend = self.control_backend.clone();
         let control_root = self.control_root.clone();
-        let session = self.dataset.session();
+        let generation = self.dataset.clone();
         let mirror = Arc::new(self.mirror.worker());
         let generation_state = self.generation_state;
         let fallback_probes = self.fallback_probes;
@@ -423,12 +423,13 @@ impl PreparedReader {
                 .storage
                 .object_store_options(&ProcessEnvironment)
                 .map_err(|_| StorageUnavailable)?;
+            // The generation's one opened version, with this worker's I/O counters.
             let dataset = Arc::new(
-                open_version(
+                crate::storage::read_through(
+                    &generation,
                     &dataset_uri(&config),
                     options,
-                    manifest.lance_version,
-                    Some((session.clone(), mirror.clone())),
+                    mirror.clone(),
                 )
                 .await
                 .map_err(|_| StorageUnavailable)?,
