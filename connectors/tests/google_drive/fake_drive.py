@@ -33,7 +33,7 @@ from google.auth import exceptions, jwt
 
 # Run as a script, the fake finds `fake_http` next to the test packages.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from fake_http import CONTROL_PATH, Holds, JsonHandler, Serving, WorldAdapter
+from fake_http import CONTROL_PATH, Holds, KeepAliveHandler, Serving, WorldAdapter
 
 DOC = "application/vnd.google-apps.document"
 SHEET = "application/vnd.google-apps.spreadsheet"
@@ -458,27 +458,31 @@ class FakeServer(Serving):
     """
 
     def __init__(self, world: FakeDrive) -> None:
-        super().__init__(_Handler, fake=self)
         self.world = world
         self.holds = Holds()
         key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
         self._public_key = key.public_key().public_bytes(
             serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
         )
-        self.service_account = json.dumps(
+        self._private_key = key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        ).decode()
+        self._tokens: dict[str, tuple[str, frozenset[str]]] = {}
+        super().__init__(_Handler, fake=self)
+
+    @property
+    def service_account(self) -> str:
+        return json.dumps(
             {
                 "type": "service_account",
                 "client_email": "fyrr-test@fake.iam.gserviceaccount.com",
                 "private_key_id": "fake",
-                "private_key": key.private_bytes(
-                    serialization.Encoding.PEM,
-                    serialization.PrivateFormat.PKCS8,
-                    serialization.NoEncryption(),
-                ).decode(),
+                "private_key": self._private_key,
                 "token_uri": self.endpoint + TOKEN_PATH,
             }
         )
-        self._tokens: dict[str, tuple[str, frozenset[str]]] = {}
 
     def close(self) -> None:
         self.holds.release()
@@ -549,7 +553,7 @@ class FakeServer(Serving):
         raise KeyError(name)
 
 
-class _Handler(JsonHandler):
+class _Handler(KeepAliveHandler):
     def _reply(self, status: int, body: Any, retry_after: str | None = None) -> None:
         self.send_json(status, body, None if retry_after is None else {"Retry-After": retry_after})
 

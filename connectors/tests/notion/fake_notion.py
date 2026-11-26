@@ -32,7 +32,7 @@ import requests
 
 # Run as a script, the fake finds `fake_http` next to the test packages.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from fake_http import CONTROL_PATH, Holds, JsonHandler, Serving, WorldAdapter
+from fake_http import CONTROL_PATH, Holds, KeepAliveHandler, Serving, WorldAdapter
 
 VERSION = "2025-09-03"
 TOKEN = "fake-integration-secret"
@@ -599,9 +599,9 @@ class FakeServer(Serving):
     """
 
     def __init__(self, world: FakeNotion) -> None:
-        super().__init__(_Handler, fake=self)
         self.world = world
         self.holds = Holds()
+        super().__init__(_Handler, fake=self)
 
     def close(self) -> None:
         self.holds.release()
@@ -641,7 +641,7 @@ class FakeServer(Serving):
         raise KeyError(name)
 
 
-class _Handler(JsonHandler):
+class _Handler(KeepAliveHandler):
     def _api(self, method: str, arguments: dict[str, Any]) -> None:
         fake: FakeServer = self.server.fake  # type: ignore[attr-defined]
         self.send_json(*fake.api(method, urlsplit(self.path).path, arguments, self.headers))

@@ -351,6 +351,11 @@ class FakeServer(Serving):
         self.world = world
 
         class Handler(JsonHandler):
+            def send_json(self, status, body, headers=None):
+                # Every answer, an error or a control call too, carries the clock of the world.
+                date = format_datetime(datetime.fromtimestamp(world.clock, UTC), usegmt=True)
+                super().send_json(status, body, {"Date": date, **(headers or {})})
+
             def do_GET(self):
                 self.answer()
 

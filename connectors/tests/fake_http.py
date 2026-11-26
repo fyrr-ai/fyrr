@@ -2,7 +2,7 @@
 
 A fake world answers in two ways: mounted on a `requests` session
 (`WorldAdapter`), or over HTTP for a connector in another process (`Serving`,
-with a `JsonHandler`). `Holds` parks a request until
+with a `JsonHandler`, or a `KeepAliveHandler`). `Holds` parks a request until
 the test lets it go.
 """
 
@@ -110,11 +110,9 @@ class Holds:
 
 
 class JsonHandler(BaseHTTPRequestHandler):
-    """A handler that logs nothing and answers JSON, or raw bytes."""
-
-    protocol_version = "HTTP/1.1"
-    # Headers and body are two writes; Nagle would hold the second for 40 ms.
-    disable_nagle_algorithm = True
+    """A handler that logs nothing and answers JSON, or raw bytes. One request to a
+    connection, as HTTP/1.0 has it: a body a handler leaves unread cannot be taken for
+    the next request."""
 
     def log_message(self, *_: Any) -> None:
         pass
@@ -136,3 +134,11 @@ class JsonHandler(BaseHTTPRequestHandler):
         except OSError:
             # The client is gone: a worker killed while its request was parked.
             self.close_connection = True
+
+
+class KeepAliveHandler(JsonHandler):
+    """A `JsonHandler` that keeps the connection for the next request."""
+
+    protocol_version = "HTTP/1.1"
+    # Headers and body are two writes; Nagle would hold the second for 40 ms.
+    disable_nagle_algorithm = True

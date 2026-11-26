@@ -227,6 +227,7 @@ class FakeServer(Serving):
                     self.answer()
 
             def answer(self):
+                self.read_body()  # a POST's body is not the next request
                 url = urlsplit(self.path)
                 params = {key: values[0] for key, values in parse_qs(url.query).items()}
                 self.send_json(
