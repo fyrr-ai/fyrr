@@ -2051,6 +2051,92 @@ async fn maintenance_trains_again_a_model_whose_segment_lost_its_rows_on_storage
     std::fs::remove_dir_all(root).unwrap();
 }
 
+/// 66 writes of 10 rows leave 66 vector segments, more than `writer serve`
+/// lets an index keep before it maintains it. With `FYRR_TEST_STEP_ROWS = 15`
+/// (debug builds) no step can copy two of them into one: `writer maintain`
+/// merges none, and the `writer serve` that follows finds no maintenance due,
+/// so its ticks write nothing.
+#[tokio::test]
+#[ignore = "real executable and local storage; scripts/ci"]
+async fn a_crowded_index_that_no_step_can_merge_makes_no_writes_on_storage() {
+    const COMMITS: usize = 66;
+    const COMMIT_ROWS: usize = 10;
+    let (config, root) = setup_on(Backend::Local);
+    let text = std::fs::read_to_string(&config)
+        .unwrap()
+        .split("[[sources]]")
+        .next()
+        .unwrap()
+        .to_owned();
+    let sources = root.join("sources");
+    std::fs::remove_dir_all(&sources).unwrap();
+    std::fs::create_dir_all(&sources).unwrap();
+    // A commit of exactly `group_max_rows` rows keeps its fragment out of compaction.
+    std::fs::write(
+        &config,
+        format!(
+            "{text}\n[writer]\nthreads = 2\nenvelope_max_rows = {COMMIT_ROWS}\n\n[writer.commit]\ngroup_max_rows = {COMMIT_ROWS}\ncoalescing_timer = \"1s\"\n\n[writer.maintenance]\nstep_max_duration = \"10m\"\n\n[[sources]]\nid = \"docs\"\ntype = \"local-files\"\npermissions = \"fixed\"\nreaders = [\"grp:allow\"]\n[sources.scope]\npaths = [\"{}\"]\n",
+            sources.display()
+        ),
+    )
+    .unwrap();
+    success(&config, &["writer", "namespace", "create"]);
+    for row in 0..COMMITS * COMMIT_ROWS {
+        let text = format!("crowd doc {row}");
+        std::fs::write(sources.join(format!("{row}.txt")), &text).unwrap();
+        root.embedding.insert_both(&text, clustered(row % 64, row));
+        if (row + 1) % COMMIT_ROWS == 0 {
+            success(&config, &["writer", "sync"]);
+            success(&config, &["writer", "commit"]);
+        }
+    }
+    let output = run_with(
+        &config,
+        &["writer", "maintain"],
+        &[("FYRR_TEST_STEP_ROWS", "15")],
+    );
+    assert!(output.status.success(), "{}", report(&output));
+    assert_eq!(
+        vector_segment_rows(&config, None).await,
+        [COMMIT_ROWS; COMMITS]
+    );
+    let version = publication(&config).await.1.lance_version;
+
+    let log = root.join("service.log");
+    let mut service = Command::new(crate::common::binary())
+        .arg("--config")
+        .arg(&config)
+        .args(["writer", "serve", "--jobs", "1"])
+        .env("FYRR_TEST_STEP_ROWS", "15")
+        .env(
+            "VIRTUAL_ENV",
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../connectors/.venv"),
+        )
+        .stdout(Stdio::null())
+        .stderr(std::fs::File::create(&log).unwrap())
+        .spawn()
+        .unwrap();
+    let events = |event: &str| {
+        std::fs::read_to_string(&log)
+            .unwrap()
+            .matches(&format!("writer_service event={event}"))
+            .count()
+    };
+    let deadline = Instant::now() + Duration::from_secs(120);
+    while events("idle") < 5 {
+        assert!(Instant::now() < deadline, "the service did not tick");
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    let _ = Command::new("kill")
+        .args(["-TERM", &service.id().to_string()])
+        .status();
+    let _ = service.wait();
+    assert_eq!(events("published"), 0);
+    assert_eq!(events("maintained"), 0);
+    assert_eq!(publication(&config).await.1.lance_version, version);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 /// The partitions of each vector segment, in publication order.
 async fn vector_partitions(config: &Path) -> Vec<Option<u32>> {
     publication(config)
@@ -2083,11 +2169,12 @@ fn encoded_rows(stderr: &str, kind: &str) -> Vec<u64> {
 /// that no step depends on how fast the host is, `writer maintain` trains a
 /// model of 21 partitions for the 12,000 rows and encodes the newest segment
 /// against it, at most 2,400 rows in the step that trains, then the oldest
-/// segments in steps of at most 4,800 rows, and copies them into one segment.
+/// segments in steps of at most 4,800 rows, and copies neighbors into segments
+/// of at most 4,800.
 /// No version has more segments than the one before, and a later write follows
 /// the new model. 22 more writes ask for 42 partitions. A run that stops after
 /// two steps of at most 2,400 rows leaves segments of both models, and the one
-/// of 12,000 rows answers for the fragments the second step did not reach. In
+/// of 4,500 rows answers for the fragments the second step did not reach. In
 /// that state a query finds rows of every segment, a write follows the newest
 /// model, and a deleted row is compacted away; the next run encodes the rest
 /// in steps of at most 2,400 rows, and the namespace answers like before.
@@ -2162,9 +2249,9 @@ async fn maintenance_grows_the_vector_model_in_bounded_steps_on_storage() {
     );
     assert_eq!(
         vector_segment_rows(&config, None).await,
-        [COMMITS * COMMIT_ROWS]
+        [9 * COMMIT_ROWS, 9 * COMMIT_ROWS, 6 * COMMIT_ROWS]
     );
-    assert_eq!(vector_partitions(&config).await, [Some(21)]);
+    assert_eq!(vector_partitions(&config).await, [Some(21); 3]);
     // No step added a segment: every version a step published has at most as many as before.
     let last = publication(&config).await.1.lance_version;
     let mut count = COMMITS;
@@ -2177,7 +2264,7 @@ async fn maintenance_grows_the_vector_model_in_bounded_steps_on_storage() {
     assert!(publication(&config).await.1.merge_pair_rows.is_empty());
     // A later write is encoded against the grown model, not the one of the first write.
     write(COMMITS * COMMIT_ROWS..(COMMITS + 1) * COMMIT_ROWS);
-    assert_eq!(vector_partitions(&config).await, [Some(21); 2]);
+    assert_eq!(vector_partitions(&config).await, [Some(21); 4]);
 
     // Rows that ask for 42 partitions; a run of two vector steps of at most 2,400 rows.
     write((COMMITS + 1) * COMMIT_ROWS..47 * COMMIT_ROWS);

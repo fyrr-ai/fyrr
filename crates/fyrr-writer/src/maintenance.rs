@@ -53,16 +53,68 @@ const COPY_DIMENSIONS_PER_SECOND: f64 = 9.6e6;
 // model it has, or for Lance's ceiling: each model serves until the rows about double.
 const MODEL_GROWTH: usize = 2;
 
-/// Seconds of a step's main work: half of `step_max_duration`. The other half covers opening the
-/// segments, writing the version and publishing it.
-fn half_step(config: &Config) -> f64 {
-    config
-        .writer
-        .maintenance
-        .step_max_duration
-        .as_duration()
-        .as_secs_f64()
-        / 2.0
+/// The work of one maintenance step, priced by `step_cost`.
+#[derive(Clone, Copy)]
+enum Work<'a> {
+    /// Rows encoded into every vector index of `models`, each `(partitions, dimensions)`: an
+    /// encode step, the encoding of a step that trains, or a compaction.
+    Encode {
+        rows: u64,
+        models: &'a [(usize, usize)],
+    },
+    /// Rows of `dimensions` copied into one segment.
+    Copy { rows: u64, dimensions: usize },
+    /// Training a model of `partitions` of `dimensions` on `VECTOR_SAMPLE_RATE` vectors each.
+    Train {
+        partitions: usize,
+        dimensions: usize,
+    },
+}
+
+/// The seconds `work` takes at the slowest rates measured, the one estimate every step, the
+/// compaction and `due` decide by. With `FYRR_TEST_STEP_ROWS` (debug builds) an encoded or copied
+/// row costs one and training nothing, so that a test does not depend on how fast its host is.
+fn step_cost(work: Work) -> f64 {
+    let test = test_step_rows().is_some();
+    match work {
+        Work::Encode { rows, models } if test => (rows * models.len().max(1) as u64) as f64,
+        Work::Encode { rows, models } => {
+            models
+                .iter()
+                .map(|&(partitions, dimensions)| rows as f64 * (partitions * dimensions) as f64)
+                .sum::<f64>()
+                / ENCODE_DISTANCES_PER_SECOND
+        }
+        Work::Copy { rows, .. } if test => rows as f64,
+        Work::Train { .. } if test => 0.0,
+        Work::Copy { rows, dimensions } => {
+            rows as f64 * dimensions as f64 / COPY_DIMENSIONS_PER_SECOND
+        }
+        Work::Train {
+            partitions,
+            dimensions,
+        } => {
+            (partitions * partitions * crate::commit::VECTOR_SAMPLE_RATE * dimensions) as f64
+                / TRAIN_DISTANCES_PER_SECOND
+        }
+    }
+}
+
+/// What a step's main work may cost: half of `step_max_duration`, in the units of `step_cost`.
+/// The other half covers opening the segments, writing the version and publishing it.
+fn step_budget(config: &Config) -> f64 {
+    test_step_rows().map_or_else(
+        || {
+            config
+                .writer
+                .maintenance
+                .step_max_duration
+                .as_duration()
+                .as_secs_f64()
+                / 2.0
+        },
+        |rows| rows as f64,
+    )
 }
 
 /// Debug builds only: `FYRR_TEST_STEP_ROWS` fixes the rows a step encodes, so that a test of
@@ -91,58 +143,64 @@ fn test_vector_steps() -> Option<usize> {
     None
 }
 
-/// The rows a step encodes against a model of `partitions` of `dimensions`: 215,000 against 4,096
-/// partitions of 128 dimensions by default, 27,000 of 1,024.
-fn encode_rows(config: &Config, partitions: usize, dimensions: usize) -> u64 {
-    test_step_rows().unwrap_or_else(|| {
-        let cost = (partitions.max(1) * dimensions.max(1)) as f64;
-        whole_rows(half_step(config) * ENCODE_DISTANCES_PER_SECOND / cost)
-    })
-}
-
-/// Rows from an estimate, at least 1.
+/// The most rows of which `work` (given for one row) fits `budget`, at least 1.
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-fn whole_rows(estimate: f64) -> u64 {
-    estimate.clamp(1.0, u64::MAX as f64) as u64
+fn rows_within(budget: f64, one_row: f64) -> u64 {
+    if one_row <= 0.0 {
+        return u64::MAX;
+    }
+    (budget / one_row).clamp(1.0, u64::MAX as f64) as u64
 }
 
-/// The rows a step copies into one segment: 11,250,000 of 128 dimensions by default.
+/// The rows a step copies into one segment of `dimensions`: 11,250,000 of 128 dimensions by
+/// default.
 fn copy_rows(config: &Config, dimensions: usize) -> u64 {
-    whole_rows(half_step(config) * COPY_DIMENSIONS_PER_SECOND / dimensions.max(1) as f64)
-}
-
-/// Whether training a model of `partitions` of `dimensions` fits a step's main work. Lance trains
-/// on the sample rate the index recorded when it was created: `VECTOR_SAMPLE_RATE` for every
-/// namespace of this release (earlier ones, with 256, are not supported). At 128
-/// dimensions it does up to Lance's ceiling of 4,096 partitions by default, at 1,024 up to 1,720.
-fn training_fits(config: &Config, partitions: usize, dimensions: usize) -> bool {
-    test_step_rows().is_some()
-        || (partitions * partitions * crate::commit::VECTOR_SAMPLE_RATE * dimensions) as f64
-            / TRAIN_DISTANCES_PER_SECOND
-            <= half_step(config)
+    rows_within(
+        step_budget(config),
+        step_cost(Work::Copy {
+            rows: 1,
+            dimensions,
+        }),
+    )
 }
 
 /// The partitions a model of `dimensions` grows to: Lance's ceiling of 4,096, or fewer where its
-/// training must fit half a step (about 1,720 of 1,024 dimensions by default).
+/// training must fit a step's main work (about 1,720 of 1,024 dimensions by default).
 fn largest_model(config: &Config, dimensions: usize) -> usize {
     let ceiling = recommended_num_partitions(usize::MAX, 1);
-    let fits = (half_step(config) * TRAIN_DISTANCES_PER_SECOND
-        / (crate::commit::VECTOR_SAMPLE_RATE * dimensions.max(1)) as f64)
-        .sqrt();
-    usize::try_from(whole_rows(fits))
+    let one = step_cost(Work::Train {
+        partitions: 1,
+        dimensions,
+    });
+    let fits = rows_within(step_budget(config), one) as f64;
+    usize::try_from(rows_within(fits.sqrt(), 1.0))
         .unwrap_or(ceiling)
         .min(ceiling)
 }
 
-/// The rows a compaction step may rewrite: half of what one step encodes against the largest model
-/// of the widest vector column, so that no fragment it makes outgrows a later encode step, nor the
-/// half of one that the step that trains encodes. 107,000 rows of 128 dimensions by default,
-/// 32,000 of 1,024.
-// shortcut: a row of a multi-vector attribute counts as one vector here; bound by its vectors
-// when a namespace with such an attribute compacts slowly.
-fn compaction_rows(config: &Config) -> u64 {
-    let dimensions = max_dimensions(config);
-    (encode_rows(config, largest_model(config, dimensions), dimensions) / 2).max(1)
+/// The vector columns of the namespace, each with the largest model it grows to.
+fn largest_models(config: &Config) -> Vec<(usize, usize)> {
+    config
+        .namespace
+        .vectors
+        .values()
+        .map(|vector| vector.dimensions as usize)
+        .chain([config.embedding.dimensions as usize])
+        .map(|dimensions| (largest_model(config, dimensions), dimensions))
+        .collect()
+}
+
+/// Whether a compaction may rewrite `rows`. Lance encodes them again into every vector index, so
+/// they must fit half a step against the largest models of all of them at once: no fragment it
+/// makes outgrows a later encode step, nor the half of one that the step that trains encodes.
+/// 107,000 rows for one column of 128 dimensions by default.
+// shortcut: a row of a multi-vector attribute counts as one vector, and the other indexes' work
+// is not priced (#385).
+fn compaction_fits(config: &Config, rows: u64) -> bool {
+    step_cost(Work::Encode {
+        rows,
+        models: &largest_models(config),
+    }) <= step_budget(config) / 2.0
 }
 
 /// The widest vector column of the namespace.
@@ -376,7 +434,15 @@ async fn maintain_held(
                             break;
                         }
                     }
-                    Ok(None) => break,
+                    // A crowded index that no step can merge waits for a new publication, so that
+                    // `due` does not run maintenance for it again on every tick.
+                    Ok(None) => {
+                        if segments > INDEX_SEGMENT_LIMIT {
+                            skip_merge(&config.namespace.name, &name, at);
+                            skipped.push(name.clone());
+                        }
+                        break;
+                    }
                     // The other indexes and the steps after the merges still run.
                     Err(WriterError::MaintenanceStepDeadline) => {
                         // Recorded now: a later step of this run may fail before the run ends.
@@ -526,8 +592,7 @@ fn vector_segments(
 // shortcut: Lance drops a segment once every row it answers for is gone, in the commit that
 // deletes them. A model lives only in its segments, so if the rows of the one segment a model
 // was trained into are all deleted before another step encodes against it (a run that stopped
-// right after training), the model is lost and a later step trains it again. Keep a model
-// apart from its segments if that proves frequent.
+// right after training), the model is lost and a later step trains it again (#385).
 async fn newest_model(
     dataset: &Dataset,
     segments: &[(lance::table::format::IndexMetadata, Vec<u32>)],
@@ -565,11 +630,11 @@ async fn newest_model(
 /// The steps:
 ///
 /// 1. `train`: the rows ask for `MODEL_GROWTH` times the partitions of the newest model, or for
-///    Lance's ceiling, and training them fits `training_fits`. Lance trains a new model on a
+///    Lance's ceiling, and training them fits a step (`step_cost`). Lance trains a new model on a
 ///    sample of the whole table, and the step encodes the smallest segment against it, at most
-///    half of `encode_rows`. The new segment is the newest, so the writes follow the new model.
+///    half an encode step. The new segment is the newest, so the writes follow the new model.
 /// 2. `encode`: a segment has another model than the newest. The step encodes the oldest such
-///    segments again against the newest model, at most `encode_rows`, as one new segment.
+///    segments again against the newest model, at most an encode step, as one new segment.
 /// 3. `copy`: every segment has the newest model. The step copies neighbors into one segment of
 ///    at most `copy_rows`. Of an index larger than an encode step, the largest segment joins only
 ///    once the others together hold half its rows; until then they are copied into segments of at
@@ -591,20 +656,24 @@ async fn vector_step(
         return Ok(("copy", 0));
     };
     let dimensions = model.ivf_model().dimension();
-    // A row of a multi-vector attribute holds several vectors, and a step encodes each.
-    let covered: u64 = segments
-        .iter()
-        .find(|(segment, _)| segment.uuid == newest.uuid)
-        .map_or(0, |(_, covered)| {
-            covered.iter().map(|id| fragments[id]).sum()
-        });
-    let vectors_per_row = (model.num_rows() / covered.max(1)).max(1);
+    // shortcut: a row is one vector. A row of a multi-vector attribute holds several, which a
+    // step encodes each (#385).
+    let encode_rows = |partitions: usize, share: f64| {
+        rows_within(
+            step_budget(config) * share,
+            step_cost(Work::Encode {
+                rows: 1,
+                models: &[(partitions, dimensions)],
+            }),
+        )
+    };
     // shortcut: Lance trains at most 4,096 partitions (`recommended_num_partitions`), and a model
     // grows only while training fits half a step. The model so stays at 4,096 partitions above
     // about 2,250,000 rows of 128 dimensions, and at about 1,720 of 1,024 dimensions by default;
     // a partition then holds more than twice `dense_partition_rows` above 4,500,000 and
-    // 1,900,000 rows. Train with an explicit count, outside a step, when a namespace of that size
-    // needs it.
+    // 1,900,000 rows. Lance's retrain sizes a model by the rows, so if the rows ask for more
+    // than fits between two runs, the model keeps its partitions: #385 trains with an explicit
+    // count.
     let ceiling = recommended_num_partitions(usize::MAX, 1);
     let wanted = recommended_num_partitions(
         crate::narrow_usize(fragments.values().sum()),
@@ -613,12 +682,15 @@ async fn vector_step(
     let current = model.total_partitions();
     let mut grow = wanted > current
         && wanted >= (MODEL_GROWTH * current).min(ceiling)
-        && training_fits(config, wanted, dimensions);
+        && step_cost(Work::Train {
+            partitions: wanted,
+            dimensions,
+        }) <= step_budget(config);
     // shortcut: Lance sizes the model by all the rows of the table, also those that leave the
     // column null, so a column of which fewer than half the rows hold a vector keeps its model:
     // its vectors would fill fewer than half the partitions' target rows. The vectors are the
-    // rows its segments index (a segment may still hold some of rows since deleted). Train with
-    // an explicit count when sparse columns need it.
+    // rows its segments index (a segment may still hold some of rows since deleted). #385 sizes
+    // the model by the vectors.
     if grow {
         let mut vectors = 0;
         for (segment, covered) in &segments {
@@ -633,13 +705,13 @@ async fn vector_step(
             >= (wanted * config.namespace.dense_partition_rows as usize) as u64;
     }
     // shortcut: training runs in the step's process and cannot stop at the deadline. It holds
-    // the sample, 4,096 × 64 vectors (1.07 GB of 1,024 dimensions); `training_fits` keeps it
-    // within half a step on the measured host.
+    // the sample, 4,096 × 64 vectors (1.07 GB of 1,024 dimensions); `step_cost` keeps it within
+    // half a step on the measured host.
     let (kind, reference, mut stale, budget) = if grow {
         let start = std::time::Instant::now();
         let mut retrain = options.clone();
         retrain.retrain = true;
-        retrain.max_rows_per_task = Some(encode_rows(config, wanted, dimensions) / vectors_per_row);
+        retrain.max_rows_per_task = Some(encode_rows(wanted, 1.0));
         // The planner of a split rebuild trains the model and plans tasks against it. Only the
         // model is taken: the task below follows the segments instead, so that the step commits
         // alone.
@@ -649,7 +721,7 @@ async fn vector_step(
         };
         crate::telemetry::index_model_trained(name, wanted, start.elapsed());
         // Training spent up to half the step's main work: the step encodes half as many rows.
-        let budget = (encode_rows(config, wanted, dimensions) / vectors_per_row / 2).max(1);
+        let budget = encode_rows(wanted, 0.5);
         (
             "train",
             task.reference,
@@ -671,7 +743,7 @@ async fn vector_step(
                 stale.push(segment);
             }
         }
-        let budget = (encode_rows(config, current, dimensions) / vectors_per_row).max(1);
+        let budget = encode_rows(current, 1.0);
         ("encode", newest.clone(), stale, budget)
     };
     stale.retain(|(_, covered)| !covered.is_empty());
@@ -688,11 +760,7 @@ async fn vector_step(
         } else {
             2 * others
         };
-        options.max_rows_per_segment = Some(
-            (copy_rows(config, dimensions) / vectors_per_row)
-                .min(run)
-                .max(1),
-        );
+        options.max_rows_per_segment = Some(copy_rows(config, dimensions).min(run).max(1));
         return Ok(("copy", merge_tier(dataset, &options).await?));
     }
     // The step that trained takes the smallest segment, the newest of them, which a later step
@@ -707,11 +775,11 @@ async fn vector_step(
     }
     // Whole segments, oldest first, while they fit the step; of a larger first one, its first
     // fragments.
-    // shortcut: a fragment is encoded whole. A compacted one holds at most `compaction_rows`,
+    // shortcut: a fragment is encoded whole. A compacted one holds at most what `compaction_fits`,
     // half of what a step encodes against the largest model, and a write's one at most
     // `envelope_max_rows` (50,000 by default, within an encode step up to 1,024 dimensions); a
     // larger `envelope_max_rows`, or a wider vector column, can make one step encode more than
-    // its budget.
+    // its budget (#385).
     let (mut encode, mut replaces, mut rows) = (Vec::new(), Vec::new(), 0u64);
     let mut rest = None;
     for (segment, covered) in stale {
@@ -1565,7 +1633,35 @@ mod restore_tests;
 
 #[cfg(test)]
 mod merge_run_tests {
-    use super::{INDEX_SEGMENT_LIMIT, crowded_pair_rows, due, merge_skipped, skip_merge};
+    use super::{
+        INDEX_SEGMENT_LIMIT, compaction_fits, crowded_pair_rows, due, merge_skipped, skip_merge,
+    };
+
+    #[test]
+    fn a_compaction_prices_every_vector_index_it_encodes_again() {
+        let config = |vectors: &str| {
+            fyrr_core::config::parse(&format!(
+                "[namespace]\nname='compaction'\n[namespace.write_api]\n{vectors}[storage]\n\
+                 uri='s3://compaction'\n[embedding]\nendpoint='https://cache.invalid'\n\
+                 dimensions=128\n"
+            ))
+            .unwrap()
+            .config
+        };
+        // One column of 128 dimensions: a pair of 107,288 rows fits half a 5-minute step against
+        // a model of 4,096 partitions.
+        let one = config("");
+        assert!(compaction_fits(&one, 107_288));
+        assert!(!compaction_fits(&one, 107_289));
+        // Eight such columns: Lance encodes the pair into each, so an eighth of it fits.
+        let eight = config(
+            &(0..7)
+                .map(|i| format!("[namespace.vectors.v{i}]\ndimensions=128\n"))
+                .collect::<String>(),
+        );
+        assert!(compaction_fits(&eight, 13_411));
+        assert!(!compaction_fits(&eight, 13_412));
+    }
 
     #[test]
     fn the_smallest_pair_is_of_neighbors_in_fragment_order_and_of_a_crowded_index_only() {
@@ -1647,21 +1743,20 @@ async fn compact_one(
 ) -> Result<bool> {
     let limit = config.writer.maintenance.step_max_duration.as_duration();
     // The rewritten rows are encoded again against the vector models.
-    let budget = compaction_rows(config);
     // Limit the actual source set, rather than asking the native planner to
     // discard an oversized bin. Deleted fragments take priority regardless of size.
     let fragments = &dataset.manifest().fragments;
     let rows = |f: &lance::table::format::Fragment| f.physical_rows.unwrap_or(0) as u64;
     // shortcut: a fragment with deletions is rewritten whole, since its deleted rows must leave
     // storage. It holds at most `envelope_max_rows` (50,000 by default) or, once compacted,
-    // `compaction_rows`; a larger `envelope_max_rows` can make this step longer.
+    // `compaction_fits`; a larger `envelope_max_rows` can make this step longer.
     let selected: BTreeSet<_> =
         if let Some(fragment) = fragments.iter().find(|f| f.deletion_file.is_some()) {
             [fragment.id].into_iter().collect()
         } else if let Some(pair) = fragments.windows(2).find(|pair| {
             pair.iter()
                 .all(|f| rows(f) < config.writer.commit.group_max_rows)
-                && rows(&pair[0]) + rows(&pair[1]) <= budget
+                && compaction_fits(config, rows(&pair[0]) + rows(&pair[1]))
         }) {
             pair.iter().map(|f| f.id).collect()
         } else {

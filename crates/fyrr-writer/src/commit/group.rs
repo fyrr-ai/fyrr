@@ -473,7 +473,12 @@ fn vector_index_params(
     VectorIndexParams::with_ivf_rq_params(
         fyrr_reader::embedding::distance_type(metric),
         IvfBuildParams {
-            num_partitions: Some(rows.div_ceil(partition_rows as usize).max(1)),
+            // At most Lance's ceiling of 4,096, the most a maintenance step trains: a first
+            // build of more rows than that many partitions hold has larger partitions.
+            num_partitions: Some(rows.div_ceil(partition_rows as usize).clamp(
+                1,
+                lance_index::vector::ivf::builder::recommended_num_partitions(usize::MAX, 1),
+            )),
             target_partition_size: Some(partition_rows as usize),
             sample_rate: VECTOR_SAMPLE_RATE,
             ..Default::default()
