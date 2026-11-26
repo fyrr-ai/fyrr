@@ -155,6 +155,19 @@ def inventory():
     return {**rust_inventory(artifacts()), **python_inventory(PYTHON_PROJECTS)}
 
 
+def python_directories(spec):
+    """The Python projects holding tests a row owns, as its prefixes and exceptions name them."""
+    keys = [*spec.get("owns", {}), *spec.get("cases", {})]
+    return [
+        directory
+        for directory in PYTHON_PROJECTS
+        if any(
+            key.startswith(f"python:{directory}/") or f"python:{directory}/".startswith(key)
+            for key in keys
+        )
+    ]
+
+
 def resolver(manifest):
     """Return `owner(case)`: (row, key, details) of an exact listing, else the longest prefix."""
     exact = {
@@ -243,7 +256,7 @@ def validate(manifest, actual):
                 or seconds < 0
             ):
                 raise ValueError(f"invalid case duration: {case}")
-        for case in {**cases, **spec.get("children", {})}:
+        for case in (*cases, *spec.get("children", {})):
             if case in case_owners:
                 raise ValueError(f"duplicate owner: {case}: {case_owners[case]} and {row}")
             case_owners[case] = row
@@ -286,7 +299,7 @@ def validate(manifest, actual):
     print(f"tiers: {counts['quick']} quick; {len(actual)} full ({counts['full']} additional)")
 
 
-def run(spec):
+def run(spec, compiled=None):
     groups = collections.defaultdict(list)
     for case in spec["cases"]:
         group, name = case.split("/", 1) if not case.startswith("python:") else (None, None)
@@ -299,7 +312,8 @@ def run(spec):
             groups[f"python:{directory}:{parent}"].append(name)
         else:
             groups[group].append(name)
-    compiled = artifacts() if any(not g.startswith("python:") for g in groups) else None
+    if compiled is None and any(not g.startswith("python:") for g in groups):
+        compiled = artifacts()
     for group, names in groups.items():
         if group.startswith("python:"):
             directory = group.split(":")[1]
@@ -601,6 +615,7 @@ def main():
     elif mode == "run":
         row = sys.argv[2]
         spec = manifest[row]
+        compiled = None
         if len(sys.argv) == 4:
             case = sys.argv[3]
             found = resolver(manifest)(case)
@@ -609,15 +624,15 @@ def main():
             cases = {case: found[2]}
         else:
             if spec["kind"] == "python":
-                directories = [d for d, (owner, _) in PYTHON_PROJECTS.items() if owner == row]
-                actual = python_inventory(directories)
+                actual = python_inventory(python_directories(spec))
             else:
-                actual = rust_inventory(artifacts())
+                compiled = artifacts()
+                actual = rust_inventory(compiled)
             cases = expand(manifest, actual)[0][row]["cases"]
         cases = selected_cases(cases)
         if not cases:
             raise ValueError("zero-case row")
-        run({**spec, "cases": cases})
+        run({**spec, "cases": cases}, compiled)
     else:
         raise ValueError(f"unknown mode: {mode}")
 
