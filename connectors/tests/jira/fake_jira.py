@@ -1,17 +1,17 @@
 """The single synthetic Jira transport, shared by U and real-worker S paths."""
 
 import copy
-import io
 import json
 import re
-import threading
+import sys
 from datetime import UTC, datetime
 from email.utils import format_datetime
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-import requests
-from requests.adapters import BaseAdapter
+# Run as a script, the fake finds `fake_http` next to the test packages.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from fake_http import CONTROL_PATH, JsonHandler, Serving, WorldAdapter
 
 
 def adf(body):
@@ -158,9 +158,17 @@ class FakeJira:
         self.faults.append([path, status, times, headers or {}])
 
     def attach(self, transport):
-        transport.mount("https://api.atlassian.com", Adapter(self))
-        transport.mount(self.site, Adapter(self))
+        adapter = WorldAdapter(self.answer_request)
+        transport.mount("https://api.atlassian.com", adapter)
+        transport.mount(self.site, adapter)
         return transport
+
+    def answer_request(self, request):
+        query = {k: v[0] for k, v in parse_qs(urlsplit(request.url).query).items()}
+        body = json.loads(request.body) if request.body else None
+        return self.handle(
+            request.method, request.url, query, body, request.headers.get("Authorization")
+        )
 
     def page(self, values, params, key="values"):
         start = int(params.get("startAt", 0))
@@ -337,92 +345,41 @@ class FakeJira:
         )
 
 
-class Adapter(BaseAdapter):
-    def __init__(self, world):
-        self.world = world
-
-    def send(self, request, **kwargs):
-        query = {k: v[0] for k, v in parse_qs(urlsplit(request.url).query).items()}
-        body = json.loads(request.body) if request.body else None
-        status, result, headers = self.world.handle(
-            request.method, request.url, query, body, request.headers.get("Authorization")
-        )
-        response = requests.Response()
-        response.status_code = status
-        response.headers = headers
-        response.url = request.url
-        response.raw = io.BytesIO(json.dumps(result).encode())
-        return response
-
-    def close(self):
-        pass
-
-
-class FakeServer:
+class FakeServer(Serving):
     def __init__(self):
         world = FakeJira()
         self.world = world
 
-        class Handler(BaseHTTPRequestHandler):
-            def date_time_string(self, timestamp=None):
-                return format_datetime(datetime.fromtimestamp(world.clock, UTC), usegmt=True)
-
-            def log_message(self, *args):
-                pass
-
+        class Handler(JsonHandler):
             def do_GET(self):
                 self.answer()
 
             def do_POST(self):
-                if self.path.startswith("/fake/"):
-                    body = json.loads(
-                        self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}"
-                    )
-                    operation = self.path.removeprefix("/fake/")
+                if self.path.startswith(CONTROL_PATH):
+                    body = json.loads(self.read_body() or b"{}")
+                    operation = self.path.removeprefix(CONTROL_PATH)
                     if operation == "advance":
                         world.clock += body["seconds"]
                         result = None
                     else:
                         result = getattr(world, operation)(**body)
-                    self.send(200, {"result": result}, {})
+                    self.send_json(200, {"result": result})
                 else:
                     self.answer()
 
             def answer(self):
                 params = {k: v[0] for k, v in parse_qs(urlsplit(self.path).query).items()}
-                body = json.loads(
-                    self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"null"
-                )
-                self.send(
+                body = json.loads(self.read_body() or b"null")
+                self.send_json(
                     *world.handle(
                         self.command, self.path, params, body, self.headers.get("Authorization")
                     )
                 )
 
-            def send(self, status, body, headers):
-                raw = json.dumps(body).encode()
-                self.send_response(status)
-                for key, value in headers.items():
-                    if key.lower() != "date":
-                        self.send_header(key, value)
-                self.send_header("Content-Length", str(len(raw)))
-                self.end_headers()
-                self.wfile.write(raw)
-
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
-        self.thread.start()
-        self.endpoint = f"http://127.0.0.1:{self.server.server_port}"
-
-    def close(self):
-        self.server.shutdown()
-        self.server.server_close()
-        self.thread.join()
+        super().__init__(Handler)
 
 
 if __name__ == "__main__":
-    import sys
-
     fake = FakeServer()
     print(json.dumps({"endpoint": fake.endpoint}), flush=True)
     try:

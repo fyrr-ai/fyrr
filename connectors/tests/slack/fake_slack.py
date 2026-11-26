@@ -1,16 +1,17 @@
 """The one synthetic Slack transport, shared by unit and real-worker tests."""
 
 import copy
-import io
 import json
+import sys
 import threading
 from datetime import UTC, datetime
 from email.utils import format_datetime
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-import requests
-from requests.adapters import BaseAdapter
+# Run as a script, the fake finds `fake_http` next to the test packages.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from fake_http import CONTROL_PATH, JsonHandler, Serving, WorldAdapter
 
 
 def stamp(value):
@@ -107,8 +108,15 @@ class FakeSlack:
         self.hooks.append((match, change))
 
     def attach(self, transport):
-        transport.mount(self.origin, Adapter(self))
+        transport.mount(self.origin, WorldAdapter(self.answer_request))
         return transport
+
+    def answer_request(self, request):
+        url = urlsplit(request.url)
+        params = {key: values[0] for key, values in parse_qs(url.query).items()}
+        return self.handle(
+            url.path.removeprefix("/api/"), params, request.headers.get("Authorization")
+        )
 
     def _page(self, entries, params, key):
         offset = int(params.get("cursor") or 0)
@@ -194,42 +202,18 @@ class FakeSlack:
         return self._page(messages, params, "messages")
 
 
-class Adapter(BaseAdapter):
+class FakeServer(Serving):
     def __init__(self, world):
         self.world = world
 
-    def send(self, request, **kwargs):
-        url = urlsplit(request.url)
-        params = {key: values[0] for key, values in parse_qs(url.query).items()}
-        status, body, headers = self.world.handle(
-            url.path.removeprefix("/api/"), params, request.headers.get("Authorization")
-        )
-        response = requests.Response()
-        response.status_code, response.headers, response.url = status, headers, request.url
-        response.raw = io.BytesIO(json.dumps(body).encode())
-        return response
-
-    def close(self):
-        pass
-
-
-class FakeServer:
-    def __init__(self, world):
-        self.world = world
-
-        class Handler(BaseHTTPRequestHandler):
-            def log_message(self, *args):
-                pass
-
+        class Handler(JsonHandler):
             def do_GET(self):
                 self.answer()
 
             def do_POST(self):
-                if self.path.startswith("/fake/"):
-                    params = json.loads(
-                        self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}"
-                    )
-                    operation = self.path.removeprefix("/fake/")
+                if self.path.startswith(CONTROL_PATH):
+                    params = json.loads(self.read_body() or b"{}")
+                    operation = self.path.removeprefix(CONTROL_PATH)
                     if operation == "advance":
                         world.clock += params["seconds"] * 1_000_000
                         result = None
@@ -238,42 +222,23 @@ class FakeServer:
                         result = None
                     else:
                         result = getattr(world, operation)(**params)
-                    self.send(200, {"result": result}, {})
+                    self.send_json(200, {"result": result})
                 else:
                     self.answer()
 
             def answer(self):
                 url = urlsplit(self.path)
                 params = {key: values[0] for key, values in parse_qs(url.query).items()}
-                self.send(
+                self.send_json(
                     *world.handle(
                         url.path.removeprefix("/api/"), params, self.headers.get("Authorization")
                     )
                 )
 
-            def send(self, status, body, headers):
-                data = json.dumps(body).encode()
-                self.send_response(status)
-                for key, value in headers.items():
-                    self.send_header(key, value)
-                self.send_header("Content-Length", str(len(data)))
-                self.end_headers()
-                self.wfile.write(data)
-
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
-        self.thread.start()
-        self.endpoint = f"http://127.0.0.1:{self.server.server_port}"
-
-    def close(self):
-        self.server.shutdown()
-        self.server.server_close()
-        self.thread.join()
+        super().__init__(Handler)
 
 
 if __name__ == "__main__":
-    import sys
-
     fake = FakeServer(FakeSlack())
     print(json.dumps({"endpoint": fake.endpoint}), flush=True)
     try:

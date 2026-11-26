@@ -4,19 +4,21 @@ from __future__ import annotations
 
 import base64
 import hashlib
-import io
 import json
+import sys
 import threading
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from email.utils import format_datetime
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlencode, urlsplit
 
-import requests
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
-from requests.adapters import BaseAdapter
+
+# Run as a script, the fake finds `fake_http` next to the test packages.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from fake_http import CONTROL_PATH, JsonHandler, Serving, WorldAdapter
 
 
 class FakeGitHub:
@@ -172,8 +174,15 @@ class FakeGitHub:
         )
 
     def attach(self, session):
-        session.mount(self.origin, _Adapter(self))
+        session.mount(self.origin, WorldAdapter(self.answer_request))
         return session
+
+    def answer_request(self, request):
+        url = urlsplit(request.url)
+        params = {key: values[0] for key, values in parse_qs(url.query).items()}
+        if request.body:
+            params = json.loads(request.body)
+        return self.handle(request.method, url.path, params, request.headers)
 
     def _topic(self, repo_id, kind, ordinal):
         key = repo_id, kind, ordinal
@@ -415,61 +424,27 @@ class FakeGitHub:
         return 404, {}, {}
 
 
-class _Adapter(BaseAdapter):
+class FakeServer(Serving):
     def __init__(self, world):
         self.world = world
-        super().__init__()
-
-    def send(self, request, **kwargs):
-        url = urlsplit(request.url)
-        params = {key: values[0] for key, values in parse_qs(url.query).items()}
-        if request.body:
-            params = json.loads(request.body)
-        status, body, headers = self.world.handle(request.method, url.path, params, request.headers)
-        response = requests.Response()
-        response.status_code = status
-        response.headers.update(headers)
-        response.url, response.request = request.url, request
-        response.raw = io.BytesIO(json.dumps(body).encode())
-        return response
-
-    def close(self):
-        pass
-
-
-class FakeServer:
-    def __init__(self, world):
-        self.world = world
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
-        self.server.world = world
-        self.endpoint = f"http://127.0.0.1:{self.server.server_port}"
+        super().__init__(_Handler, world=world)
 
     def __enter__(self):
         self.world.origin = self.endpoint
-        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
-        self.thread.start()
         return self
 
-    def __exit__(self, *args):
-        self.server.shutdown()
-        self.server.server_close()
-        self.thread.join()
 
-
-class _Handler(BaseHTTPRequestHandler):
-    def log_message(self, *args):
-        pass
-
+class _Handler(JsonHandler):
     def do_GET(self):
         url = urlsplit(self.path)
         params = {key: values[0] for key, values in parse_qs(url.query).items()}
-        self.reply(*self.server.world.handle("GET", url.path, params, self.headers))
+        self.send_json(*self.server.world.handle("GET", url.path, params, self.headers))
 
     def do_POST(self):
-        params = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-        if self.path.startswith("/fake/"):
+        params = json.loads(self.read_body())
+        if self.path.startswith(CONTROL_PATH):
             world = self.server.world
-            operation = self.path.removeprefix("/fake/")
+            operation = self.path.removeprefix(CONTROL_PATH)
             with world._lock:
                 if operation in ("repo", "topic", "comment", "branch", "collaborator", "fail"):
                     result = getattr(world, operation)(**params)
@@ -487,26 +462,14 @@ class _Handler(BaseHTTPRequestHandler):
                 elif operation == "requests":
                     result = [path for _, path, _ in world.requests]
                 else:
-                    self.reply(404, {}, {})
+                    self.send_json(404, {})
                     return
-            self.reply(200, {"result": result}, {})
+            self.send_json(200, {"result": result})
             return
-        self.reply(*self.server.world.handle("POST", self.path, params, self.headers))
-
-    def reply(self, status, body, headers):
-        data = json.dumps(body).encode()
-        self.send_response_only(status)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(data)))
-        for key, value in headers.items():
-            self.send_header(key, value)
-        self.end_headers()
-        self.wfile.write(data)
+        self.send_json(*self.server.world.handle("POST", self.path, params, self.headers))
 
 
 if __name__ == "__main__":
-    import sys
-
     world = FakeGitHub()
     with FakeServer(world) as server:
         # Only synthetic, generated fixture credentials; consumed through a pipe.

@@ -16,7 +16,6 @@ real-S3 tests.
 
 from __future__ import annotations
 
-import io
 import json
 import re
 import sys
@@ -25,19 +24,19 @@ import uuid
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from email.utils import format_datetime
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
 import requests
-from requests.adapters import BaseAdapter
+
+# Run as a script, the fake finds `fake_http` next to the test packages.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from fake_http import CONTROL_PATH, Holds, JsonHandler, Serving, WorldAdapter
 
 VERSION = "2025-09-03"
 TOKEN = "fake-integration-secret"
 EPOCH = datetime(2026, 1, 1, tzinfo=UTC)
-CONTROL_PATH = "/fake/"
-#: A parked request is answered after this long even if nobody releases it.
-HOLD_SECONDS = 120.0
 _NAMESPACE = uuid.UUID("6f1d2c1e-0000-4000-8000-000000000000")
 _MEDIA = frozenset({"image", "video", "file", "pdf", "audio"})
 _LINKS = frozenset({"bookmark", "embed", "link_preview"})
@@ -311,7 +310,7 @@ class FakeNotion:
 
     def attach(self, session: requests.Session) -> requests.Session:
         """Answer the session's requests from this world instead of the network."""
-        adapter = _Adapter(self)
+        adapter = WorldAdapter(self.answer_request)
         session.mount("https://", adapter)
         session.mount("http://", adapter)
         return session
@@ -460,6 +459,15 @@ class FakeNotion:
             "next_cursor": str(start + size) if more else None,
         }
 
+    def answer_request(
+        self, request: requests.PreparedRequest
+    ) -> tuple[int, dict[str, Any], dict[str, str]]:
+        url = urlsplit(request.url)
+        arguments: dict[str, Any] = {k: v[0] for k, v in parse_qs(url.query).items()}
+        if request.body:
+            arguments = json.loads(request.body)
+        return self.handle(request.method or "", url.path, arguments, request.headers)
+
     def handle(
         self, method: str, path: str, arguments: dict[str, Any], headers: Mapping[str, str]
     ) -> tuple[int, dict[str, Any], dict[str, str]]:
@@ -558,31 +566,6 @@ class FakeNotion:
         return self._listed(found, arguments)
 
 
-class _Adapter(BaseAdapter):
-    def __init__(self, world: FakeNotion) -> None:
-        super().__init__()
-        self._world = world
-
-    def send(self, request: requests.PreparedRequest, **_: Any) -> requests.Response:
-        url = urlsplit(request.url)
-        arguments: dict[str, Any] = {k: v[0] for k, v in parse_qs(url.query).items()}
-        if request.body:
-            arguments = json.loads(request.body)
-        status, body, headers = self._world.handle(
-            request.method or "", url.path, arguments, request.headers
-        )
-        response = requests.Response()
-        response.status_code = status
-        response.headers.update(headers)
-        response.url = request.url
-        response.request = request
-        response.raw = io.BytesIO(json.dumps(body).encode())
-        return response
-
-    def close(self) -> None:
-        pass
-
-
 def matcher(spec: Mapping[str, Any]) -> Match:
     """A request predicate from JSON: a `path` pattern, and `arguments`
     patterns searched in the query parameters or the JSON body; an argument
@@ -599,7 +582,7 @@ def matcher(spec: Mapping[str, Any]) -> Match:
     return match
 
 
-class FakeServer:
+class FakeServer(Serving):
     """`world` over HTTP, for a connector in another process.
 
     `settings.api_endpoint` is `endpoint` and the token is `world.token`; a
@@ -616,64 +599,28 @@ class FakeServer:
     """
 
     def __init__(self, world: FakeNotion) -> None:
+        super().__init__(_Handler, fake=self)
         self.world = world
-        self._http = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
-        self._http.daemon_threads = True
-        self._http.fake = self  # type: ignore[attr-defined]
-        self.endpoint = f"http://127.0.0.1:{self._http.server_address[1]}"
-        self._holds: list[dict[str, Any]] = []
-        self._guard = threading.Lock()
-        self._thread = threading.Thread(target=self._http.serve_forever, args=(0.02,), daemon=True)
-        self._thread.start()
-
-    def __enter__(self) -> FakeServer:
-        return self
-
-    def __exit__(self, *_: object) -> None:
-        self.close()
+        self.holds = Holds()
 
     def close(self) -> None:
-        self.release()
-        self._http.shutdown()
-        self._http.server_close()
-        self._thread.join()
-
-    def hold(self, match: Match) -> None:
-        with self._guard:
-            self._holds.append({"match": match, "released": threading.Event(), "parked": False})
-
-    def release(self) -> None:
-        with self._guard:
-            holds, self._holds = self._holds, []
-        for hold in holds:
-            hold["released"].set()
-
-    def parked(self) -> int:
-        """Requests waiting for `release` right now."""
-        with self._guard:
-            return sum(hold["parked"] for hold in self._holds)
+        self.holds.release()
+        super().close()
 
     def api(
         self, method: str, path: str, arguments: dict[str, Any], headers: Mapping[str, str]
     ) -> tuple[int, dict[str, Any], dict[str, str]]:
-        with self._guard:
-            hold = next(
-                (h for h in self._holds if not h["parked"] and h["match"](path, arguments)), None
-            )
-            if hold is not None:
-                hold["parked"] = True
-        if hold is not None:
-            hold["released"].wait(HOLD_SECONDS)
+        self.holds.wait(path, arguments)
         return self.world.handle(method, path, arguments, headers)
 
     def control(self, name: str, arguments: dict[str, Any]) -> Any:
         world = self.world
         if name == "hold":
-            return self.hold(matcher(arguments["match"]))
+            return self.holds.hold(matcher(arguments["match"]))
         if name == "release":
-            return self.release()
+            return self.holds.release()
         if name == "parked":
-            return self.parked()
+            return self.holds.parked()
         # The lock of `handle`: a change never lands in the middle of an answer.
         with world._lock:
             if name == "requests":
@@ -694,31 +641,10 @@ class FakeServer:
         raise KeyError(name)
 
 
-class _Handler(BaseHTTPRequestHandler):
-    protocol_version = "HTTP/1.1"
-    # Headers and body are two writes; Nagle would hold the second for 40 ms.
-    disable_nagle_algorithm = True
-
-    def log_message(self, *_: Any) -> None:
-        pass
-
-    def _reply(self, status: int, body: Any, headers: Mapping[str, str] | None = None) -> None:
-        data = json.dumps(body).encode()
-        try:
-            self.send_response_only(status)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(data)))
-            for name, value in (headers or {}).items():
-                self.send_header(name, value)
-            self.end_headers()
-            self.wfile.write(data)
-        except OSError:
-            # The client is gone: a worker killed while its request was parked.
-            self.close_connection = True
-
+class _Handler(JsonHandler):
     def _api(self, method: str, arguments: dict[str, Any]) -> None:
         fake: FakeServer = self.server.fake  # type: ignore[attr-defined]
-        self._reply(*fake.api(method, urlsplit(self.path).path, arguments, self.headers))
+        self.send_json(*fake.api(method, urlsplit(self.path).path, arguments, self.headers))
 
     def do_GET(self) -> None:
         query = parse_qs(urlsplit(self.path).query)
@@ -726,15 +652,15 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         fake: FakeServer = self.server.fake  # type: ignore[attr-defined]
-        body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        body = self.read_body()
         if not self.path.startswith(CONTROL_PATH):
             return self._api("POST", json.loads(body or b"{}"))
         try:
             result = fake.control(self.path.removeprefix(CONTROL_PATH), json.loads(body or b"{}"))
         except (KeyError, TypeError, ValueError) as error:
             # A wrong call in a test must fail that test, not be skipped.
-            return self._reply(400, {"error": type(error).__name__, "detail": str(error)})
-        self._reply(200, {"result": result})
+            return self.send_json(400, {"error": type(error).__name__, "detail": str(error)})
+        self.send_json(200, {"result": result})
 
 
 def main() -> None:
