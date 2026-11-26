@@ -223,6 +223,7 @@ pub(crate) struct TestHooks {
     pub(crate) filter_scan: TestGate,
     pub(crate) admission_probe: std::sync::Mutex<Option<AdmissionProbe>>,
     pub(crate) cache_warming: TestGate,
+    pub(crate) cleanup: TestGate,
 }
 
 #[cfg(test)]
@@ -268,10 +269,18 @@ async fn settle<T>(reader: &mut PreparedReader, result: Result<T>) -> Result<T> 
         // A parked request must not queue behind native work merely to cancel.
         // interrupted refuses changed admission without rebuilding it if no
         // native permit is held; the next request performs its normal binding.
-        let cleanup = reader.interrupted();
+        // An interrupted request holds no answer, so only a grant the cleanup
+        // found changed refuses it as one. A cleanup that fails or does not
+        // end within 1 s, as under load, leaves the request's own code: the
+        // next request binds again.
+        let cleanup = async {
+            #[cfg(test)]
+            reader.test_hooks.cleanup.wait_once().await;
+            reader.interrupted().await
+        };
         match tokio::time::timeout(Duration::from_secs(1), cleanup).await {
-            Ok(Ok(false)) => result,
-            _ => Err(AuthorizationUnavailable),
+            Ok(Ok(true) | Err(AuthorizationUnavailable)) => Err(AuthorizationUnavailable),
+            _ => result,
         }
     } else {
         result

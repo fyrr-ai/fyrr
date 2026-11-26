@@ -489,6 +489,14 @@ fn tools_timed_out_admission_rebuild_refuses_stale_mask_on_storage() {
 }
 
 #[test]
+#[ignore = "real S3 and a stdio deadline with a slow cleanup"]
+fn tools_slow_cleanup_after_a_deadline_answers_deadline_exceeded_on_storage() {
+    parked_reader_test(
+        "serve::tests::embedding::a_slow_cleanup_after_a_deadline_answers_deadline_exceeded_on_storage",
+    );
+}
+
+#[test]
 #[ignore = "real S3 and stdio failure lifecycle"]
 fn tools_failed_scheduler_terminates_stdio_on_storage() {
     parked_reader_test(
