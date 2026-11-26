@@ -1,6 +1,7 @@
 use super::publication::previous_manifest;
 use super::*;
 use fyrr_core::attributes::{AttributeIndexes, AttributeType, stale_analyzers};
+use fyrr_core::identity::{IdentityInput, IdentityInputKind};
 use lance::dataset::NewColumnTransform;
 use lance_index::scalar::inverted::DocumentGranularity;
 
@@ -569,14 +570,21 @@ pub(crate) async fn idle(
     policy: &PolicyArtifact,
 ) -> Result<bool> {
     let (store, root) = namespace_store(config)?;
-    if !crate::envelopes::purged_envelopes(config, head, policy)
-        .await?
-        .is_empty()
-        || !waits(config, head, policy, pending(config, head).await?).await?
-        || configured_policy(config, policy)?.is_some()
-        || next_identity(config, store.as_ref(), &root, head, &[], None)
+    let (identity, identity_changed) =
+        next_identity(config, store.as_ref(), &root, head, &[], None).await?;
+    if identity_changed
+        || !crate::envelopes::purged_envelopes(config, head, policy)
             .await?
-            .1
+            .is_empty()
+        || !waits(
+            config,
+            head,
+            policy,
+            &identity.inputs,
+            &pending(config, head).await?,
+        )
+        .await?
+        || configured_policy(config, policy)?.is_some()
     {
         return Ok(false);
     }
@@ -590,25 +598,61 @@ pub(crate) async fn idle(
 }
 
 /// Whether `pending` changes nothing a commit would publish: it is empty, or,
-/// before the first content, it is permissions envelopes that wait for rows to
-/// be checked against, none of them to be rejected.
+/// before the first content, it is permissions, members and listing envelopes
+/// and the content of sources whose permissions were rejected, none of them to
+/// be rejected. Permissions and listings wait for rows to be checked against; a
+/// members snapshot has no manifest to be recorded as applied in, so it stays
+/// pending once its identity `inputs` are published; blocked content waits for
+/// a replacement of the rejected read.
 async fn waits(
     config: &Config,
     head: &ServingHead,
     policy: &PolicyArtifact,
-    pending: Vec<PreparedEnvelope>,
+    inputs: &[IdentityInput],
+    pending: &[PreparedEnvelope],
 ) -> Result<bool> {
     if pending.is_empty() {
         return Ok(true);
     }
-    if head.content.is_some() || pending.iter().any(|e| e.kind != SyncKind::Permissions) {
+    if head.content.is_some() {
         return Ok(false);
     }
-    let mut fences = history::RejectionFences::new(&pending)?;
+    let blocked = if pending.iter().any(|e| e.kind == SyncKind::Content) {
+        blocked_sources(&unconsumed_rejections(config, head, pending).await?)
+    } else {
+        BTreeSet::new()
+    };
+    if pending.iter().any(|e| match e.kind {
+        SyncKind::Permissions | SyncKind::Members | SyncKind::Reconcile => false,
+        kind => kind != SyncKind::Content || !blocked.contains(&e.source_id),
+    }) {
+        return Ok(false);
+    }
+    // The newest complete snapshot of each source is the one its input holds.
+    let mut snapshots = BTreeMap::new();
+    for e in pending {
+        if matches!(&e.payload, EnvelopePayload::Members(p) if p.last)
+            && snapshots
+                .get(&e.source_id)
+                .is_none_or(|n: &&PreparedEnvelope| n.sequence < e.sequence)
+        {
+            snapshots.insert(&e.source_id, e);
+        }
+    }
+    if snapshots.values().any(|e| {
+        !inputs.iter().any(|i| {
+            i.kind == IdentityInputKind::Source && i.id == e.source_id && i.read_at == e.created_at
+        })
+    }) {
+        return Ok(false);
+    }
+    let mut fences = history::RejectionFences::new(pending)?;
     for marker in rejection_markers(config, head).await? {
         fences.observe(&marker)?;
     }
-    for envelope in &pending {
+    // Content that is blocked here is none of the judgments below: a commit
+    // leaves it as it is.
+    for envelope in pending.iter().filter(|e| e.kind != SyncKind::Content) {
         if crate::apply::rejected(config, &envelope.envelope_id).await?
             || refusal(config, head, policy, &fences, envelope)
                 .await?

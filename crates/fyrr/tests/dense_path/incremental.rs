@@ -2789,6 +2789,110 @@ async fn incremental_members_behind_waiting_permissions_are_applied_on_storage()
     );
 }
 
+/// Before the first content, waiting permissions and a members snapshot change
+/// nothing a commit publishes once the identity is: the commits after the
+/// first take no lease and write nothing, and the envelopes stay pending.
+#[tokio::test]
+#[ignore = "real CLI and local storage; scripts/ci"]
+async fn incremental_a_commit_with_waiting_permissions_and_members_writes_nothing_on_storage() {
+    let (worker, commit, root) = fixture_host(768, false);
+    drop_other_sources(&worker).await;
+    input(
+        &root,
+        json!({"epoch":1,
+            "permissions":[[{"id":"a","revision":"p1","readers":["grp:group"]}]],
+            "members":[{"users":[{"id":"u","email":"fixture@example.test","email_verification":"verified_corporate","active":true}],"groups":[{"id":"group","members":["usr:u"]}]}]}),
+    );
+    worker_sync(
+        &worker,
+        &["incremental", "--kind", "permissions", "--kind", "members"],
+    );
+    publish(&commit);
+    assert!(
+        identity_inputs_of(&commit)
+            .await
+            .contains(&"incremental".to_owned()),
+        "the snapshot is applied to the identity"
+    );
+    let writes = observed_writes(&commit, 3);
+    assert!(writes.is_empty(), "an idle commit wrote {writes:?}");
+}
+
+/// A content envelope that only deletes waits behind the rejection of the
+/// permissions of its source, before the first content: once the rejection is
+/// published, the commits after it take no lease and write nothing.
+#[tokio::test]
+#[ignore = "real CLI and local storage; scripts/ci"]
+async fn incremental_a_commit_with_only_waiting_deletes_writes_nothing_on_storage() {
+    let (worker, commit, root) = fixture_host(768, false);
+    drop_other_sources(&worker).await;
+    input(
+        &root,
+        json!({"epoch":1,"content":[[{"id":"gone","delete":true,"revision":"r1"}]]}),
+    );
+    worker_sync(&worker, &["incremental", "--kind", "content"]);
+    let readers: Vec<String> = (0..3300).map(|n| format!("grp:wide-{n:04}")).collect();
+    input(
+        &root,
+        json!({"epoch":2,"permissions":[[{"id":"b","revision":"p1","readers":readers}]]}),
+    );
+    worker_sync(&worker, &["incremental", "--kind", "permissions"]);
+    let over = cursor_of(&worker, SyncKind::Permissions)
+        .await
+        .last
+        .unwrap();
+    equal_limits(&[&commit], "256KiB");
+    publish(&commit);
+    assert!(
+        resolved(&commit, &over.id).await.1,
+        "the envelope over the bounds is rejected"
+    );
+    let writes = observed_writes(&commit, 3);
+    assert!(writes.is_empty(), "an idle commit wrote {writes:?}");
+
+    // Older than an envelope may be, the deletes still wait for the read that
+    // replaces the rejected one: nothing in a commit changes.
+    let loaded = fyrr_core::config::load(&commit).unwrap();
+    let (store, ns) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
+    let listed: Vec<_> = futures::TryStreamExt::try_collect::<Vec<_>>(
+        object_store::ObjectStore::list(store.as_ref(), Some(&ns.join("envelopes"))),
+    )
+    .await
+    .unwrap();
+    for object in listed {
+        let mut envelope: PreparedEnvelope =
+            fyrr_reader::storage::read_contract(store.as_ref(), &object.location)
+                .await
+                .unwrap();
+        if envelope.kind == SyncKind::Content {
+            envelope.created_at = fyrr_core::clock::now() - chrono::Duration::days(4);
+            store
+                .put(&object.location, write_contract(&envelope).into())
+                .await
+                .unwrap();
+        }
+    }
+    let writes = observed_writes(&commit, 3);
+    assert!(writes.is_empty(), "a commit past the age wrote {writes:?}");
+}
+
+/// A complete listing waits for the first content, which it reconciles
+/// against: commits write nothing after the first.
+#[tokio::test]
+#[ignore = "real CLI and local storage; scripts/ci"]
+async fn incremental_a_commit_with_only_a_waiting_listing_writes_nothing_on_storage() {
+    let (worker, commit, root) = fixture_host(768, false);
+    drop_other_sources(&worker).await;
+    input(
+        &root,
+        json!({"epoch":1,"listing":[{"last":true,"complete":true,"roots":[]}]}),
+    );
+    worker_sync(&worker, &["incremental", "--kind", "reconcile", "--full"]);
+    publish(&commit);
+    let writes = observed_writes(&commit, 3);
+    assert!(writes.is_empty(), "an idle commit wrote {writes:?}");
+}
+
 /// A content envelope that only deletes, beside waiting permissions and one
 /// over the committer's 256 KiB group, before the first content: the envelope
 /// over the bounds is rejected in the first commit. (The deletes then wait for
