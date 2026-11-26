@@ -490,12 +490,25 @@ impl PreparedReader {
         if !self.preparation_reservation.warm() {
             return Ok(());
         }
+        // The first query of a subject reads the vector index files whole to
+        // build its partition maps, and waits for a fill already in flight.
+        // They are filled first, on their own, so that they do not share the
+        // bandwidth with the rest of the generation's files.
+        let vector = PreparationReservation::vector_index_files(&self.manifest)
+            .cloned()
+            .collect::<Vec<_>>();
+        let warmed = async {
+            self.mirror
+                .prewarm(self.control_backend.clone(), &vector)
+                .await?;
+            self.mirror
+                .prewarm(self.control_backend.clone(), &self.manifest.files)
+                .await
+        };
         tokio::select! {
             biased;
             () = self.mirror_pin.expiry.cancelled() => return Err(StorageUnavailable),
-            warmed = self.mirror.prewarm(self.control_backend.clone(),
-                 &self.manifest.files) => warmed?,
-
+            warmed = warmed => warmed?,
         }
         self.authorization()?;
         let needed = PreparationReservation::cache_bytes(&self.manifest);
