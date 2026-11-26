@@ -1846,6 +1846,9 @@ async fn incremental_permission_envelope_no_cursor_confirmed_is_inert_on_storage
         &[("b", "p8")],
     )
     .await;
+    // An envelope no cursor confirmed is inert: it does not block its source.
+    let status = command(&commit, &["writer", "status"]);
+    assert_eq!(status["blocked_sources"], json!([]), "{status}");
     input(
         &root,
         json!({"epoch":3,"permissions":[[{"id":"a","revision":"p4","readers":[]}]]}),
