@@ -652,6 +652,11 @@ async fn http_delete_needs_an_admin_key_and_the_repeated_name_on_local_storage()
         refused(client.delete(&url).json(&body)).await,
         (401, json!({"error": "unauthorized"}))
     );
+    let unauthorized = client.delete(&url).json(&body).send().await.unwrap();
+    assert_eq!(
+        unauthorized.headers().get("www-authenticate").unwrap(),
+        "Bearer"
+    );
     assert_eq!(
         refused(client.delete(&url).bearer_auth(&reader).json(&body)).await,
         (403, json!({"error": "forbidden"}))

@@ -149,6 +149,12 @@ impl ApiError {
                 .headers_mut()
                 .insert(header::RETRY_AFTER, header::HeaderValue::from_static("1"));
         }
+        if self.0 == 401 {
+            reply.headers_mut().insert(
+                header::WWW_AUTHENTICATE,
+                header::HeaderValue::from_static("Bearer"),
+            );
+        }
         reply
     }
 }

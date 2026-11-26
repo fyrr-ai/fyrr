@@ -915,7 +915,9 @@ request was accepted does not cancel it.
 | --- | --- | --- |
 | `unauthorized` | `401` | No API key, or a key that is not among the published keys. |
 | `forbidden` | `403` | The key lacks the `write` role or its `namespace_prefix` excludes the namespace, or the request sets `conditions`, `delete_where` or `patch_where` and the key lacks the `admin` role. |
-| `not_found` | `404` | `{namespace}` is not a namespace name, or the process has no `[namespace.write_api]`. |
+| `not_found` | `404` | `{namespace}` is not a namespace name, or the process has no `[namespace.write_api]`; for a `PATCH` of a namespace, also a namespace that does not exist. |
+| `method_not_allowed` | `405` | A method that `/v1/namespaces/{namespace}` of the administration listener does not serve (it serves `PATCH` and `DELETE`), or a write route that is not `POST`. |
+| `request_timeout` | `408` | The body of the request stopped arriving: the idle limit of the write route, 5 seconds for the body of `PATCH` and `DELETE` of a namespace. |
 | `unsupported_media_type` | `415` | Not `application/json`, or a `Content-Encoding`. |
 | `body_too_large`, `too_many_rows`, `row_too_large` (1 MiB), `settings_too_large` (64 KiB), `text_too_large`, `document_too_large`, `request_too_large` | `413` | A limit above. |
 | `schema_change_with_rows`, `body_invalid`, `empty_request`, `id_missing`, `duplicate_id`, `text_missing`, `readers_invalid`, `vector_invalid`, `vector_not_patchable`, `text_not_patchable`, `embedding_not_configured`, `document_invalid`, `condition_invalid`, `filter_invalid`, `settings_invalid`, `attribute_undeclared` (a value that infers no type, or a namespace with no publication yet, [inference](tuning.md#inferred-attributes)) and the value codes of [tuning](tuning.md#namespaceattributes) (`attribute_type_mismatch`, `attribute_value_invalid`, `attribute_value_too_large`) | `400` | The body or a row is invalid, or the settings of a namespace to be created are (a schema that is too large or has a bad name included: `settings_invalid`). |

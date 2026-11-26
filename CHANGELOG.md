@@ -11,8 +11,13 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 - `PATCH` and `DELETE /v1/namespaces/{namespace}` answer `{"error":"<code>"}`
   for every status, as the other routes do, not a SCIM error; `DELETE` admits
-  the key against the namespace of its path, as `PATCH` does. The clients no
-  longer read `scimType`.
+  the key against the namespace of its path, as `PATCH` does, so a namespace
+  written through the API can be deleted over HTTP, and with the write API on an
+  unauthenticated `DELETE` of a name that is not a namespace name answers `404
+  not_found`, not `401`. Errors of the writer map as on the write route: a
+  namespace or storage root of v0.1.x answers `409` (`namespace_layout_old`,
+  `storage_root_old`), not `503`, and a `401` carries `WWW-Authenticate:
+  Bearer`. The clients no longer read `scimType`.
 - One analyzer cuts the text of a namespace for its index, its highlights and
   its excerpts. The keys `fts_stem`, `fts_remove_stop_words`,
   `fts_ascii_folding` and `fts_max_token_length` are gone (a file that sets one
