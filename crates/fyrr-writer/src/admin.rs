@@ -178,6 +178,9 @@ async fn delete_namespace(state: Arc<AdminState>, request: Request, name: String
     if body.namespace != name {
         return error(ScimError::new(400, "invalidValue"));
     }
+    if let Some(write) = &state.write {
+        write.commits.want_lease(&name);
+    }
     // Keep the lease lifecycle, and the request's capacity, alive even if the
     // client closes its connection.
     let result = tokio::spawn(async move {
@@ -216,6 +219,9 @@ async fn patch_namespace(state: Arc<AdminState>, request: Request, name: String)
     };
     if name != config.namespace.name {
         return error(ScimError::new(404, "notFound"));
+    }
+    if let Some(write) = &state.write {
+        write.commits.want_lease(&config.namespace.name);
     }
     let result = tokio::spawn(async move {
         let _permit = permit;

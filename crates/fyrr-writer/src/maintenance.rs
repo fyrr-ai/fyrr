@@ -30,6 +30,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 // Bound catalog-wide index opens, while the indexes stay below `merge_tier_rows` per segment.
 pub(crate) const INDEX_SEGMENT_LIMIT: usize = 64;
+// The newest segments of an index that one step of `writer serve` merges, so that a write that
+// waits for the lease waits for a short step. `writer maintain` merges an index in one step.
+const MERGE_STEP_SEGMENTS: usize = 32;
 // Merge throughput measured on #317: 3,000,000 rows in 2,147 s on `writer maintain`, cores 0-3,
 // `writer.threads = 2`. Re-measure with `scripts/bench-scale --maintain` when the merge changes.
 const MERGE_ROWS_PER_SECOND: u128 = 1_400;
@@ -162,11 +165,18 @@ pub(crate) fn lineage(lease: &LeaseGuard, head: &ServingHead) -> CommitLineage {
 
 /// Every native step starts from the head after fresh authorization discovery.
 /// Orphan recovery runs once at command start and again after a failed native step.
+///
+/// What waits for the namespace is committed here, under the lease the run holds: a write
+/// waits for the step in progress, not for the run.
 async fn boundary(
     config: &Config,
     lease: &LeaseGuard,
     history: &mut commit::RestoreHistory,
+    writes: Option<&crate::write_api::Commits>,
 ) -> Result<ServingHead> {
+    if let Some(writes) = writes {
+        writes.commit_pending(config, lease).await?;
+    }
     cached_drain_authorization(config, lease, history, false).await?;
     lease.head().await
 }
@@ -175,9 +185,25 @@ async fn boundary(
 /// trains on up to 262,144 vectors in memory and cannot be interrupted, so
 /// only the operator command asks for it; `writer serve` merges segments only.
 pub async fn maintain(config: &Config, rebalance: bool) -> Result<serde_json::Value> {
+    maintain_serving(config, rebalance, None).await
+}
+
+/// `maintain` that commits the writes that wait for the namespace, between its steps.
+pub(crate) async fn maintain_serving(
+    config: &Config,
+    rebalance: bool,
+    writes: Option<&crate::write_api::Commits>,
+) -> Result<serde_json::Value> {
     crate::lease::LeaseGuard::with(config, |lease| async move {
         let mut history = commit::RestoreHistory::new(config)?;
-        let mut result = maintain_held(config, &lease, &mut history, rebalance).await;
+        let mut result = maintain_held(config, &lease, &mut history, rebalance, writes).await;
+        // A request that needs the lease itself ends the run between two steps.
+        if result
+            .as_ref()
+            .is_err_and(|error| *error == WriterError::MaintenanceYielded)
+        {
+            result = Ok(serde_json::json!({"yielded":true}));
+        }
         // Every expired native step yields to authorization, including storage
         // reads during purge/compaction/index planning before cleanup begins.
         if result
@@ -197,6 +223,7 @@ async fn maintain_held(
     lease: &LeaseGuard,
     history: &mut commit::RestoreHistory,
     rebalance: bool,
+    writes: Option<&crate::write_api::Commits>,
 ) -> Result<serde_json::Value> {
     // Obsolete applied objects must not exhaust history's resident allowance
     // before the cleanup that can remove them becomes reachable.
@@ -210,7 +237,7 @@ async fn maintain_held(
     let mut merged = 0;
     let limit = config.writer.maintenance.step_max_duration.as_duration();
     loop {
-        let head = boundary(config, lease, history).await?;
+        let head = boundary(config, lease, history, writes).await?;
         if head.content.is_none() {
             break;
         }
@@ -229,16 +256,18 @@ async fn maintain_held(
     // One index name per interruptible step. Merge the segments, never retrain;
     // with `rebalance` Lance also splits and joins partitions toward the index's
     // target size.
-    let head = boundary(config, lease, history).await?;
+    let head = boundary(config, lease, history, writes).await?;
     if head.content.is_some() {
         let dataset = pinned(config, &head).await?;
-        let names: BTreeSet<_> = dataset
-            .load_indices()
-            .await?
-            .iter()
-            .map(|i| i.name.clone())
-            .collect();
-        for name in names {
+        let mut segments = BTreeMap::<_, usize>::new();
+        for index in dataset.load_indices().await?.iter() {
+            *segments.entry(index.name.clone()).or_default() += 1;
+        }
+        // The most crowded index first: writes go on during the run, and the indexes it
+        // reaches last would otherwise keep the segments they gain meanwhile.
+        let mut names: Vec<_> = segments.into_iter().collect();
+        names.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
+        for (name, _) in names {
             // An index that ran out of time on this version waits for a new publication.
             if merge_skipped(&config.namespace.name, &name, version(&head)) {
                 continue;
@@ -246,7 +275,7 @@ async fn maintain_held(
             // Each step merges the newest segments only, so the next one finds
             // the step's output among them.
             loop {
-                let head = boundary(config, lease, history).await?;
+                let head = boundary(config, lease, history, writes).await?;
                 let dataset = pinned(config, &head).await?;
                 let segments = dataset
                     .load_indices()
@@ -283,7 +312,7 @@ async fn maintain_held(
     }
     // One retained set for both cleanups: a manifest goes only with the
     // version files that this set protects.
-    let head = boundary(config, lease, history).await?;
+    let head = boundary(config, lease, history, writes).await?;
     let kept = if head.content.is_some() {
         tokio::time::timeout(limit, retained(config, &head))
             .await
@@ -305,7 +334,7 @@ async fn maintain_held(
     if cleaned && protected == 0 {
         removed += superseded_history(config, lease, history, &head, &kept).await?;
     }
-    let head = boundary(config, lease, history).await?;
+    let head = boundary(config, lease, history, writes).await?;
     if head.content.is_some() {
         let mut dataset = pinned(config, &head).await?;
         let mut work = lineage(lease, &head);
@@ -406,7 +435,11 @@ async fn merge_step(
     let before = dataset.version().version;
     let mut work = lineage(lease, &head);
     let vector = is_vector_index(config, &name);
-    let mut options = OptimizeOptions::merge(usize::MAX);
+    let mut options = OptimizeOptions::merge(if rebalance {
+        usize::MAX
+    } else {
+        MERGE_STEP_SEGMENTS
+    });
     options.index_names = Some(vec![name]);
     options.retrain = false;
     let target = merge_tier_rows(config);
@@ -728,7 +761,7 @@ async fn superseded_history(
                     break;
                 }
                 let current = if deleted % 64 == 0 {
-                    boundary(config, lease, history).await?
+                    boundary(config, lease, history, None).await?
                 } else {
                     lease.head().await?
                 };
@@ -879,7 +912,7 @@ async fn cleanup_versions(
         }
         // Keep the 64-delete revocation boundary and the row/time budgets.
         let current = if removed % 64 == 0 {
-            boundary(config, lease, history).await?
+            boundary(config, lease, history, None).await?
         } else {
             lease.head().await?
         };
@@ -1258,16 +1291,30 @@ async fn compact_one(
         fragments.iter().find(|f| f.deletion_file.is_some())
     {
         [fragment.id].into_iter().collect()
-    } else if let Some(pair) = fragments.windows(2).find(|pair| {
+    } else if let Some(start) = fragments.windows(2).position(|pair| {
         pair.iter()
             .all(|f| (f.physical_rows.unwrap_or(0) as u64) < config.writer.commit.group_max_rows)
     }) {
-        pair.iter().map(|f| f.id).collect()
+        // The run of small neighbors that follows, as long as one commit group's rows hold: a
+        // step per pair appends a segment to every index for each fragment a write adds, and
+        // maintenance would never catch up with steady small writes.
+        let rows = |f: &lance::table::format::Fragment| f.physical_rows.unwrap_or(0) as u64;
+        let max = config.writer.commit.group_max_rows;
+        let mut total = rows(&fragments[start]) + rows(&fragments[start + 1]);
+        let mut run = vec![fragments[start].id, fragments[start + 1].id];
+        for fragment in &fragments[start + 2..] {
+            if rows(fragment) >= max || total + rows(fragment) > max {
+                break;
+            }
+            total += rows(fragment);
+            run.push(fragment.id);
+        }
+        run.into_iter().collect()
     } else {
         return Ok(false);
     };
     let options = CompactionOptions {
-        max_source_fragments: Some(2),
+        max_source_fragments: Some(selected.len()),
         materialize_deletions: true,
         defer_index_remap: true,
         materialize_deletions_threshold: 0.0,

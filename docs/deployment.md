@@ -353,11 +353,12 @@ fyrr writer serve --jobs 4 --timeout 10m
 It syncs each source's kinds when their configured intervals are due, pulls
 the directory on its interval, and commits every
 `writer.commit.coalescing_timer` (60 s). `SIGINT` or `SIGTERM` stops the
-workers, finishes the current commit group or maintenance run and releases the
-lease. It also runs `fyrr writer maintain` when the served version needs it
+workers, finishes the current commit group or maintenance step and releases the
+lease. It also runs `fyrr writer maintain`, outside the commit loop, when the served version needs it
 (too many index segments at once; fragments with deletions, or no maintenance
 for longer than the windows after which retired versions and applied envelopes
-are deleted, at most once per `writer.version_grace`); set `writer.serve.maintenance = false` to
+are deleted, at most once per `writer.version_grace`). A write that waits is committed between the steps of that run.
+Set `writer.serve.maintenance = false` to
 schedule `fyrr writer maintain` yourself, as below.
 
 Sync, directory pulls and commits can also run from cron (a SCIM directory

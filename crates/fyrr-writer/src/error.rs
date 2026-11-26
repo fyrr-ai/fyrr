@@ -157,6 +157,7 @@ writer_errors! {
     IndexMergeFailed => ("index_merge_failed", false),
     LineageInvalid => ("lineage_invalid", false),
     MaintenanceStepDeadline => ("maintenance_step_deadline", false),
+    MaintenanceYielded => ("maintenance_yielded", false),
     NativeUpdateFailed => ("native_update_failed", false),
     PreparedSchemaInvalid => ("prepared_schema_invalid", false),
     PublicationIdInvalid => ("publication_id_invalid", false),

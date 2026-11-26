@@ -19,7 +19,7 @@ pub(super) async fn published(
         return Ok(None);
     }
     let pinned = fyrr_reader::storage::pinned(config, head).await?;
-    let latest = pinned.latest_version_id().await?;
+    let latest = latest_version(&pinned).await?;
     Ok(Some((pinned, latest)))
 }
 
@@ -219,7 +219,7 @@ impl<'a> ContentWork<'a> {
                     Some(before),
                     Some(store_params(config)?),
                     None,
-                    Arc::new(lance::session::Session::default()),
+                    fyrr_reader::storage::writer_session(),
                     false,
                 ),
                 WriterError::StorageUnavailable,

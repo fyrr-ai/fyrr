@@ -66,6 +66,8 @@ pub(crate) struct Commits {
     pub(crate) requested: Notify,
     pub(crate) done: watch::Sender<u64>,
     waiting: std::sync::Mutex<BTreeMap<String, usize>>,
+    /// When a request last wanted the lease of a namespace for itself.
+    leased: std::sync::Mutex<BTreeMap<String, std::time::Instant>>,
 }
 impl Commits {
     pub(crate) fn new() -> Self {
@@ -73,6 +75,7 @@ impl Commits {
             requested: Notify::new(),
             done: watch::channel(0).0,
             waiting: std::sync::Mutex::default(),
+            leased: std::sync::Mutex::default(),
         }
     }
     /// The namespaces with a request that waits for its publication.
@@ -81,6 +84,45 @@ impl Commits {
             .lock()
             .map(|waiting| waiting.keys().cloned().collect())
             .unwrap_or_default()
+    }
+    /// Commits what waits for the namespace of `config`, under the lease `lease` that a
+    /// maintenance run holds: the requests that wait, and the envelopes its sources left.
+    /// The requests are woken to look at what was published.
+    #[allow(clippy::print_stderr)]
+    pub(crate) async fn commit_pending(
+        &self,
+        config: &Config,
+        lease: &crate::lease::LeaseGuard,
+    ) -> crate::Result<()> {
+        if self.leased.lock().is_ok_and(|leased| {
+            leased
+                .get(&config.namespace.name)
+                .is_some_and(|at| at.elapsed() < LEASE_WANTED)
+        }) {
+            return Err(crate::WriterError::MaintenanceYielded);
+        }
+        let head = lease.head().await?;
+        if crate::commit::pending(config, &head).await?.is_empty() {
+            return Ok(());
+        }
+        let began = std::time::Instant::now();
+        crate::commit::drain(config, false, lease, None).await?;
+        eprintln!("writer_service event=published");
+        fyrr_reader::metrics::observe(&crate::telemetry::COMMIT_DURATION, &[], began.elapsed());
+        fyrr_reader::metrics::add(
+            &crate::telemetry::COMMIT_ROUNDS,
+            &[("outcome", "published")],
+            1,
+        );
+        self.done.send_modify(|rounds| *rounds += 1);
+        Ok(())
+    }
+    /// A request that needs the lease, as a schema change or a freeze does, says so: a run
+    /// of maintenance that holds it ends at its next step and hands it over.
+    pub(crate) fn want_lease(&self, name: &str) {
+        if let Ok(mut leased) = self.leased.lock() {
+            leased.insert(name.to_owned(), std::time::Instant::now());
+        }
     }
     fn wait(&self, name: &str) -> Waiting<'_> {
         if let Ok(mut waiting) = self.waiting.lock() {
@@ -135,6 +177,8 @@ impl WriteApi {
 /// How long a schema change waits for the lease: tries, and the pause between them.
 const LEASE_WAIT_TRIES: u32 = 50;
 const LEASE_WAIT: Duration = Duration::from_millis(100);
+/// How long after a request that wanted the lease a run of maintenance still hands it over.
+const LEASE_WANTED: Duration = Duration::from_secs(2);
 
 struct ApiError(u16, &'static str);
 impl ApiError {
@@ -1101,6 +1145,7 @@ async fn leftovers(
 /// differs and nothing is written (`503 busy`; the request is sent again).
 /// Boxed: the future of `execute` is at the compiler's depth limit.
 fn add_inferred<'a>(
+    commits: &'a Commits,
     process: &'a Config,
     config: &'a Config,
     head: &'a fyrr_core::publication::ServingHead,
@@ -1111,7 +1156,7 @@ fn add_inferred<'a>(
     Result<(fyrr_core::publication::ServingHead, PolicyArtifact), ApiError>,
 > {
     Box::pin(async move {
-        change_schema_waiting(process, &head.incarnation, |current| {
+        change_schema_waiting(commits, process, &head.incarnation, |current| {
             let mut next = current.clone();
             for (name, kind) in added {
                 if next.attributes.entry(name.clone()).or_insert(*kind) != kind {
@@ -1162,6 +1207,7 @@ fn columns_unchanged(predicted: &[String], actual: &[String]) -> Result<(), ApiE
 /// is refused.
 /// Boxed: the future of `execute` is at the compiler's depth limit.
 fn change_schema_waiting<'a>(
+    commits: &'a Commits,
     config: &'a Config,
     incarnation: &'a str,
     change: impl Fn(&NamespaceSettings) -> Result<NamespaceSettings> + Send + Sync + 'a,
@@ -1169,6 +1215,8 @@ fn change_schema_waiting<'a>(
     Box::pin(async move {
         let mut waited = 0;
         loop {
+            // A run of maintenance that holds the lease ends at its next step.
+            commits.want_lease(&config.namespace.name);
             let changed = crate::commit::change_schema(config, |held, current| {
                 if held.incarnation != incarnation {
                     return Err(WriterError::NamespaceChanged);
@@ -1329,7 +1377,7 @@ async fn execute(
         }
         // The change is made again under the lease, to the settings it finds
         // there.
-        change_schema_waiting(config, &head.incarnation, |current| {
+        change_schema_waiting(commits, config, &head.incarnation, |current| {
             changed_schema(current, requested.as_ref())
         })
         .await?;
@@ -1410,9 +1458,17 @@ async fn execute(
     // that hold them are prepared: the column is there, null for every older
     // row, when the envelope is applied.
     let existing = match existing {
-        Some((head, _)) if !added.is_empty() => {
-            Some(add_inferred(process, &config, &head, &added, predicted.as_deref()).await?)
-        }
+        Some((head, _)) if !added.is_empty() => Some(
+            add_inferred(
+                commits,
+                process,
+                &config,
+                &head,
+                &added,
+                predicted.as_deref(),
+            )
+            .await?,
+        ),
         other => other,
     };
     let (head, served) = match existing {

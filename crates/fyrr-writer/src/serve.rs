@@ -176,6 +176,7 @@ pub async fn run(
     let mut directory_timer =
         tokio::time::interval(loaded.config.identity.directory.sync_interval.as_duration());
     directory_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut maintaining: Option<tokio::task::JoinHandle<()>> = None;
     'serving: loop {
         tokio::select! {
             _ = &mut shutdown => break,
@@ -217,33 +218,32 @@ pub async fn run(
                         }
                     };
                     fyrr_reader::metrics::add(&crate::telemetry::COMMIT_ROUNDS, &[("outcome", outcome)], 1);
-                    commits.done.send_modify(|rounds| *rounds += 1);
+                    // A round that found the lease taken published nothing to recheck: a request
+                    // that waits would wake at once, ask for a round again and spin.
+                    if outcome != "busy" {
+                        commits.done.send_modify(|rounds| *rounds += 1);
+                    }
                     if stop.load(Ordering::Acquire) {
                         break 'serving;
                     }
-                    // The tick judged this from the manifest it read anyway. A signal
-                    // waits for the maintenance in progress, as it does for a commit group.
-                    if let Some(config) = maintenance.filter(|_| loaded.config.writer.serve.maintenance) {
-                        match crate::maintenance::maintain(&config, false).await {
-                            Ok(done) => {
-                                eprintln!("writer_service event=maintained");
-                                for (step, key) in [("compaction", "compaction_steps"), ("index_merge", "index_merge_steps")] {
-                                    let steps = done[key].as_i64().unwrap_or(0);
-                                    fyrr_reader::metrics::add(&crate::telemetry::MAINTENANCE_STEPS, &[("step", step)], steps);
-                                }
-                            }
-                            Err(WriterError::CommitterBusy) => eprintln!("writer_service event=committer_busy"),
-                            Err(_) => eprintln!("writer_service event=maintenance_failed"),
-                        }
-                        if stop.load(Ordering::Acquire) {
-                            break 'serving;
-                        }
+                    // The tick judged this from the manifest it read anyway. It runs on a
+                    // task of its own, so that the next round is not behind it, and one
+                    // at a time.
+                    if let Some(config) = maintenance
+                        .filter(|_| loaded.config.writer.serve.maintenance)
+                        .filter(|_| maintaining.as_ref().is_none_or(tokio::task::JoinHandle::is_finished))
+                    {
+                        maintaining = Some(tokio::spawn(maintain(config, commits.clone())));
                     }
                 }
             }
         }
     }
     stop.store(true, Ordering::Release);
+    // A signal waits for the maintenance step in progress, as it does for a commit group.
+    if let Some(task) = maintaining {
+        let _ = task.await;
+    }
     if let Some(metrics) = metrics {
         metrics.abort();
     }
@@ -258,6 +258,42 @@ pub async fn run(
         task.await.map_err(|_| WriterError::AdminServiceFailed)??;
     }
     Ok(serde_json::json!({"stopped":true}))
+}
+
+/// One maintenance run of a namespace. A write that waits for the namespace's lease is
+/// committed between its steps, under the lease the run holds.
+#[allow(clippy::print_stderr)]
+async fn maintain(config: fyrr_core::config::Config, commits: Arc<crate::write_api::Commits>) {
+    eprintln!("writer_service event=maintenance_started");
+    match crate::maintenance::maintain_serving(&config, false, Some(&commits)).await {
+        Ok(done) => {
+            let yielded = done["yielded"].as_bool().unwrap_or(false);
+            eprintln!(
+                "writer_service event={}",
+                if yielded {
+                    "maintenance_yielded"
+                } else {
+                    "maintained"
+                }
+            );
+            for (step, key) in [
+                ("compaction", "compaction_steps"),
+                ("index_merge", "index_merge_steps"),
+            ] {
+                let steps = done[key].as_i64().unwrap_or(0);
+                fyrr_reader::metrics::add(
+                    &crate::telemetry::MAINTENANCE_STEPS,
+                    &[("step", step)],
+                    steps,
+                );
+            }
+        }
+        Err(WriterError::CommitterBusy) => eprintln!("writer_service event=maintenance_busy"),
+        Err(error) => eprintln!(
+            "writer_service event=maintenance_failed code={}",
+            error.as_str()
+        ),
+    }
 }
 
 /// The next commit round: at the coalescing timer, or when a write request asks.

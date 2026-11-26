@@ -2393,6 +2393,10 @@
         "tier": "full",
         "seconds": 40
       },
+      "full:fyrr:test:dense_path/write_api::identity_write_api_answers_a_write_that_waits_for_maintenance_on_storage": {
+        "tier": "full",
+        "seconds": 120
+      },
       "full:fyrr:test:dense_path/write_api::identity_write_api_deletes_and_patches_the_documents_that_match_a_filter_on_storage": {
         "tier": "full",
         "seconds": 60
