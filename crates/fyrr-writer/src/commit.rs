@@ -1626,18 +1626,20 @@ mod chain_tests {
             .unwrap();
             links.push(envelope);
         }
-        let lease =
-            crate::sync_lease::CursorLease::acquire(config, "source", SyncKind::Permissions)
-                .await
-                .unwrap();
-        let mut state = lease.state().await.unwrap();
+        // The cursor of the worker that chained them.
+        let mut state = crate::prepare::initial_cursor(config, "source", SyncKind::Permissions);
         state.sequence = 3;
         state.last = Some(fyrr_core::connector::LastEnvelope {
             sequence: 3,
             id: links[2].envelope_id.clone(),
         });
-        lease.write(state).await.unwrap();
-        lease.release().await.unwrap();
+        store
+            .put(
+                &root.join("cursors").join("source-permissions.json"),
+                write_contract(&state).into(),
+            )
+            .await
+            .unwrap();
         links
     }
 
