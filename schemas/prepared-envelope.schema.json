@@ -56,7 +56,8 @@
     },
     "created_at": {
       "type": "string",
-      "format": "date-time"
+      "format": "date-time",
+      "description": "Written to the microsecond, always: the encoding of an envelope is as\nlong whenever it is written."
     },
     "lease_generation": {
       "type": "integer",
