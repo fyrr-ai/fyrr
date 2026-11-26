@@ -120,13 +120,13 @@ pub(crate) async fn confirmed(
             kept.push(envelope);
         }
     }
-    let (unresolved, blocked) = chains(config, head, &policy, &sources, &listed, resolved).await?;
-    kept.extend(unresolved);
-    // Content and a listing, which derives deletes, wait for a broken chain.
+    let found = chains(config, head, &policy, &sources, &listed, resolved).await?;
+    // Content and a listing, which derives deletes, wait for a broken chain and
+    // for a read that is not confirmed.
     kept.retain(|e| {
-        !matches!(e.kind, SyncKind::Content | SyncKind::Reconcile)
-            || !blocked.contains(&e.source_id)
+        !matches!(e.kind, SyncKind::Content | SyncKind::Reconcile) || !found.holds(&e.source_id)
     });
+    kept.extend(found.unresolved);
     Ok(kept)
 }
 
@@ -141,11 +141,14 @@ pub(crate) async fn chains<L: Link>(
     sources: &BTreeSet<String>,
     listed: &BTreeMap<String, L>,
     resolved: &(dyn Fn(&str) -> Result<bool> + Sync),
-) -> Result<(Vec<L>, BTreeSet<String>)> {
+) -> Result<Chains<L>> {
     let (store, root) = namespace_store(config)?;
     let manifest = previous_manifest(store.as_ref(), &root, head).await?;
-    let mut unresolved = Vec::new();
-    let mut blocked = BTreeSet::new();
+    let mut found = Chains {
+        unresolved: Vec::new(),
+        blocked: BTreeSet::new(),
+        waiting: BTreeMap::new(),
+    };
     for source in sources
         .iter()
         .filter(|source| !policy.retired_sources.contains_key(*source))
@@ -155,23 +158,77 @@ pub(crate) async fn chains<L: Link>(
             .and_then(|m| m.authorization_applied.get(source));
         let cursor =
             crate::sync_lease::CursorLease::peek(config, source, SyncKind::Permissions).await?;
+        let links = || {
+            listed
+                .values()
+                .filter(|link| link.source_id() == source.as_str() && link.lease_generation() > 0)
+        };
         // A missing cursor of a source whose envelopes a worker chained lost
-        // what confirmed them, and one older than the log (put back from a copy
-        // after a later read moved it) would confirm a chain without that
-        // read: the source is blocked until the right cursor is back.
-        let lost = listed
-            .values()
-            .filter(|link| link.source_id() == source.as_str() && link.lease_generation() > 0)
-            .any(|link| match &cursor {
-                None => true,
-                Some(state) => stale(state, link),
-            });
-        if lost {
+        // what confirmed them, and one of an older lease than its log (put back
+        // from a copy after a later lease's read moved it) would confirm a chain
+        // without that read: the source is blocked until the right cursor is
+        // back.
+        let epoch = cursor
+            .as_ref()
+            .and_then(|c| c.lease.as_ref())
+            .map_or(0, |lease| lease.epoch);
+        if links().any(|link| cursor.is_none() || link.lease_generation() > epoch) {
             crate::telemetry::permissions_blocked(source);
-            blocked.insert(source.clone());
+            found.blocked.insert(source.clone());
             continue;
         }
-        let last = cursor.and_then(|state| state.last).map(|last| last.id);
+        let Some(state) = cursor else {
+            if let Some(walk) = walk(
+                config,
+                store.as_ref(),
+                &root,
+                source,
+                None,
+                applied,
+                listed,
+                resolved,
+            )
+            .await?
+            {
+                found.unresolved.extend(walk.unresolved);
+            } else {
+                crate::telemetry::permissions_blocked(source);
+                found.blocked.insert(source.clone());
+            }
+            continue;
+        };
+        // The end of a read after the cursor's position that no read completed
+        // since has passed: a read between its end and its cursor write, one
+        // whose worker died before it, or a copy of the cursor taken during it
+        // and put back. Its changes are not confirmed, and they may revoke: the
+        // content and listings of the source wait until a read completes after
+        // it, whatever lease is taken meanwhile.
+        let beyond: Vec<_> = links()
+            .filter(|link| link.ends_read() && link.sequence() > state.sequence)
+            .map(|link| link.lease_generation())
+            .collect();
+        if let Some(newest) = beyond.iter().max().copied() {
+            let confirmed = match &state.last {
+                Some(last) => match listed.get(&last.id) {
+                    Some(link) => link.lease_generation(),
+                    None => read_link(config, store.as_ref(), &root, &last.id)
+                        .await?
+                        .map_or(0, |e| e.lease_generation),
+                },
+                None => 0,
+            };
+            if confirmed <= newest {
+                let live = state
+                    .lease
+                    .as_ref()
+                    .is_some_and(|lease| lease.expires_at > fyrr_core::clock::now());
+                if !live {
+                    crate::telemetry::permissions_blocked(source);
+                }
+                found.waiting.insert(source.clone(), live);
+            }
+        }
+        let last = state.last.map(|last| last.id);
         match walk(
             config,
             store.as_ref(),
@@ -184,34 +241,57 @@ pub(crate) async fn chains<L: Link>(
         )
         .await?
         {
-            Some(walk) => unresolved.extend(walk.unresolved),
+            Some(walk) => found.unresolved.extend(walk.unresolved),
             None => {
                 crate::telemetry::permissions_blocked(source);
-                blocked.insert(source.clone());
+                found.blocked.insert(source.clone());
             }
         }
     }
-    Ok((unresolved, blocked))
+    Ok(found)
 }
 
-/// Whether `link` shows `cursor` older than its log: written by a later lease
-/// than the cursor's, or the end of a read of the cursor's own lease after its
-/// position while that lease has expired: a worker that died before it
-/// confirmed the read, or a copy of the cursor put back after the read moved
-/// it. The source then waits for the next read, which redoes it; a lease that
-/// is live is a read in progress, which does not block. A refused worker
-/// writes nothing, so the cursor's lease does not move while it is refused.
-pub(crate) fn stale<L: Link>(cursor: &fyrr_core::connector::CursorState, link: &L) -> bool {
-    let epoch = cursor.lease.as_ref().map_or(0, |lease| lease.epoch);
-    let expired = cursor
-        .lease
-        .as_ref()
-        .is_none_or(|lease| lease.expires_at <= fyrr_core::clock::now());
-    link.lease_generation() > epoch
-        || (link.lease_generation() == epoch
-            && expired
-            && link.ends_read()
-            && link.sequence() > cursor.sequence)
+/// What the walks of the chains of some sources found.
+pub(crate) struct Chains<L> {
+    /// The links that wait on a whole chain, oldest first.
+    pub(crate) unresolved: Vec<L>,
+    /// The sources whose chain is broken or whose cursor is lost or older than
+    /// their log: none of their permissions, content or listings publish.
+    pub(crate) blocked: BTreeSet<String>,
+    /// The sources with the end of a read that no completed read has passed:
+    /// their content and listings wait; with whether their lease is live (a
+    /// read in progress) or not.
+    pub(crate) waiting: BTreeMap<String, bool>,
+}
+
+impl<L> Chains<L> {
+    /// Whether the content and listings of `source` wait.
+    pub(crate) fn holds(&self, source: &str) -> bool {
+        self.blocked.contains(source) || self.waiting.contains_key(source)
+    }
+}
+
+/// The permissions envelope `id`, read by its ID; none when it is not there
+/// or does not parse.
+async fn read_link(
+    config: &Config,
+    store: &dyn ObjectStore,
+    root: &Path,
+    id: &str,
+) -> Result<Option<PreparedEnvelope>> {
+    let path = root.clone().join("envelopes").join(format!("{id}.json"));
+    let object = match store.get(&path).await {
+        Ok(object) => object,
+        Err(object_store::Error::NotFound { .. }) => return Ok(None),
+        Err(_) => return Err(WriterError::StorageUnavailable),
+    };
+    let bytes = object
+        .bytes()
+        .await
+        .map_err(|_| WriterError::StorageUnavailable)?;
+    Ok(fyrr_core::parse_contract::<PreparedEnvelope>(&bytes)
+        .ok()
+        .filter(|e| e.namespace == config.namespace.name))
 }
 
 /// The links of a chain after `applied`, as one walk finds them.

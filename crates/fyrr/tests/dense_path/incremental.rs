@@ -3124,11 +3124,11 @@ async fn incremental_an_older_cursor_put_back_keeps_its_source_blocked_on_storag
 }
 
 /// A copy of the cursor taken during a read, as its lease was taken, put back
-/// after that read confirmed a revocation: while the copied lease is live the
-/// read counts as in progress; once it has expired the end of the read that
-/// the copy does not hold blocks the source, so new content does not publish
-/// with the old rights, and the next read, which a worker is not refused,
-/// reads from the copy again and unblocks it.
+/// after that read confirmed a revocation: the end of the read that the copy
+/// does not hold keeps new content from publishing with the old rights while
+/// the copied lease is live, after it expired, after a next read failed and
+/// while a next read runs; the next read that completes, which a worker is
+/// not refused, reads from the copy again and ends it.
 #[tokio::test]
 #[ignore = "real CLI and local storage; scripts/ci"]
 async fn incremental_a_cursor_copy_taken_during_a_read_blocks_until_the_next_read_on_storage() {
@@ -3169,7 +3169,30 @@ async fn incremental_a_cursor_copy_taken_during_a_read_blocks_until_the_next_rea
     );
     worker_sync(&worker, &["incremental", "--kind", "content"]);
     store.put(&path, copy.into()).await.unwrap();
-    // The copied lease expires.
+    // Every commit until a read completes after the copy keeps the old content
+    // and rights.
+    async fn held(commit: &Path, worker: &Path, granted: &[String]) {
+        publish(commit);
+        let batch = rows(worker).await;
+        let row = roots(&batch).iter().position(|id| id == "a").unwrap();
+        assert_eq!(
+            fyrr_writer::apply::strings(&batch, "source_revision")
+                .unwrap()
+                .value(row),
+            "r1",
+            "the content waits"
+        );
+        assert_eq!(row_readers(&batch, "a"), granted);
+    }
+    // While the copied lease is live, the read counts as in progress.
+    let status = command(&commit, &["writer", "status"]);
+    assert_eq!(status["blocked_sources"], json!([]), "{status}");
+    assert!(
+        status["pending_envelopes"].as_u64().unwrap() > 0,
+        "{status}"
+    );
+    held(&commit, &worker, &granted).await;
+    // Once it has expired, the source is blocked.
     let ttl = loaded.config.writer.commit.lease_ttl.as_duration();
     fyrr_core::clock::advance(ttl + std::time::Duration::from_secs(1)).unwrap();
     let status = command(&commit, &["writer", "status"]);
@@ -3178,6 +3201,42 @@ async fn incremental_a_cursor_copy_taken_during_a_read_blocks_until_the_next_rea
         json!(["incremental"]),
         "{status}"
     );
+    held(&commit, &worker, &granted).await;
+    // A next read that fails does not end the block.
+    input(
+        &root,
+        json!({"epoch":3,"permissions":[[{"id":"a","revision":"p9","readers":[]}]],"fail_permissions_at":0}),
+    );
+    let failed = worker_command(&worker)
+        .args(["writer", "sync", "incremental", "--kind", "permissions"])
+        .output()
+        .unwrap();
+    assert!(!failed.status.success());
+    assert!(
+        !String::from_utf8_lossy(&failed.stderr).contains("permission_cursor_lost"),
+        "the read is not refused"
+    );
+    fyrr_core::clock::advance(ttl + std::time::Duration::from_secs(1)).unwrap();
+    held(&commit, &worker, &granted).await;
+    // Nor does a read that is running.
+    let redo = fyrr_writer::sync_lease::CursorLease::acquire(
+        &loaded.config,
+        "incremental",
+        SyncKind::Permissions,
+    )
+    .await
+    .unwrap();
+    held(&commit, &worker, &granted).await;
+    redo.release().await.unwrap();
+    // The next read that completes is not refused, reads from the copy again
+    // and ends the block.
+    input(
+        &root,
+        json!({"epoch":4,"permissions":[[{"id":"a","revision":"p9","readers":[]}]]}),
+    );
+    worker_sync(&worker, &["incremental", "--kind", "permissions"]);
+    let status = command(&commit, &["writer", "status"]);
+    assert_eq!(status["blocked_sources"], json!([]), "{status}");
     publish(&commit);
     let batch = rows(&worker).await;
     let row = roots(&batch).iter().position(|id| id == "a").unwrap();
@@ -3185,20 +3244,9 @@ async fn incremental_a_cursor_copy_taken_during_a_read_blocks_until_the_next_rea
         fyrr_writer::apply::strings(&batch, "source_revision")
             .unwrap()
             .value(row),
-        "r1",
-        "the content waits"
+        "r2"
     );
-    assert_eq!(row_readers(&batch, "a"), granted);
-    // The next read is not refused and reads from the copy again.
-    input(
-        &root,
-        json!({"epoch":3,"permissions":[[{"id":"a","revision":"p9","readers":[]}]]}),
-    );
-    worker_sync(&worker, &["incremental", "--kind", "permissions"]);
-    let status = command(&commit, &["writer", "status"]);
-    assert_eq!(status["blocked_sources"], json!([]), "{status}");
-    publish(&commit);
-    assert!(row_readers(&rows(&worker).await, "a").is_empty());
+    assert!(row_readers(&batch, "a").is_empty());
 }
 
 /// A copy has no chain and nothing applied: its sources read again from the start.

@@ -256,13 +256,18 @@ every source until it is removed or put back
 ([#370](https://github.com/fyrr-ai/fyrr/issues/370)).
 
 A worker does not make a new permissions cursor for such a source, nor read
-from one older than its log (a copy put back after a later lease's read moved
-it): it fails the read with `permission_cursor_lost` before it writes anything,
-so the block holds however often it tries. A read in progress (its lease is
-live) does not block its source. The end of a read that its cursor does not
-hold, once that read's lease has expired (its worker died, or the cursor is a
-copy taken during that read), blocks the source until the next read, which
-reads from the cursor again and redoes it without an operator.
+from one of an older lease than its log (a copy put back after a later lease's
+read moved it): it fails the read with `permission_cursor_lost` before it writes
+anything, so the block holds however often it tries.
+
+The end of a read that its cursor does not hold yet (a read between its end
+and its cursor write, one whose worker died, or a copy of the cursor taken
+during it and put back) holds the content and listings of its source until a
+read completes after it. A healthy read holds them only for that moment. While
+the read's lease is live, `fyrr writer status` counts what waits as pending;
+once it has expired, it lists the source in `blocked_sources`. A crash heals
+with no operator: the next read that completes reads from the cursor again and
+ends the hold.
 
 To end the block, put back the cursor the last read wrote
 (`cursors/SOURCE_ID-permissions.json`) or the missing envelope
@@ -271,8 +276,10 @@ the next commit publishes what waited. Only a cursor copy taken while no read
 of the source ran keeps every confirmed read. A copy taken during a read takes
 the source back to where that read started: the next read starts from the
 copy, and the read in progress when it was taken is published only if the
-connector reports its changes again. When no valid copy exists, purge the
-source (`fyrr writer source purge SOURCE_ID --confirm`), which is final, and
+connector reports its changes again. A copy older than a read that a
+publication already carries keeps the source blocked for good, whatever reads
+follow: its chain never reaches what the publication applied. When no valid
+copy exists, purge the source (`fyrr writer source purge SOURCE_ID --confirm`), which is final, and
 configure it again under a new source ID: it reads its content and rights from
 the start.
 

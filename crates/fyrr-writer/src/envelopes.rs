@@ -270,7 +270,7 @@ pub async fn status(config: &Config) -> Result<serde_json::Value> {
     // Every link after what the manifest applied, then which of them no
     // publication resolved: one that is listed and unresolved, or one that the
     // walk read by ID and no manifest names.
-    let (links, blocked) = crate::commit::chains(
+    let found = crate::commit::chains(
         config,
         &head,
         &policy,
@@ -279,7 +279,7 @@ pub async fn status(config: &Config) -> Result<serde_json::Value> {
         &|_: &str| -> Result<bool> { Ok(false) },
     )
     .await?;
-    for link in links {
+    for link in &found.unresolved {
         if permissions.contains_key(&link.id)
             || !applied_page(
                 store.clone(),
@@ -294,11 +294,29 @@ pub async fn status(config: &Config) -> Result<serde_json::Value> {
         }
     }
     // A source whose chain does not reach what the manifest applied publishes
-    // nothing of its permissions, content or listings until it is whole again.
-    let blocked_sources: Vec<&String> = blocked.iter().collect();
+    // nothing of its permissions, content or listings until it is whole again;
+    // one with the end of a read no completed read has passed holds its content
+    // and listings, and is reported blocked once the lease of that read has
+    // expired: while it is live, the read is in progress.
+    let blocked_sources: Vec<&String> = found
+        .blocked
+        .iter()
+        .chain(
+            found
+                .waiting
+                .iter()
+                .filter(|(_, live)| !**live)
+                .map(|(s, _)| s),
+        )
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    // What a read in progress holds is pending; what a block holds is not.
     pending += held
         .iter()
-        .filter(|(source, _)| !blocked.contains(*source))
+        .filter(|(source, _)| {
+            !found.blocked.contains(*source) && found.waiting.get(*source) != Some(&false)
+        })
         .map(|(_, count)| count)
         .sum::<usize>();
     let mut warnings = crate::maintenance::purge_warnings(config, &head).await?;

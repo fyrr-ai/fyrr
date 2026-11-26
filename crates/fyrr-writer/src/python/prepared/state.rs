@@ -477,6 +477,11 @@ pub(super) fn checked_cursor(
                 }
                 Some(_) => envelope.lease_generation > epoch,
             };
+            // The first proof is enough; the cursor is read again at once to
+            // tell a lost one from one that a read moved meanwhile.
+            if lost {
+                break;
+            }
         }
     }
     if lost {
