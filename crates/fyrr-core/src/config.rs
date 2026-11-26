@@ -52,6 +52,9 @@ pub const STORAGE_URI_PATTERN: &str =
 pub const KMS_KEY_ID_PATTERN: &str = r"^[A-Za-z0-9:/_.+=@-]{1,2048}$";
 /// Source IDs: lowercase letters, digits, `_` and `-`, at most 63 bytes.
 pub const SOURCE_ID_PATTERN: &str = r"^[a-z0-9][a-z0-9_-]{0,62}$";
+/// The longest source ID [`SOURCE_ID_PATTERN`] allows; none of its characters
+/// is escaped in JSON.
+pub const SOURCE_ID_MAX_BYTES: usize = 63;
 /// Connector provider names.
 pub const PROVIDER_PATTERN: &str = r"^[a-z0-9][a-z0-9-]{0,62}$";
 /// Bit widths Lance accepts for an IVF_RQ index.

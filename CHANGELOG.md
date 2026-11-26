@@ -24,6 +24,16 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   bytes or more) or cuts (at `_`) no longer counts. The retrieval digest of
   every namespace changes: a namespace of an unreleased build is refused;
   recreate it.
+- A permission read that repeats the published rights writes no envelope and
+  publishes nothing; its cursor still moves. A document is left out of the read
+  when its permission revision is the one its published rows hold, and a
+  container grant when it equals the published one; what the read keeps is
+  compared in order, so a later change of the same document or container in
+  the read is kept. The comparison is made only when nothing of the source
+  waits to be published.
+- The reader's workers share the dataset its generation opened instead of
+  each opening the pinned version again. Each worker still counts its own
+  storage reads.
 - An explicit `null` for a member of a JSON `query` request that is no tool
   argument (`fields`, `fusion`, `rerank`, `sub_queries`, `query_match`,
   `query_attributes`, `phrase`, `contains`, `boosts`, `group_documents`,
@@ -60,6 +70,20 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   documents again. A
   local put no longer opens a root lock file. See
   [operations](docs/operations.md#upgrades).
+- A permission read is published whole, in one publication, or not at all:
+  its roots are written in parts and an envelope without roots ends the read
+  and moves the cursor, and the committer writes the rows a read rewrites in
+  steps within `writer.commit.group_max_rows` and `group_max_bytes`. A root
+  that does not fit an envelope alone fails the read with
+  `permission_root_oversized`. `writer.envelope_max_bytes` must now hold the
+  envelope that ends a read with the largest cursors, about 193 KiB (the
+  default is 256 MiB); a configuration with a smaller bound is refused when it
+  is loaded. `fyrr writer status` lists the sources whose permission chain is
+  broken in `blocked_sources`; a worker fails a permission read with
+  `permission_cursor_lost` when the cursor of such a source is missing.
+  Cursor objects are internal: never delete, copy or restore them; a lost
+  cursor blocks its source until `fyrr writer source purge`. See
+  [operations](docs/operations.md#blocked-sources).
 - The excerpt of a hit is chosen with the tokens of the full-text index of its
   namespace, as the lexical lane and `highlights` are. A passage whose only
   match is a stemmed or folded word can be the one returned. See
@@ -590,9 +614,9 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   `source_id`, which has no index.
 - The reader no longer asks storage for a version manifest its publication
   does not list. Lance looks for a version under its other manifest name
-  each time it opens the dataset, once per worker of every generation; the
-  mirror now answers that miss from the publication's file list. Opening a
-  100,000-row namespace on an empty mirror made 35 fewer storage requests.
+  each time it opens the dataset, once per generation; the mirror now answers
+  that miss from the publication's file list. Opening a 100,000-row namespace
+  on an empty mirror made 35 fewer storage requests.
 - The reader's mirror reads data files in 4 KiB pages: a read of part of a
   data file fetches only the pages it lacks, instead of the whole file, and
   checks each kept page against its digest once per process before serving
@@ -648,6 +672,11 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Fixed
 
+- A serving reader no longer turns its generation cold when a second
+  subject's admission is built. The roots of the vector index grow a little
+  after their first searches, and each admission compared that new size with
+  the reservation again; at 3,000,000 rows the second one found 143 KB too
+  little and every dense query after it scanned all rows exactly.
 - The TypeScript client treated a write with an empty `conditions` object as a
   conditional one and never repeated it after a lost connection; the Python
   client and the server read it as no conditions. All three now agree: only a

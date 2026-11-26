@@ -785,6 +785,34 @@ pub async fn open_version(
     builder.load().await
 }
 
+/// `dataset` read through `mirror`: the same opened version, metadata and
+/// session, with the reads of this handle counted in `mirror` alone. Its
+/// `refs` still read through the generation's store; the reader reads no
+/// tags or branches.
+pub(crate) async fn read_through(
+    dataset: &Dataset,
+    options: StorageOptions,
+    mirror: Arc<crate::mirror::MirrorStore>,
+) -> lance::Result<Dataset> {
+    let params = lance_io::object_store::ObjectStoreParams {
+        storage_options_accessor: Some(Arc::new(
+            lance_io::object_store::StorageOptionsAccessor::with_static_options(
+                options.into_map().into_iter().collect(),
+            ),
+        )),
+        ..native_store_params(Some(
+            mirror as Arc<dyn lance_io::object_store::WrappingObjectStore>,
+        ))
+    };
+    let (store, _) = lance_io::object_store::ObjectStore::from_uri_and_params(
+        dataset.session().store_registry(),
+        dataset.uri(),
+        &params,
+    )
+    .await?;
+    Ok(dataset.with_object_store(store, Some(params)))
+}
+
 pub async fn artifact<T: fyrr_core::Contract>(
     store: &dyn object_store::ObjectStore,
     root: &Path,

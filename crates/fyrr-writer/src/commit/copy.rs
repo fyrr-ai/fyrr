@@ -182,6 +182,7 @@ pub async fn copy(from: &Config, to: &Config) -> Result<serde_json::Value> {
         &lineage,
         manifest.sequence,
         Vec::new(),
+        Default::default(),
         false,
         Vec::new(),
         false,
@@ -203,6 +204,8 @@ pub async fn copy(from: &Config, to: &Config) -> Result<serde_json::Value> {
         let mut state: CursorState =
             fyrr_core::parse_contract(&bytes).map_err(|_| WriterError::CursorInvalid)?;
         state.cursor = None;
+        // The envelopes are not copied: no chain, and nothing applied, in the copy.
+        state.last = None;
         state.lease = None;
         state.updated_at = chrono::DateTime::UNIX_EPOCH;
         let target = Path::from(format!(

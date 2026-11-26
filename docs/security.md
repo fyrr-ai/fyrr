@@ -115,8 +115,10 @@ plan for:
   content, permissions and identity with no validity deadline.
 - While a connector, the directory provider or the writer is down, a revoked
   grant keeps serving until a publication carries the revocation. A failed or
-  partial permission or member read publishes nothing. A broken connector is
-  the operator's problem: retire its source (below) to stop serving it.
+  partial permission or member read publishes nothing: a permission read is
+  published whole, in one publication, however many envelopes it takes. A
+  broken connector is the operator's problem: retire its source (below) to
+  stop serving it.
 - The writer reports the age of the last successful permission and member read
   per source in `fyrr writer status` (`source_reads`, null when no read ever
   completed); alert on it. The reader never uses it.

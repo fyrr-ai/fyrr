@@ -11,6 +11,22 @@
         "tier": "quick",
         "seconds": 0.0
       },
+      "full:fyrr-writer:lib:fyrr_writer/commit::chain_tests::a_cursor_without_a_confirmed_envelope_blocks_a_source_with_a_chain_on_local_storage": {
+        "tier": "quick",
+        "seconds": 0.5
+      },
+      "full:fyrr-writer:lib:fyrr_writer/commit::chain_tests::a_chain_a_concurrent_first_read_confirmed_is_busy_not_lost_on_local_storage": {
+        "tier": "quick",
+        "seconds": 0.5
+      },
+      "full:fyrr-writer:lib:fyrr_writer/commit::chain_tests::a_chain_is_read_by_id_whatever_a_listing_shows_on_local_storage": {
+        "tier": "quick",
+        "seconds": 0.5
+      },
+      "full:fyrr-writer:lib:fyrr_writer/commit::chain_tests::a_chain_that_does_not_reach_the_applied_envelope_blocks_its_source_on_local_storage": {
+        "tier": "quick",
+        "seconds": 0.5
+      },
       "full:fyrr-core:lib:fyrr_core/layout::tests::namespace_paths_preserve_names_and_native_classification": {
         "tier": "quick",
         "seconds": 0.0
@@ -128,6 +144,10 @@
         "seconds": 0.0
       },
       "full:fyrr-reader:lib:fyrr_reader/generation::tests::underestimated_roots_degrade_and_do_not_retry_the_bad_estimate": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
+      "full:fyrr-reader:lib:fyrr_reader/generation::tests::only_the_first_settlement_decides": {
         "tier": "quick",
         "seconds": 0.0
       },
@@ -514,6 +534,10 @@
       "full:fyrr-writer:lib:fyrr_writer/maintenance::generation_key_tests::only_the_writers_own_key_has_a_generation": {
         "tier": "quick",
         "seconds": 0.003
+      },
+      "full:fyrr-writer:lib:fyrr_writer/maintenance::merge_run_tests::a_compaction_prices_every_vector_index_it_encodes_again": {
+        "tier": "quick",
+        "seconds": 0.0
       },
       "full:fyrr-writer:lib:fyrr_writer/maintenance::merge_run_tests::the_smallest_pair_is_of_neighbors_in_fragment_order_and_of_a_crowded_index_only": {
         "tier": "quick",
@@ -2353,6 +2377,10 @@
         "tier": "full",
         "seconds": 40
       },
+      "full:fyrr:test:dense_path/write_api::identity_write_api_maintains_a_sparse_vector_attribute_on_storage": {
+        "tier": "full",
+        "seconds": 60
+      },
       "full:fyrr:test:dense_path/write_api::identity_write_api_searches_named_vector_attributes_on_storage": {
         "tier": "full",
         "seconds": 40
@@ -2518,9 +2546,17 @@
         "tier": "full",
         "seconds": 240.0
       },
-      "full:fyrr:test:dense_path/maintenance::maintenance_merges_the_vector_segments_in_tiers_on_storage": {
+      "full:fyrr:test:dense_path/maintenance::maintenance_grows_the_vector_model_in_bounded_steps_on_storage": {
         "tier": "full",
         "seconds": 240.0
+      },
+      "full:fyrr:test:dense_path/maintenance::a_crowded_index_that_no_step_can_merge_makes_no_writes_on_storage": {
+        "tier": "full",
+        "seconds": 240
+      },
+      "full:fyrr:test:dense_path/maintenance::maintenance_trains_again_a_model_whose_segment_lost_its_rows_on_storage": {
+        "tier": "full",
+        "seconds": 60
       },
       "full:fyrr:test:dense_path/maintenance::restore_and_rollback_preserve_current_section_revocation": {
         "tier": "full",
@@ -2652,6 +2688,22 @@
         "tier": "full",
         "seconds": 20.0
       },
+      "full:fyrr:test:dense_path/incremental::incremental_idle_permission_reread_publishes_nothing_on_storage": {
+        "tier": "full",
+        "seconds": 20.0
+      },
+      "full:fyrr:test:dense_path/incremental::incremental_a_grant_removed_inside_one_read_publishes_the_removal_on_storage": {
+        "tier": "full",
+        "seconds": 20.0
+      },
+      "full:fyrr:test:dense_path/incremental::incremental_a_removal_after_cleanup_publishes_on_storage": {
+        "tier": "full",
+        "seconds": 20.0
+      },
+      "full:fyrr:test:dense_path/incremental::incremental_a_same_revision_restores_rights_narrowed_by_content_on_storage": {
+        "tier": "full",
+        "seconds": 20.0
+      },
       "full:fyrr:test:dense_path/incremental::incremental_connector_fields_are_typed_columns_on_storage": {
         "tier": "full",
         "seconds": 20.0
@@ -2665,6 +2717,138 @@
         "seconds": 20.0
       },
       "full:fyrr:test:dense_path/incremental::incremental_read_only_namespace_refuses_syncs_and_commits_what_was_prepared_on_storage": {
+        "tier": "full",
+        "seconds": 60
+      },
+      "full:fyrr:test:dense_path/incremental::incremental_failed_permission_read_keeps_rights_and_the_next_read_publishes_whole_on_storage": {
+        "tier": "full",
+        "seconds": 60
+      },
+      "full:fyrr:test:dense_path/incremental::incremental_permission_envelope_no_cursor_confirmed_is_inert_on_storage": {
+        "tier": "full",
+        "seconds": 60
+      },
+      "full:fyrr:test:dense_path/incremental::incremental_permission_read_over_the_roots_of_an_envelope_publishes_whole_in_one_publication_on_storage": {
+        "tier": "full",
+        "seconds": 60
+      },
+      "full:fyrr:test:dense_path/incremental::incremental_permission_read_over_the_bytes_of_a_group_publishes_whole_or_none_on_storage": {
+        "tier": "full",
+        "seconds": 90
+      },
+      "full:fyrr:test:dense_path/incremental::incremental_permission_read_whose_rewritten_rows_are_over_a_group_publishes_in_steps_on_storage": {
+        "tier": "full",
+        "seconds": 60
+      },
+      "full:fyrr:test:dense_path/incremental::incremental_a_root_named_twice_in_a_split_read_publishes_with_its_revocation_on_storage": {
+        "tier": "full",
+        "seconds": 60
+      },
+      "full:fyrr:test:dense_path/incremental::incremental_the_first_publication_writes_the_rows_of_a_permission_read_in_steps_on_storage": {
+        "tier": "full",
+        "seconds": 60
+      },
+      "full:fyrr:test:dense_path/incremental::incremental_a_read_with_long_cursors_is_split_as_it_encodes_on_storage": {
+        "tier": "full",
+        "seconds": 60
+      },
+      "full:fyrr:test:dense_path/incremental::incremental_a_permission_envelope_of_exactly_the_bound_publishes_on_storage": {
+        "tier": "full",
+        "seconds": 60
+      },
+      "full:fyrr:test:dense_path/incremental::incremental_waiting_permissions_are_judged_beside_an_oversized_snapshot_on_storage": {
+        "tier": "full",
+        "seconds": 60
+      },
+      "full:fyrr:test:dense_path/incremental::incremental_a_missing_cursor_blocks_its_source_on_storage": {
+        "tier": "full",
+        "seconds": 60
+      },
+      "full:fyrr:test:dense_path/incremental::incremental_a_restore_after_a_confirmed_split_read_keeps_the_chain_on_storage": {
+        "tier": "full",
+        "seconds": 60
+      },
+      "full:fyrr:test:dense_path/incremental::incremental_a_new_cursor_follows_the_lease_generations_of_the_log_on_storage": {
+        "tier": "full",
+        "seconds": 60
+      },
+      "full:fyrr:test:dense_path/incremental::incremental_members_behind_waiting_permissions_are_applied_on_storage": {
+        "tier": "full",
+        "seconds": 60
+      },
+      "full:fyrr:test:dense_path/incremental::incremental_deletes_beside_waiting_permissions_keep_no_rejection_back_on_storage": {
+        "tier": "full",
+        "seconds": 60
+      },
+      "full:fyrr:test:dense_path/incremental::incremental_a_commit_with_only_waiting_permissions_writes_nothing_on_storage": {
+        "tier": "full",
+        "seconds": 60
+      },
+      "full:fyrr:test:dense_path/incremental::incremental_copy_clears_the_chain_of_the_cursors_on_storage": {
+        "tier": "full",
+        "seconds": 60
+      },
+      "full:fyrr:test:dense_path/incremental::incremental_an_empty_replacement_keeps_the_connector_cursor_on_storage": {
+        "tier": "full",
+        "seconds": 60
+      },
+      "full:fyrr:test:dense_path/incremental::incremental_a_refused_permission_envelope_publishes_none_of_its_grants_on_storage": {
+        "tier": "full",
+        "seconds": 60
+      },
+      "full:fyrr:test:dense_path/incremental::incremental_content_waits_for_a_chain_whose_tail_is_missing_on_storage": {
+        "tier": "full",
+        "seconds": 60
+      },
+      "full:fyrr:test:dense_path/incremental::incremental_content_waits_for_a_confirmed_revoke_before_any_envelope_was_applied_on_storage": {
+        "tier": "full",
+        "seconds": 60
+      },
+      "full:fyrr:test:dense_path/incremental::incremental_a_permission_envelope_refused_in_the_first_publication_publishes_no_grant_on_storage": {
+        "tier": "full",
+        "seconds": 60
+      },
+      "full:fyrr:test:dense_path/incremental::incremental_content_waits_for_a_cursor_that_lost_its_chain_on_storage": {
+        "tier": "full",
+        "seconds": 60
+      },
+      "full:fyrr:test:dense_path/incremental::incremental_a_valid_replacement_lets_the_first_publication_of_a_lone_source_happen_on_storage": {
+        "tier": "full",
+        "seconds": 60
+      },
+      "full:fyrr:test:dense_path/incremental::incremental_a_container_grant_before_the_first_content_is_not_published_on_storage": {
+        "tier": "full",
+        "seconds": 60
+      },
+      "full:fyrr:test:dense_path/incremental::incremental_a_newer_read_rejected_for_its_age_never_goes_before_the_older_one_on_storage": {
+        "tier": "full",
+        "seconds": 60
+      },
+      "full:fyrr:test:dense_path/incremental::incremental_a_rejection_marker_written_before_a_crash_is_reused_on_storage": {
+        "tier": "full",
+        "seconds": 60
+      },
+      "full:fyrr:test:dense_path/incremental::incremental_a_marker_written_while_the_envelope_is_applied_drops_the_publication_on_storage": {
+        "tier": "full",
+        "seconds": 60
+      },
+      "full:fyrr:test:dense_path/incremental::incremental_an_unchained_permissions_envelope_is_inert_and_blocks_no_commit_on_storage": {
+        "tier": "full",
+        "seconds": 60
+      },
+      "full:fyrr:test:dense_path/incremental::incremental_scheduled_reads_faults_cleanup_and_copy_keep_the_rights_exact_on_storage": {
+        "tier": "full",
+        "seconds": 400
+      },
+      "full:fyrr:test:dense_path/incremental::incremental_a_broken_chain_holds_the_content_of_its_source_on_storage": {
+        "tier": "full",
+        "seconds": 60
+      },
+      "full:fyrr:test:dense_path/incremental::incremental_cleanup_keeps_the_chain_and_what_a_cursor_confirmed_after_it_on_storage": {
+        "tier": "full",
+        "seconds": 60
+      },
+      "full:fyrr:test:dense_path/incremental::incremental_a_broken_chain_holds_the_listings_of_its_source_on_storage": {
         "tier": "full",
         "seconds": 60
       }

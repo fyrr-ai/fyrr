@@ -42,6 +42,8 @@ pub(crate) struct PreparationReservation {
     permit: std::sync::Mutex<tokio::sync::OwnedSemaphorePermit>,
     warm: std::sync::atomic::AtomicBool,
     estimate_valid: std::sync::atomic::AtomicBool,
+    /// The first settlement decided; later ones keep its outcome.
+    settled: std::sync::atomic::AtomicBool,
     cold_bytes: u64,
     scratch_bytes: u64,
     warm_bytes: u64,
@@ -282,6 +284,7 @@ impl PreparationReservation {
                     permit: std::sync::Mutex::new(permit),
                     warm: std::sync::atomic::AtomicBool::new(warm),
                     estimate_valid: std::sync::atomic::AtomicBool::new(true),
+                    settled: std::sync::atomic::AtomicBool::new(false),
                     cold_bytes: cold,
                     scratch_bytes: scratch,
                     warm_bytes,
@@ -330,6 +333,7 @@ impl PreparationReservation {
             permit: std::sync::Mutex::new(permit),
             warm: std::sync::atomic::AtomicBool::new(true),
             estimate_valid: std::sync::atomic::AtomicBool::new(true),
+            settled: std::sync::atomic::AtomicBool::new(false),
             cold_bytes: self.cold_bytes,
             scratch_bytes: self.scratch_bytes,
             warm_bytes: self.warm_bytes,
@@ -339,9 +343,15 @@ impl PreparationReservation {
     /// Release decoded-input space only once publication-bound roots exist.
     /// Workers and subjects reuse those roots; their private buffers remain
     /// charged by the cold envelope and the independent subject-cache bound.
+    /// Only the first call settles. The roots' own size grows after it, as
+    /// their per-thread search scratch takes the capacity of the largest
+    /// search; that growth is bounded and does not undo the settlement.
     // Bounded numeric accounting at the loss site.
     pub(crate) fn settle(&self, roots: u64) -> Result<bool> {
         let mut permit = self.permit.lock().map_err(|_| StorageUnavailable)?;
+        if self.settled.swap(true, std::sync::atomic::Ordering::AcqRel) {
+            return Ok(self.warm());
+        }
         let required = self.cold_bytes.saturating_add(roots).div_ceil(PAGE_BYTES);
         let claimed = permit.num_permits();
         let base = self

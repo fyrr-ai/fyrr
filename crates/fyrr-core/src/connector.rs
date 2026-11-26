@@ -326,6 +326,26 @@ pub struct CursorState {
     pub updated_at: DateTime<Utc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lease: Option<crate::publication::Lease>,
+    /// The newest permissions envelope this cursor confirmed. Only the envelopes
+    /// that chain back from it, through their `previous`, are committable: the
+    /// conditional write of this state is what makes a permissions envelope
+    /// count, so a worker that lost its lease cannot publish.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last: Option<LastEnvelope>,
+    /// The newest rejection generation that a complete permissions read ended.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub completed_generation: u32,
+}
+
+fn is_zero(value: &u32) -> bool {
+    *value == 0
+}
+
+/// A permissions envelope a cursor confirmed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct LastEnvelope {
+    pub sequence: u64,
+    pub id: String,
 }
 
 impl Contract for ConnectorBatch {

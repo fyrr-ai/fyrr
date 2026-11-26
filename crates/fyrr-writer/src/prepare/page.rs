@@ -133,6 +133,8 @@ pub(super) async fn content_page(
         advances_cursor,
         base_head,
         created_at: fyrr_core::clock::now(),
+        lease_generation: 0,
+        previous: None,
         payload: EnvelopePayload::Content(ContentPayload {
             embedding: identity(&config.embedding),
             chunk_profile: chunk_identity(),

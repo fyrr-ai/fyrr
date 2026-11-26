@@ -590,9 +590,455 @@ pub fn initial_cursor(config: &Config, source: &str, kind: SyncKind) -> CursorSt
         // No read has completed yet: the kind is due at once.
         updated_at: chrono::DateTime::UNIX_EPOCH,
         lease: None,
+        last: None,
+        completed_generation: 0,
     }
 }
 
+/// What a permission read is compared with, to leave out what repeats the
+/// published rights: a root whose permission revision is the one its rows hold,
+/// which the committer would skip, and a container grant equal to the
+/// published one. What the read keeps replaces them as it goes, so a later
+/// batch is compared with the state the earlier ones make. It is used only
+/// when nothing of the source waits to be published.
+pub(crate) struct PermissionRepeats {
+    dataset: Arc<lance::Dataset>,
+    revisions: std::collections::BTreeMap<String, Option<String>>,
+    grants: std::collections::BTreeMap<String, fyrr_core::connector::ContainerGrant>,
+}
+
+impl PermissionRepeats {
+    pub(crate) async fn new(
+        config: &Config,
+        source: &str,
+        dataset: Arc<lance::Dataset>,
+    ) -> Result<Self> {
+        Ok(Self {
+            dataset,
+            revisions: Default::default(),
+            grants: crate::membership::published_container_grants(config, source).await?,
+        })
+    }
+
+    /// Leaves out of `batch` the roots and grants that change nothing.
+    pub(crate) async fn retain_changes(
+        &mut self,
+        config: &Config,
+        source: &str,
+        batch: &mut ConnectorBatch,
+    ) -> Result<()> {
+        let fyrr_core::connector::BatchBody::PermissionChanges {
+            documents,
+            container_grants,
+        } = &mut batch.body
+        else {
+            return Err(WriterError::BatchInvalid);
+        };
+        let mut unknown: Vec<String> = documents
+            .iter()
+            .filter(|d| !self.revisions.contains_key(&d.root_id))
+            .map(|d| d.root_id.clone())
+            .collect();
+        unknown.sort();
+        unknown.dedup();
+        if !unknown.is_empty() {
+            let states = crate::apply::states(&self.dataset, source, &unknown).await?;
+            for root in unknown {
+                let revision = states
+                    .get(&root)
+                    .and_then(|s| s.permission.as_ref())
+                    .and_then(|p| p.revision.clone());
+                self.revisions.insert(root, revision);
+            }
+        }
+        documents.retain(|d| {
+            let repeat = self
+                .revisions
+                .get(&d.root_id)
+                .is_some_and(|r| r.as_ref() == Some(&d.permission_revision));
+            if !repeat {
+                self.revisions
+                    .insert(d.root_id.clone(), Some(d.permission_revision.clone()));
+            }
+            !repeat
+        });
+        let mut kept = Vec::new();
+        for grant in std::mem::take(container_grants) {
+            let mut tokens = grant.clone();
+            tokens.readers = grant
+                .readers
+                .iter()
+                .map(|t| crate::apply::reader_token(config, source, t))
+                .collect::<Result<_>>()?;
+            // Readers are a set: their order and repeats change no right.
+            tokens.readers.sort();
+            tokens.readers.dedup();
+            if self.grants.get(&grant.container_id) != Some(&tokens) {
+                self.grants.insert(grant.container_id.clone(), tokens);
+                kept.push(grant);
+            }
+        }
+        *container_grants = kept;
+        Ok(())
+    }
+}
+
+/// The permission batches of one read, held until they fill a part. A root or
+/// container named twice keeps its last state, as the later batch observed it.
+/// The roots go only into parts, which carry no end cursor, so a part is
+/// measured exactly as it is put; the envelope that ends the read carries no
+/// root, only its cursors, and the configuration makes room for it. What the
+/// committer rewrites for the roots is its own to bound, in steps.
+#[derive(Debug)]
+pub struct HeldPermissions {
+    /// Each root with what it adds to an envelope, as estimated: the estimate
+    /// only proposes a part, which is measured as it encodes.
+    documents: std::collections::BTreeMap<String, (fyrr_core::connector::DocumentPermission, u64)>,
+    container_grants:
+        std::collections::BTreeMap<String, (fyrr_core::connector::ContainerGrant, u64)>,
+    /// The bounds of an envelope, as of a connector batch.
+    limits: crate::batch::Limits,
+    /// The connector cursor after the last batch of the read.
+    end: Option<String>,
+    /// Whether a part of the read was put.
+    parted: bool,
+}
+
+type PermissionRoots = (
+    Vec<fyrr_core::connector::DocumentPermission>,
+    Vec<fyrr_core::connector::ContainerGrant>,
+);
+
+/// What `item` adds to an envelope as `write_contract` lays it out: its lines,
+/// each indented by the three levels above it, and the separator after it.
+fn item_bytes<T: serde::Serialize>(item: &T) -> u64 {
+    let pretty = serde_json::to_vec_pretty(item)
+        .unwrap_or_else(|error| unreachable!("permission roots serialize to JSON: {error}"));
+    let lines = pretty.iter().filter(|b| **b == b'\n').count() as u64 + 1;
+    pretty.len() as u64 + lines * 6 + 2
+}
+
+impl HeldPermissions {
+    pub fn new(limits: crate::batch::Limits) -> Self {
+        Self {
+            documents: Default::default(),
+            container_grants: Default::default(),
+            limits,
+            end: None,
+            parted: false,
+        }
+    }
+
+    /// Holds `batch`, its readers as tokens. A root that does not fit a part
+    /// alone, as the next part would be put, refuses the read.
+    pub fn push(
+        &mut self,
+        config: &Config,
+        source: &str,
+        batch: ConnectorBatch,
+        state: &CursorState,
+        base: &Option<BaseHead>,
+    ) -> Result<()> {
+        let fyrr_core::connector::BatchBody::PermissionChanges {
+            documents,
+            container_grants,
+        } = batch.body
+        else {
+            return Err(WriterError::BatchInvalid);
+        };
+        let tokens = |readers: &[String]| -> Result<Vec<String>> {
+            readers
+                .iter()
+                .map(|t| crate::apply::reader_token(config, source, t))
+                .collect()
+        };
+        for mut document in documents {
+            document.readers = tokens(&document.readers)?;
+            self.alone(
+                config,
+                source,
+                (vec![document.clone()], Vec::new()),
+                state,
+                base,
+            )?;
+            let bytes = item_bytes(&document);
+            self.documents
+                .insert(document.root_id.clone(), (document, bytes));
+        }
+        for mut grant in container_grants {
+            grant.readers = tokens(&grant.readers)?;
+            self.alone(
+                config,
+                source,
+                (Vec::new(), vec![grant.clone()]),
+                state,
+                base,
+            )?;
+            let bytes = item_bytes(&grant);
+            self.container_grants
+                .insert(grant.container_id.clone(), (grant, bytes));
+        }
+        self.end = Some(batch.cursor.end);
+        Ok(())
+    }
+
+    /// Refuses `root` when it does not fit an otherwise empty part with the
+    /// largest header a part of this read can have: a `previous` and a
+    /// sequence of the most digits, its other fields as they stay through the
+    /// read. A root that passes fits any part it is put in.
+    fn alone(
+        &self,
+        config: &Config,
+        source: &str,
+        root: PermissionRoots,
+        state: &CursorState,
+        base: &Option<BaseHead>,
+    ) -> Result<()> {
+        let mut largest = state.clone();
+        largest.sequence = u64::MAX - 1;
+        largest.last = Some(fyrr_core::connector::LastEnvelope {
+            sequence: u64::MAX - 1,
+            id: fyrr_core::envelope::envelope_id(
+                &config.namespace.name,
+                source,
+                SyncKind::Permissions,
+                0,
+                0,
+                None,
+            ),
+        });
+        let part = permission_envelope(config, source, root, None, false, &largest, base)?;
+        if !self.fits(&part, 1) {
+            return Err(WriterError::PermissionRootOversized);
+        }
+        Ok(())
+    }
+
+    fn len(&self) -> usize {
+        self.documents.len() + self.container_grants.len()
+    }
+
+    /// The first `count` roots, in order: the documents, then the containers.
+    fn first(&self, count: usize) -> PermissionRoots {
+        let documents: Vec<_> = self
+            .documents
+            .values()
+            .take(count)
+            .map(|(d, _)| d.clone())
+            .collect();
+        let grants = self
+            .container_grants
+            .values()
+            .take(count - documents.len())
+            .map(|(g, _)| g.clone())
+            .collect();
+        (documents, grants)
+    }
+
+    fn drop_first(&mut self, mut count: usize) {
+        while count > 0 && self.documents.pop_first().is_some() {
+            count -= 1;
+        }
+        while count > 0 && self.container_grants.pop_first().is_some() {
+            count -= 1;
+        }
+        self.parted = true;
+    }
+
+    /// Whether `envelope`, of `roots` roots, fits an envelope, its bytes as
+    /// they encode: what the committer checks, inclusive.
+    fn fits(&self, envelope: &PreparedEnvelope, roots: usize) -> bool {
+        roots as u64 <= self.limits.max_rows
+            && write_contract(envelope).len() as u64 <= self.limits.max_bytes
+    }
+
+    /// The part of the first roots that fits an envelope, the most that do,
+    /// with how many it holds: proposed by the estimates, then grown or shrunk
+    /// by a root on the envelope as it encodes. None when not even the first
+    /// root fits.
+    fn largest_part(
+        &self,
+        config: &Config,
+        source: &str,
+        state: &CursorState,
+        base: &Option<BaseHead>,
+    ) -> Result<Option<(PreparedEnvelope, usize)>> {
+        let build = |count: usize| {
+            permission_envelope(config, source, self.first(count), None, false, state, base)
+        };
+        let mut total = write_contract(&build(0)?).len() as u64;
+        let mut count = 0;
+        for bytes in self
+            .documents
+            .values()
+            .map(|(_, b)| *b)
+            .chain(self.container_grants.values().map(|(_, b)| *b))
+        {
+            if count as u64 >= self.limits.max_rows
+                || total.saturating_add(bytes) > self.limits.max_bytes
+            {
+                break;
+            }
+            total += bytes;
+            count += 1;
+        }
+        let mut count = count.clamp(1, self.len());
+        let mut fit = None;
+        while count > 0 {
+            let envelope = build(count)?;
+            if self.fits(&envelope, count) {
+                fit = Some(envelope);
+                break;
+            }
+            count -= 1;
+        }
+        let Some(mut fit) = fit else {
+            return Ok(None);
+        };
+        while count < self.len() {
+            let envelope = build(count + 1)?;
+            if !self.fits(&envelope, count + 1) {
+                break;
+            }
+            fit = envelope;
+            count += 1;
+        }
+        Ok(Some((fit, count)))
+    }
+
+    /// Puts parts while what is held does not fit one, or, with `all`, until
+    /// nothing is held.
+    async fn put_parts(
+        &mut self,
+        config: &Config,
+        source: &str,
+        state: &mut CursorState,
+        lease: &crate::sync_lease::CursorLease,
+        base: &Option<BaseHead>,
+        all: bool,
+    ) -> Result<()> {
+        while self.len() > 0 {
+            let whole = permission_envelope(
+                config,
+                source,
+                self.first(self.len()),
+                None,
+                false,
+                state,
+                base,
+            )?;
+            if self.fits(&whole, self.len()) {
+                if !all {
+                    return Ok(());
+                }
+                put_envelope(config, whole, false, state, lease).await?;
+                self.drop_first(self.len());
+                return Ok(());
+            }
+            let (part, count) = self
+                .largest_part(config, source, state, base)?
+                .ok_or(WriterError::PermissionRootOversized)?;
+            put_envelope(config, part, false, state, lease).await?;
+            self.drop_first(count);
+        }
+        Ok(())
+    }
+}
+
+/// Puts what a permission read holds over the bounds of an envelope as parts
+/// of the read, each within them. A part is not confirmed: the cursor is written
+/// only by the envelope that ends the read, which chains after the parts, so
+/// the committer publishes the read whole or not at all. A read that fails
+/// leaves its parts inert.
+pub async fn permission_parts(
+    config: &Config,
+    source: &str,
+    held: &mut HeldPermissions,
+    state: &mut CursorState,
+    lease: &crate::sync_lease::CursorLease,
+    base: &Option<BaseHead>,
+) -> Result<()> {
+    held.put_parts(config, source, state, lease, base, false)
+        .await
+}
+
+/// Puts what a permission read still holds as parts, then the envelope that
+/// ends the read, which holds no root and moves the cursor. A read that
+/// replaces a rejection, or that put parts, ends with that envelope; a
+/// replacement keeps the connector cursor when the read produced no batch. Any
+/// other read that holds no changes moves only the cursor.
+pub async fn permission_end(
+    config: &Config,
+    source: &str,
+    held: &mut HeldPermissions,
+    state: &mut CursorState,
+    lease: &crate::sync_lease::CursorLease,
+    base: Option<BaseHead>,
+    replaces_rejection: bool,
+) -> Result<()> {
+    if held.len() == 0 && !replaces_rejection && !held.parted {
+        if let Some(end) = held.end.take() {
+            state.cursor = Some(end);
+            return lease.write(state.clone()).await;
+        }
+        return Ok(());
+    }
+    held.put_parts(config, source, state, lease, &base, true)
+        .await?;
+    let last = permission_envelope(
+        config,
+        source,
+        (Vec::new(), Vec::new()),
+        held.end.clone(),
+        true,
+        state,
+        &base,
+    )?;
+    put_envelope(config, last, true, state, lease).await
+}
+
+/// The permissions envelope of `roots`, as it would be put now: a part, or the
+/// envelope that ends the read, which moves the cursor to `end` when there is
+/// one.
+fn permission_envelope(
+    config: &Config,
+    source: &str,
+    (documents, container_grants): PermissionRoots,
+    end: Option<String>,
+    complete: bool,
+    state: &CursorState,
+    base: &Option<BaseHead>,
+) -> Result<PreparedEnvelope> {
+    let advances = complete && end.is_some();
+    let cursor = fyrr_core::connector::CursorStep {
+        start: state.cursor.clone(),
+        // A part leaves the cursor and carries no end of its own. An end that
+        // leaves the cursor keeps the one it has.
+        end: if complete {
+            end.unwrap_or_else(|| state.cursor.clone().unwrap_or_else(|| "complete".into()))
+        } else {
+            String::new()
+        },
+    };
+    let payload = EnvelopePayload::Permissions(PermissionsPayload {
+        complete_read: complete,
+        documents,
+        container_grants,
+    });
+    build_envelope(
+        config,
+        source,
+        SyncKind::Permissions,
+        cursor,
+        payload,
+        advances,
+        state,
+        base.clone(),
+    )
+}
+
+/// A members part or a listing part, as one envelope that moves the cursor,
+/// unless it ends a read.
 pub async fn non_content(
     config: &Config,
     source: &str,
@@ -603,126 +1049,9 @@ pub async fn non_content(
     complete_read: bool,
 ) -> Result<()> {
     use fyrr_core::connector::BatchBody;
-    // A permission read that changes nothing publishes nothing: only the cursor
-    // moves. Replaying its window after a lost cursor is harmless.
-    if !complete_read
-        && let BatchBody::PermissionChanges {
-            documents,
-            container_grants,
-        } = &batch.body
-        && documents.is_empty()
-        && container_grants.is_empty()
-    {
-        state.cursor = Some(batch.cursor.end.clone());
-        return lease.write(state.clone()).await;
-    }
-    // A permission intent replaces every chunk of its root. Keep roots whole, and
-    // let the committer charge their current published row counts before grouping.
-    if let BatchBody::PermissionChanges {
-        documents,
-        container_grants,
-    } = &batch.body
-        && documents.len() + container_grants.len() > 1
-    {
-        let mut parts = documents
-            .iter()
-            .map(|document| BatchBody::PermissionChanges {
-                documents: vec![document.clone()],
-                container_grants: Vec::new(),
-            })
-            .chain(
-                container_grants
-                    .iter()
-                    .map(|grant| BatchBody::PermissionChanges {
-                        documents: Vec::new(),
-                        container_grants: vec![grant.clone()],
-                    }),
-            )
-            .peekable();
-        while let Some(body) = parts.next() {
-            let mut part = batch.clone();
-            part.body = body;
-            part.cursor.start = state.cursor.clone();
-            let advances = parts.peek().is_none();
-            if !advances {
-                part.cursor.end = state.cursor.clone().unwrap_or_default();
-            }
-            non_content_page(
-                config,
-                source,
-                &part,
-                state,
-                lease,
-                base.clone(),
-                complete_read,
-                advances && !complete_read,
-            )
-            .await?;
-        }
-        return Ok(());
-    }
-    non_content_page(
-        config,
-        source,
-        batch,
-        state,
-        lease,
-        base,
-        complete_read,
-        !complete_read,
-    )
-    .await
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn non_content_page(
-    config: &Config,
-    source: &str,
-    batch: &ConnectorBatch,
-    state: &mut CursorState,
-    lease: &crate::sync_lease::CursorLease,
-    base: Option<BaseHead>,
-    complete_read: bool,
-    advances_cursor: bool,
-) -> Result<()> {
-    use fyrr_core::connector::BatchBody;
-    let (store, root) = namespace_store(config)?;
-    let sequence = state
-        .sequence
-        .checked_add(1)
-        .ok_or(WriterError::CursorSequenceOverflow)?;
-    let id = envelope_id(
-        &config.namespace.name,
-        source,
-        batch.kind,
-        sequence,
-        state.rejection_generation,
-        state.cursor.as_deref(),
-    );
     let payload = match &batch.body {
-        BatchBody::PermissionChanges {
-            documents,
-            container_grants,
-        } => {
-            let mut documents = documents.clone();
-            let mut container_grants = container_grants.clone();
-            for readers in documents
-                .iter_mut()
-                .map(|d| &mut d.readers)
-                .chain(container_grants.iter_mut().map(|g| &mut g.readers))
-            {
-                *readers = readers
-                    .iter()
-                    .map(|t| crate::apply::reader_token(config, source, t))
-                    .collect::<Result<_, _>>()?;
-            }
-            EnvelopePayload::Permissions(PermissionsPayload {
-                complete_read,
-                documents,
-                container_grants,
-            })
-        }
         BatchBody::PrincipalSnapshot(part) => {
+            let (store, root) = namespace_store(config)?;
             let bytes = write_contract(batch);
             let hash = digest(&bytes);
             let object = format!("members/{}.json", &hash[7..]);
@@ -753,33 +1082,112 @@ async fn non_content_page(
         }),
         _ => return Err(WriterError::EnvelopeInvalid),
     };
-    let envelope = PreparedEnvelope {
+    let envelope = build_envelope(
+        config,
+        source,
+        batch.kind,
+        batch.cursor.clone(),
+        payload,
+        !complete_read,
+        state,
+        base,
+    )?;
+    put_envelope(config, envelope, true, state, lease).await
+}
+
+/// The envelope that is not content that `state` puts next: a permissions
+/// envelope follows the one before it in the chain, and carries the
+/// generation of the lease it is written under.
+#[allow(clippy::too_many_arguments)]
+fn build_envelope(
+    config: &Config,
+    source: &str,
+    kind: SyncKind,
+    cursor: fyrr_core::connector::CursorStep,
+    payload: EnvelopePayload,
+    advances_cursor: bool,
+    state: &CursorState,
+    base: Option<BaseHead>,
+) -> Result<PreparedEnvelope> {
+    let sequence = state
+        .sequence
+        .checked_add(1)
+        .ok_or(WriterError::CursorSequenceOverflow)?;
+    let chained = kind == SyncKind::Permissions;
+    let lease_generation = state
+        .lease
+        .as_ref()
+        .filter(|_| chained)
+        .map_or(0, |lease| lease.epoch);
+    let previous = state
+        .last
+        .as_ref()
+        .filter(|_| chained)
+        .map(|last| last.id.clone());
+    Ok(PreparedEnvelope {
         schema_version: ENVELOPE_CONTRACT_VERSION,
-        envelope_id: id.clone(),
+        envelope_id: fyrr_core::envelope::leased_envelope_id(
+            &config.namespace.name,
+            source,
+            kind,
+            sequence,
+            state.rejection_generation,
+            state.cursor.as_deref(),
+            lease_generation,
+        ),
         namespace: config.namespace.name.clone(),
         source_id: source.into(),
-        kind: batch.kind,
+        kind,
         sequence,
         rejection_generation: state.rejection_generation,
         restore_sequence: state.restore_sequence,
-        cursor: batch.cursor.clone(),
+        cursor,
         advances_cursor,
         base_head: base,
         created_at: fyrr_core::clock::now(),
+        lease_generation,
+        previous,
         payload,
-    };
+    })
+}
+
+/// Puts `envelope` and records it in `state`. `confirmed` writes the cursor
+/// after it; a part of a permission read is put without, and the envelope that
+/// ends the read confirms it.
+async fn put_envelope(
+    config: &Config,
+    envelope: PreparedEnvelope,
+    confirmed: bool,
+    state: &mut CursorState,
+    lease: &crate::sync_lease::CursorLease,
+) -> Result<()> {
+    let (store, root) = namespace_store(config)?;
     lease.state().await?;
     lease.persist_observed().await?;
     crate::commit::ensure_writable(config).await?;
     put_immutable(
         store.as_ref(),
-        &root.join("envelopes").join(format!("{id}.json")),
+        &root
+            .join("envelopes")
+            .join(format!("{}.json", envelope.envelope_id)),
         &envelope,
     )
     .await?;
-    state.sequence = sequence;
-    if advances_cursor {
-        state.cursor = Some(batch.cursor.end.clone());
+    state.sequence = envelope.sequence;
+    if envelope.advances_cursor {
+        state.cursor = Some(envelope.cursor.end.clone());
+    }
+    if envelope.kind == SyncKind::Permissions {
+        state.last = Some(fyrr_core::connector::LastEnvelope {
+            sequence: envelope.sequence,
+            id: envelope.envelope_id.clone(),
+        });
+        if crate::apply::complete_read(&envelope) {
+            state.completed_generation = state.completed_generation.max(state.rejection_generation);
+        }
+    }
+    if !confirmed {
+        return Ok(());
     }
     lease.write(state.clone()).await
 }

@@ -28,13 +28,14 @@ async fn preparation_reuses_bodies_but_discovers_new_envelopes_on_local_storage(
         let mut envelope = template.clone();
         envelope.source_id = "other-source".into();
         envelope.sequence = n + 100;
-        envelope.envelope_id = fyrr_core::envelope::envelope_id(
+        envelope.envelope_id = fyrr_core::envelope::leased_envelope_id(
             &envelope.namespace,
             &envelope.source_id,
             envelope.kind,
             envelope.sequence,
             envelope.rejection_generation,
             envelope.cursor.start.as_deref(),
+            envelope.lease_generation,
         );
         seed.push((
             namespace
@@ -49,13 +50,14 @@ async fn preparation_reuses_bodies_but_discovers_new_envelopes_on_local_storage(
     let lists = Arc::new(AtomicUsize::new(0));
     let mut late = template.clone();
     late.source_id = "late-source".into();
-    late.envelope_id = fyrr_core::envelope::envelope_id(
+    late.envelope_id = fyrr_core::envelope::leased_envelope_id(
         &late.namespace,
         &late.source_id,
         late.kind,
         late.sequence,
         late.rejection_generation,
         late.cursor.start.as_deref(),
+        late.lease_generation,
     );
     let late_id = late.envelope_id.clone();
     let late_path = namespace

@@ -546,7 +546,8 @@ async fn google_drive_killed_worker_resumes_and_a_full_rescan_keeps_deletes_on_s
 }
 
 /// A file that cannot be exported is quarantined while the sync goes on, and
-/// a failed permission read leaves the last rights in place.
+/// a failed permission read, also one that fails after its first batch, leaves
+/// the last rights in place.
 #[tokio::test]
 #[ignore = "real CLI, fake Drive and local storage; scripts/ci"]
 async fn google_drive_quarantine_and_permission_read_failure_keeps_rights_on_storage() {
@@ -633,5 +634,31 @@ async fn google_drive_quarantine_and_permission_read_failure_keeps_rights_on_sto
             .iter()
             .any(|read| read["source_id"] == "drive" && read["kind"] == "permissions"),
         "{status}"
+    );
+
+    // The reader leaves the shared drive and a later page of the same read
+    // fails, after the batch that carries the drive's grant was read: the
+    // revoke is not published alone, and the next read publishes it whole.
+    drive
+        .server
+        .call_async(
+            "leave",
+            json!({"drive_id":"drive-eng","permission_id":format!("p-{READER}")}),
+        )
+        .await;
+    drive.server
+        .call_async(
+            "fail",
+            json!({"match":{"path":"/files$","params":{"pageToken":"^2$"}},"status":403,"reason":"insufficientFilePermissions"}),
+        )
+        .await;
+    drive.refused(&worker, &["--kind", "permissions", "--full"]);
+    publish(&commit);
+    assert!(readable(&worker, "good"), "a failed read publishes nothing");
+    drive.synced(&worker, &["--kind", "permissions", "--full"]);
+    publish(&commit);
+    assert!(
+        !readable(&worker, "good"),
+        "the next read publishes the revoke"
     );
 }

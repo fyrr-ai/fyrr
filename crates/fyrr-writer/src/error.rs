@@ -108,6 +108,8 @@ writer_errors! {
     ListingInvalid => ("listing_invalid", false),
     MembershipExpansionLimit => ("membership_expansion_limit", false),
     MembershipSnapshotInvalid => ("membership_snapshot_invalid", false),
+    PermissionCursorLost => ("permission_cursor_lost", false),
+    PermissionRootOversized => ("permission_root_oversized", false),
     PermissionSnapshotInvalid => ("permission_snapshot_invalid", false),
     PolicyGenerationOverflow => ("policy_generation_overflow", false),
     PreparedFragmentInvalid => ("prepared_fragment_invalid", false),

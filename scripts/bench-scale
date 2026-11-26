@@ -510,7 +510,13 @@ def maintain_run(run):
         # One line per merge step of this run (`index_merge=done rows= seconds=`)
         # or per index that ran out of time (`index_merge=skipped`).
         "merge_steps": merges,
-        "other_stderr": [line for line in lines if "index_merge=" not in line][-5:],
+        # One line per compaction step (`compaction=done rows= seconds=`).
+        "compaction_steps": [line for line in lines if "compaction=" in line],
+        "other_stderr": [
+            line
+            for line in lines
+            if "index_merge=" not in line and "compaction=" not in line
+        ][-5:],
     }
 
 

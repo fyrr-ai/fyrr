@@ -252,6 +252,11 @@ pub struct ContentManifest {
     pub envelope_evidence: EnvelopeEvidence,
     /// What the version holds.
     pub stats: PublicationStats,
+    /// The newest chained permissions envelope of each source that this
+    /// publication and every older one applied. The committer walks the chain of
+    /// the cursor back to it.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub authorization_applied: BTreeMap<String, String>,
 }
 
 /// The size of a published version and when its namespace was first published.
@@ -387,8 +392,8 @@ pub struct IndexIdentity {
     pub kind: String,
     pub column: String,
     pub uuid: String,
-    /// The IVF partitions of a vector index (`ivf_rq`), as Lance built or
-    /// rebalanced it; absent for every other kind.
+    /// The IVF partitions of the model of a vector index segment
+    /// (`ivf_rq`); absent for every other kind.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub partitions: Option<u32>,
 }

@@ -51,6 +51,23 @@
           "type": "null"
         }
       ]
+    },
+    "last": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/LastEnvelope"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The newest permissions envelope this cursor confirmed. Only the envelopes\nthat chain back from it, through their `previous`, are committable: the\nconditional write of this state is what makes a permissions envelope\ncount, so a worker that lost its lease cannot publish."
+    },
+    "completed_generation": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0,
+      "description": "The newest rejection generation that a complete permissions read ended."
     }
   },
   "required": [
@@ -106,6 +123,24 @@
         "expires_at"
       ],
       "description": "The namespace committer lease."
+    },
+    "LastEnvelope": {
+      "type": "object",
+      "properties": {
+        "sequence": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sequence",
+        "id"
+      ],
+      "description": "A permissions envelope a cursor confirmed."
     }
   },
   "x-fyrr-contract": "connector-cursor",
