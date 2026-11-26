@@ -217,7 +217,10 @@ async fn authorization_cache_budget_on_storage() {
     let mut reader = PreparedReader::open(&config).await.unwrap();
     // Workers clone the generation's opened version: creating one reads
     // nothing, and a read on the empty mirror counts for its worker alone.
+    // The first worker builds the stdio subject's admission into the cache
+    // (`open` leaves it empty); the next ones bind the cached one.
     {
+        let _builds_admission = reader.worker().await.unwrap();
         let before = reader.mirror.totals();
         let (first, second) = (
             reader.worker().await.unwrap(),
