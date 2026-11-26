@@ -118,57 +118,14 @@ pub(crate) async fn commit_one(
         .filter(|e| !matches!(e.payload, EnvelopePayload::Content(_)))
         .collect();
     let mut receipts = envelopes.iter().map(|e| e.envelope_id.clone()).collect();
-    work.apply_groups(&non_content, groups, sequence).await?;
+    work.apply_groups(&non_content, groups, sequence, &mut rejected)
+        .await?;
     work.apply_non_content(&mut head, non_content, &mut receipts, sequence)
         .await?;
-    // The markers, read once, after the apply: this commit wrote some, and a
-    // committer that lost its lease may have written one for a permissions
-    // envelope while it was applied. That envelope is not applied, and the
-    // publication in progress is dropped with it. A marker written after this
-    // read has no effect once this publication succeeds: a published envelope
-    // is no longer pending. If the publish fails, the envelope stays pending and
-    // the next pass reads that marker.
-    let mut marked = Vec::new();
-    for envelope in &envelopes {
-        if crate::apply::rejected(config, &envelope.envelope_id).await? {
-            marked.push(envelope);
-        }
-    }
-    // A permissions envelope with a marker contributes nothing, its container
-    // grants included: only the rejections are published, and the rest of these
-    // envelopes are committed by the next round.
-    let refused = marked.iter().any(|e| e.kind == SyncKind::Permissions);
-    rejected.extend(marked.iter().map(|e| e.envelope_id.clone()));
-    if refused {
-        let refused_sources: BTreeSet<_> = marked
-            .iter()
-            .filter(|e| e.kind == SyncKind::Permissions)
-            .map(|e| e.source_id.clone())
-            .collect();
-        let mut waiting = envelopes.clone();
-        reject_rewound(
-            config,
-            &unchanged,
-            &refused_sources,
-            &mut waiting,
-            &mut rejected,
-        )
-        .await?;
-        rejected.sort();
-        rejected.dedup();
-        let mut head = unchanged;
-        head.rejected_envelope_ids = rejected;
-        head.updated_at = fyrr_core::clock::now();
-        lease.publish(head).await?;
-        return Ok(0);
-    }
-    rejected.sort();
-    rejected.dedup();
-    // The newest chained permissions envelope of each source applied.
+    // The newest chained permissions envelope of each source applied: native
+    // apply refuses content only.
     let mut permissions = BTreeMap::new();
-    for e in envelopes.iter().filter(|e| {
-        e.kind == SyncKind::Permissions && rejected.binary_search(&e.envelope_id).is_err()
-    }) {
+    for e in envelopes.iter().filter(|e| e.kind == SyncKind::Permissions) {
         permissions.insert(e.source_id.clone(), e.envelope_id.clone());
     }
     stage(stage_timings, "data_commit", data_start);
@@ -178,27 +135,27 @@ pub(crate) async fn commit_one(
         acl_changed,
         ..
     } = work;
-    // A permissions envelope has no rows to be checked against before the first
-    // content is published: its container grants are not published without them,
-    // and it waits, with the rejections alone.
-    let held_back = |head: ServingHead, rejected: Vec<String>| {
+    let verified = match &dataset {
+        Some(dataset) => {
+            verify_content(config, dataset, &head, &envelopes, &mut rejected, sequence).await?
+        }
+        None => false,
+    };
+    rejected.sort();
+    let (Some(mut dataset), true) = (dataset, verified) else {
+        // No content publishes, only the rejections. A permissions envelope
+        // has no rows to be checked against before the first content: it
+        // waits, and its container grants are not published without them.
         let mut head = if envelopes.iter().any(|e| e.kind == SyncKind::Permissions) {
-            unchanged.clone()
+            unchanged
         } else {
             head
         };
         head.rejected_envelope_ids = rejected;
         head.updated_at = fyrr_core::clock::now();
-        head
-    };
-    let Some(mut dataset) = dataset else {
-        lease.publish(held_back(head, rejected)).await?;
+        lease.publish(head).await?;
         return Ok(0);
     };
-    if !verify_content(config, &dataset, &head, &envelopes, &mut rejected, sequence).await? {
-        lease.publish(held_back(head, rejected)).await?;
-        return Ok(0);
-    }
     build_indexes(
         config,
         lease,
@@ -245,12 +202,9 @@ async fn reject_rewound(
         return Ok(());
     }
     for waiting in pending(config, head).await? {
-        if waiting.kind == SyncKind::Permissions
-            && sources.contains(&waiting.source_id)
-            && !rejected.contains(&waiting.envelope_id)
-        {
-            crate::apply::reject(config, &waiting, "authorization_rewind_required").await?;
-            rejected.push(waiting.envelope_id);
+        if waiting.kind == SyncKind::Permissions && sources.contains(&waiting.source_id) {
+            crate::apply::reject(config, &waiting, "authorization_rewind_required", rejected)
+                .await?;
         }
     }
     envelopes.retain(|e| !rejected.contains(&e.envelope_id));
@@ -309,7 +263,8 @@ async fn verify_content(
         }
     }
     if verification.is_ok() {
-        verification = crate::apply::verify_publication(config, dataset, envelopes, sequence).await;
+        verification =
+            crate::apply::verify_publication(config, dataset, envelopes, sequence, rejected).await;
     }
     if let Err(reason) = verification {
         if head.content.is_some() {
@@ -319,12 +274,9 @@ async fn verify_content(
         // inputs under the head CAS; the next first bulk overwrites the orphan.
         for envelope in envelopes {
             if matches!(envelope.payload, EnvelopePayload::Content(_)) {
-                crate::apply::reject(config, envelope, reason.as_str()).await?;
-                rejected.push(envelope.envelope_id.clone());
+                crate::apply::reject(config, envelope, reason.as_str(), rejected).await?;
             }
         }
-        rejected.sort();
-        rejected.dedup();
         return Ok(false);
     }
     Ok(true)
@@ -401,15 +353,6 @@ async fn accept_envelopes(
     // The sources whose permissions envelope was rejected in this pass.
     let mut rewinding = BTreeSet::new();
     for envelope in envelopes {
-        // A rejection that a commit wrote and did not live to publish stands, with
-        // its own reason: the envelope is not applied by this one.
-        if crate::apply::rejected(config, &envelope.envelope_id).await? {
-            rejected.push(envelope.envelope_id.clone());
-            if envelope.kind == SyncKind::Permissions {
-                rewinding.insert(envelope.source_id.clone());
-            }
-            continue;
-        }
         // A read that follows a rejected one of its source was prepared on the
         // cursor the rejected one moved: it is rejected and read again.
         let reason =
@@ -419,8 +362,7 @@ async fn accept_envelopes(
                 refusal(config, head, current_policy, markers, &envelope).await?
             };
         if let Some(reason) = reason {
-            crate::apply::reject(config, &envelope, reason).await?;
-            rejected.push(envelope.envelope_id.clone());
+            crate::apply::reject(config, &envelope, reason, &mut rejected).await?;
             if envelope.kind == SyncKind::Permissions {
                 rewinding.insert(envelope.source_id.clone());
             }
@@ -653,10 +595,9 @@ async fn waits(
     // Content that is blocked here is none of the judgments below: a commit
     // leaves it as it is.
     for envelope in pending.iter().filter(|e| e.kind != SyncKind::Content) {
-        if crate::apply::rejected(config, &envelope.envelope_id).await?
-            || refusal(config, head, policy, &fences, envelope)
-                .await?
-                .is_some()
+        if refusal(config, head, policy, &fences, envelope)
+            .await?
+            .is_some()
         {
             return Ok(false);
         }

@@ -624,10 +624,15 @@ async fn maintenance_retired_source_commits_are_fenced_on_storage() {
 
     publish(&commit);
     let loaded = fyrr_core::config::load(&worker).unwrap();
+    let head = fyrr_reader::storage::optional_head(&loaded.config)
+        .await
+        .unwrap()
+        .unwrap();
+    let (_, rejected) = fyrr_writer::commit::published_ids(&loaded.config, &head)
+        .await
+        .unwrap();
     assert!(
-        fyrr_writer::apply::rejected(&loaded.config, &pending)
-            .await
-            .unwrap(),
+        rejected.contains(&pending),
         "the pending envelope is rejected"
     );
     assert_eq!(

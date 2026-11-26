@@ -4076,17 +4076,13 @@ async fn incremental_a_newer_read_rejected_for_its_age_never_goes_before_the_old
     assert!(row_readers(&batch, "a").is_empty() && row_readers(&batch, "b").is_empty());
 }
 
-/// A committer that lost its lease writes the marker of an envelope that another
-/// one is applying: the marker is found after the apply, and the publication in
-/// progress is dropped, not published with the envelope applied and rejected.
+/// The head decides what is rejected, not a marker on storage: the marker of an
+/// envelope that no publication names, as a committer that lost its lease or
+/// died before it published may leave, rejects nothing. The envelope is
+/// applied as its commit judges it.
 #[tokio::test]
 #[ignore = "real CLI and local storage; scripts/ci"]
-async fn incremental_a_marker_written_while_the_envelope_is_applied_drops_the_publication_on_storage()
- {
-    use std::sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    };
+async fn incremental_a_marker_no_publication_names_rejects_nothing_on_storage() {
     let (worker, commit, root) = fixture();
     publish_initial(&worker, &commit, &root);
     input(
@@ -4095,45 +4091,16 @@ async fn incremental_a_marker_written_while_the_envelope_is_applied_drops_the_pu
     );
     worker_sync(&worker, &["incremental", "--kind", "permissions"]);
     let read = permission_envelopes(&worker).await.pop().unwrap();
-    let endpoint = std::env::var("FYRR_TEST_S3_ENDPOINT").unwrap();
-    assert_eq!(endpoint, "local-storage", "owned by the local CI row");
-    let stop = Arc::new(AtomicBool::new(false));
-    // The committer is held at the first version it writes: it has accepted the
-    // envelope and not yet looked for a marker.
-    let (gate, hook) = super::corrections::RequestGate::new(|request, _, after| {
-        !after && request.starts_with("PUT ") && request.contains("/_versions/")
-    });
-    let (proxy, guard) =
-        super::corrections::proxy_at_boundary(endpoint.clone(), stop.clone(), hook);
-    let gate = gate;
-    let proxied = commit.parent().unwrap().join("fault.toml");
-    std::fs::write(
-        &proxied,
-        std::fs::read_to_string(&commit)
-            .unwrap()
-            .replace(&endpoint, &proxy),
-    )
-    .unwrap();
-    let process = super::coordination::CommitProcess::spawn_command(
-        &proxied,
-        &["writer", "commit"],
-        Arc::new(AtomicBool::new(false)),
-    );
-    gate.entered();
     put_marker(&worker, &read).await;
-    gate.release();
-    let output = process.finish();
-    assert!(output.status.success(), "{}", report(&output));
-    stop.store(true, Ordering::SeqCst);
-    drop(guard);
+    publish(&commit);
     assert_eq!(
         resolved(&commit, &read.envelope_id).await,
-        (false, true),
-        "rejected, not applied"
+        (true, false),
+        "applied, not rejected"
     );
     assert!(
-        !row_readers(&rows(&worker).await, "a").is_empty(),
-        "its revoke was not published"
+        row_readers(&rows(&worker).await, "a").is_empty(),
+        "its revoke was published"
     );
 }
 
@@ -4423,8 +4390,9 @@ impl Run {
                 self.last_end = None;
             }
             Step::CrashAfterRejection => {
-                // A commit wrote the rejection marker of the newest read and died
-                // before it published: the read is rejected, whatever a retry decides.
+                // A commit rejected the newest read, as too old, wrote its marker
+                // and died before it published: a retry rejects it again and
+                // reuses the marker.
                 let cursor = cursor_or_blank(&self.worker).await;
                 let (true, Some(last)) = (self.last_valid, cursor.last) else {
                     self.trace
@@ -4446,33 +4414,17 @@ impl Run {
                 }
                 self.trace.push("crash_after_rejection".into());
                 let (store, ns) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
-                let envelope: PreparedEnvelope = fyrr_reader::storage::read_contract(
-                    store.as_ref(),
-                    &ns.clone()
-                        .join("envelopes")
-                        .join(format!("{}.json", last.id)),
-                )
-                .await
-                .unwrap();
-                let marker = fyrr_core::envelope::RejectionMarker {
-                    schema_version: fyrr_core::envelope::ENVELOPE_CONTRACT_VERSION,
-                    envelope_id: envelope.envelope_id.clone(),
-                    source_id: envelope.source_id.clone(),
-                    kind: envelope.kind,
-                    sequence: envelope.sequence,
-                    rejection_generation: envelope.rejection_generation,
-                    restore_sequence: envelope.restore_sequence,
-                    start_cursor: envelope.cursor.start.clone(),
-                    reason: "authorization_rewind_required".into(),
-                };
+                let path = ns.join("envelopes").join(format!("{}.json", last.id));
+                let mut envelope: PreparedEnvelope =
+                    fyrr_reader::storage::read_contract(store.as_ref(), &path)
+                        .await
+                        .unwrap();
+                envelope.created_at = fyrr_core::clock::now() - chrono::Duration::days(4);
                 store
-                    .put(
-                        &ns.join("rejections")
-                            .join(format!("{}.json", envelope.envelope_id)),
-                        write_contract(&marker).into(),
-                    )
+                    .put(&path, write_contract(&envelope).into())
                     .await
                     .unwrap();
+                put_marker(&self.worker, &envelope).await;
                 self.last_valid = false;
                 // A rejected read is never visible.
                 if let Some(end) = self.last_end.take() {

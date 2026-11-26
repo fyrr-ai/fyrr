@@ -24,12 +24,22 @@ use fyrr_reader::storage::{namespace_store, sql};
 use lance::Dataset;
 use lance::dataset::WriteParams;
 use lance::dataset::fragment::write::FragmentCreateBuilder;
-use object_store::ObjectStoreExt;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-pub async fn reject(config: &Config, envelope: &PreparedEnvelope, reason: &str) -> Result<()> {
+/// Rejects `envelope` for `reason`: writes its marker and adds its ID to
+/// `rejected`, the IDs the commit in progress publishes as rejected. An
+/// envelope already in `rejected` is left as it is.
+pub async fn reject(
+    config: &Config,
+    envelope: &PreparedEnvelope,
+    reason: &str,
+    rejected: &mut Vec<String>,
+) -> Result<()> {
+    if rejected.contains(&envelope.envelope_id) {
+        return Ok(());
+    }
     let (store, root) = namespace_store(config)?;
     let marker = RejectionMarker {
         schema_version: ENVELOPE_CONTRACT_VERSION,
@@ -53,7 +63,7 @@ pub async fn reject(config: &Config, envelope: &PreparedEnvelope, reason: &str) 
         .join("rejections")
         .join(format!("{}.json", envelope.envelope_id));
     match crate::prepare::put_immutable(store.as_ref(), &path, &marker).await {
-        Ok(()) => {}
+        Ok(()) => fyrr_reader::metrics::add(&crate::telemetry::REJECTED_ENVELOPES, &[], 1),
         // A marker written before, by a commit that did not live to publish it,
         // stands with its own reason: this one is a retry, not a second rejection.
         Err(WriterError::ImmutableObjectConflict) => {
@@ -62,23 +72,11 @@ pub async fn reject(config: &Config, envelope: &PreparedEnvelope, reason: &str) 
             if written.envelope_id != marker.envelope_id {
                 return Err(WriterError::ImmutableObjectConflict);
             }
-            return Ok(());
         }
         Err(error) => return Err(error),
     }
-    fyrr_reader::metrics::add(&crate::telemetry::REJECTED_ENVELOPES, &[], 1);
+    rejected.push(envelope.envelope_id.clone());
     Ok(())
-}
-pub async fn rejected(config: &Config, id: &str) -> Result<bool> {
-    let (store, root) = namespace_store(config)?;
-    match store
-        .head(&root.join("rejections").join(format!("{id}.json")))
-        .await
-    {
-        Ok(_) => Ok(true),
-        Err(object_store::Error::NotFound { .. }) => Ok(false),
-        Err(_) => Err(WriterError::StorageUnavailable),
-    }
 }
 pub async fn verify_files(config: &Config, payload: &ContentPayload) -> Result<()> {
     let (store, root) = namespace_store(config)?;
@@ -608,6 +606,7 @@ pub async fn verify_publication(
     dataset: &Dataset,
     envelopes: &[PreparedEnvelope],
     sequence: u64,
+    rejected: &[String],
 ) -> Result<()> {
     for envelope in envelopes {
         let roots = match &envelope.payload {
@@ -701,7 +700,7 @@ pub async fn verify_publication(
                                 return Err(WriterError::ChangedRowsInvalid);
                             }
                         }
-                        None if !rejected(config, &envelope.envelope_id).await? => {
+                        None if !rejected.contains(&envelope.envelope_id) => {
                             return Err(WriterError::ChangedRowsInvalid);
                         }
                         _ => {}
