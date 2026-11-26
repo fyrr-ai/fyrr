@@ -80,114 +80,99 @@ pub(super) fn prepared_kind(
     }
     let mut embedding = None;
     let mut next_due = None;
-    // The permissions cursor is checked against the log before the lease is
-    // taken: a refused read writes nothing.
-    let checked = if kind == SyncKind::Permissions {
-        Some(state::checked_cursor(&config, &source.id, &rt, evidence)?)
-    } else {
-        None
-    };
-    let result = crate::sync_lease::CursorLease::with(
-        &rt,
-        &config,
-        &source.id,
-        kind,
-        checked.as_ref(),
-        |lease| {
-            let preparation = Preparation {
-                config: &config,
-                source: &source,
-                kind,
-                rt: &rt,
-                lease,
-                credentials,
-            };
-            let head = rt
-                .block_on(fyrr_reader::storage::optional_head(&config))?
-                .ok_or(WriterError::NamespaceUnavailable)?;
-            let mut pending = preparation.scan(evidence, &head)?;
-            let dataset = if head.content.is_some() {
-                Some(Arc::new(
-                    rt.block_on(fyrr_reader::storage::pinned(&config, &head))?,
-                ))
-            } else {
-                None
-            };
-            if kind == SyncKind::Content
-                && let Some(content) = &head.content
-            {
-                let (store, root) = fyrr_reader::storage::namespace_store(&config)?;
-                let manifest = rt.block_on(fyrr_reader::storage::read_manifest(
-                    store.as_ref(),
-                    &root,
-                    &content.manifest,
-                ))?;
-                if manifest.chunk_profile != crate::prepare::chunk_identity() {
-                    return Err(WriterError::ChunkProfileMismatch);
-                }
+    let result = crate::sync_lease::CursorLease::with(&rt, &config, &source.id, kind, |lease| {
+        let preparation = Preparation {
+            config: &config,
+            source: &source,
+            kind,
+            rt: &rt,
+            lease,
+            credentials,
+        };
+        let head = rt
+            .block_on(fyrr_reader::storage::optional_head(&config))?
+            .ok_or(WriterError::NamespaceUnavailable)?;
+        let mut pending = preparation.scan(evidence, &head)?;
+        let dataset = if head.content.is_some() {
+            Some(Arc::new(
+                rt.block_on(fyrr_reader::storage::pinned(&config, &head))?,
+            ))
+        } else {
+            None
+        };
+        if kind == SyncKind::Content
+            && let Some(content) = &head.content
+        {
+            let (store, root) = fyrr_reader::storage::namespace_store(&config)?;
+            let manifest = rt.block_on(fyrr_reader::storage::read_manifest(
+                store.as_ref(),
+                &root,
+                &content.manifest,
+            ))?;
+            if manifest.chunk_profile != crate::prepare::chunk_identity() {
+                return Err(WriterError::ChunkProfileMismatch);
             }
-            let base = head.content.as_ref().map(|p| BaseHead {
-                content_publication_id: p.publication_id.clone(),
-                content_sequence: p.sequence,
-                lance_version: p.lance_version,
-            });
-            let (mut state, skip_not_due, replaces_rejection) =
-                preparation.cursor_state(&pending, due)?;
-            if skip_not_due {
-                next_due = state::next_due(&source, kind, &state);
-                return Ok(default_report(ReportDefaults::NotDue(kind)));
-            }
-            preparation.backpressure(&pending, full)?;
-            if full {
-                state.cursor = None;
-            }
-            // Jira's visibility freshness barrier compares with the served content,
-            // never a replacement that is merely staged. Content and reconcile keep
-            // the effective pending view; other providers retain their existing view.
-            let published_jira_acl = source.provider == "jira"
-                && matches!(kind, SyncKind::Permissions | SyncKind::Members);
-            let revision_paths = Arc::new(if published_jira_acl {
-                Vec::new()
-            } else {
-                std::mem::take(&mut pending.content_paths)
-            });
-            let revisions = Arc::new(PendingRevisions::new(revision_paths, source.id.clone()));
-            let revision_batches =
-                preparation.revision_stream(&dataset, &revisions, &pending.store)?;
-            let callback_failure = Arc::new(Mutex::new(None));
-            let stats = preparation.read(
-                &mut state,
-                &base,
-                &pending,
-                RevisionView {
-                    dataset: &dataset,
-                    pending: revisions,
-                    revisions: revision_batches,
-                    failure: &callback_failure,
-                },
-                &mut embedding,
-                permission_stream,
-                replaces_rejection,
-            )?;
-            // A completed read, even one that found nothing, moves the schedule and
-            // is the record of the source's last read.
-            state.updated_at = fyrr_core::clock::now();
-            rt.block_on(lease.write(state.clone()))?;
+        }
+        let base = head.content.as_ref().map(|p| BaseHead {
+            content_publication_id: p.publication_id.clone(),
+            content_sequence: p.sequence,
+            lance_version: p.lance_version,
+        });
+        let (mut state, skip_not_due, replaces_rejection) =
+            preparation.cursor_state(&pending, due)?;
+        if skip_not_due {
             next_due = state::next_due(&source, kind, &state);
-            let Some(cache) = &embedding else {
-                return Ok(default_report(ReportDefaults::Kind { kind, stats }));
-            };
-            Ok(serde_json::json!({
-                "kind": kind,
-                "stats": stats,
-                "cache_hits": cache.hits,
-                "cache_misses": cache.misses,
-                "paid_calls": cache.stats.embedding_calls,
-                "provider_calls": cache.stats.calls,
-                "reserved_microusd": cache.stats.reserved_microusd
-            }))
-        },
-    );
+            return Ok(default_report(ReportDefaults::NotDue(kind)));
+        }
+        preparation.backpressure(&pending, full)?;
+        if full {
+            state.cursor = None;
+        }
+        // Jira's visibility freshness barrier compares with the served content,
+        // never a replacement that is merely staged. Content and reconcile keep
+        // the effective pending view; other providers retain their existing view.
+        let published_jira_acl =
+            source.provider == "jira" && matches!(kind, SyncKind::Permissions | SyncKind::Members);
+        let revision_paths = Arc::new(if published_jira_acl {
+            Vec::new()
+        } else {
+            std::mem::take(&mut pending.content_paths)
+        });
+        let revisions = Arc::new(PendingRevisions::new(revision_paths, source.id.clone()));
+        let revision_batches = preparation.revision_stream(&dataset, &revisions, &pending.store)?;
+        let callback_failure = Arc::new(Mutex::new(None));
+        let stats = preparation.read(
+            &mut state,
+            &base,
+            &pending,
+            RevisionView {
+                dataset: &dataset,
+                pending: revisions,
+                revisions: revision_batches,
+                failure: &callback_failure,
+            },
+            &mut embedding,
+            permission_stream,
+            replaces_rejection,
+        )?;
+        // A completed read, even one that found nothing, moves the schedule and
+        // is the record of the source's last read.
+        state.updated_at = fyrr_core::clock::now();
+        rt.block_on(lease.write(state.clone()))?;
+        next_due = state::next_due(&source, kind, &state);
+        let Some(cache) = &embedding else {
+            return Ok(default_report(ReportDefaults::Kind { kind, stats }));
+        };
+        Ok(serde_json::json!({
+            "kind": kind,
+            "stats": stats,
+            "cache_hits": cache.hits,
+            "cache_misses": cache.misses,
+            "paid_calls": cache.stats.embedding_calls,
+            "provider_calls": cache.stats.calls,
+            "reserved_microusd": cache.stats.reserved_microusd
+        }))
+    });
     let result = match result {
         Ok(value) => Ok(scheduled(value, next_due)),
         Err(crate::sync_lease::ScopeError::Operation(code)) => Err(code),

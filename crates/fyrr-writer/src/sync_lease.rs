@@ -25,15 +25,6 @@ pub struct CursorLease {
     ttl: Duration,
     observed: fyrr_reader::storage::ObservedDurability,
 }
-/// A permissions cursor as a worker checked it against the log, before it
-/// takes its lease: the state it read (none when it is not there) and the
-/// highest lease generation of the source's envelopes.
-#[derive(Debug)]
-pub(crate) struct Checked {
-    pub(crate) state: Option<CursorState>,
-    pub(crate) floor: u64,
-}
-
 fn cursor_path(root: &Path, source: &str, kind: SyncKind) -> Path {
     root.clone()
         .join("cursors")
@@ -46,11 +37,10 @@ impl CursorLease {
         config: &Config,
         source: &str,
         kind: SyncKind,
-        checked: Option<&Checked>,
         body: impl FnOnce(&Arc<Self>) -> Result<T, E>,
     ) -> Result<T, ScopeError<E>> {
         let lease = rt
-            .block_on(Self::acquire_checked(config, source, kind, checked))
+            .block_on(Self::acquire(config, source, kind))
             .map_err(ScopeError::Lease)?;
         let renewal = {
             let _entered = rt.enter();
@@ -116,41 +106,34 @@ impl CursorLease {
     }
 
     pub async fn acquire(config: &Config, source: &str, kind: SyncKind) -> Result<Arc<Self>> {
-        Self::acquire_checked(config, source, kind, None).await
-    }
-
-    /// Takes the lease of the cursor of `source`'s `kind`. With `checked`, the
-    /// cursor must be the one checked against the log: one that moved
-    /// meanwhile, as another worker's read ended, is `sync_busy`; a new one
-    /// takes a lease generation above `checked.floor`.
-    pub(crate) async fn acquire_checked(
-        config: &Config,
-        source: &str,
-        kind: SyncKind,
-        checked: Option<&Checked>,
-    ) -> Result<Arc<Self>> {
         let (store, root) = namespace_store(config)?;
         crate::commit::sources_allowed(config, store.as_ref(), &root).await?;
         let path = cursor_path(&root, source, kind);
-        let read = Self::read(config, store.as_ref(), &path, source, kind).await?;
-        if checked.is_some_and(|c| c.state.as_ref() != read.as_ref().map(|(state, _)| state)) {
-            return Err(WriterError::SyncBusy);
-        }
-        let (mut state, mode) = match read {
-            Some((state, version)) => (state, PutMode::Update(version)),
-            None => {
-                let mut state = crate::prepare::initial_cursor(config, source, kind);
-                state.lease =
-                    checked
-                        .filter(|c| c.floor > 0)
-                        .map(|c| fyrr_core::publication::Lease {
-                            holder: String::new(),
-                            epoch: c.floor,
-                            expires_at: chrono::DateTime::UNIX_EPOCH,
-                        });
-                (state, PutMode::Create)
-            }
-        };
+        let (mut state, mode) =
+            match Self::read(config, store.as_ref(), &path, source, kind).await? {
+                Some((state, version)) => (state, PutMode::Update(version)),
+                // A permissions cursor that is gone while its chain is left is
+                // lost: a new one would confirm a chain without it. The source
+                // stays blocked until it is purged.
+                // A new one follows every lease generation of the log.
+                None if kind == SyncKind::Permissions => {
+                    let (left, generation) = crate::commit::permission_log(config, source).await?;
+                    if left {
+                        return Err(WriterError::PermissionCursorLost);
+                    }
+                    let mut state = crate::prepare::initial_cursor(config, source, kind);
+                    state.lease = (generation > 0).then(|| fyrr_core::publication::Lease {
+                        holder: String::new(),
+                        epoch: generation,
+                        expires_at: chrono::DateTime::UNIX_EPOCH,
+                    });
+                    (state, PutMode::Create)
+                }
+                None => (
+                    crate::prepare::initial_cursor(config, source, kind),
+                    PutMode::Create,
+                ),
+            };
         let created = matches!(mode, PutMode::Create);
         let now = fyrr_core::clock::now();
         if state.lease.as_ref().is_some_and(|l| l.expires_at > now) {
@@ -315,59 +298,6 @@ pub(crate) mod tests {
         next.release().await.unwrap();
     }
 
-    /// A lease taken on a checked cursor takes that cursor only: one that moved
-    /// since it was checked, as another worker's read ended, is `sync_busy`;
-    /// one that appeared meanwhile is too; a new one follows the lease
-    /// generations the check found in the log.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_checked_cursor_that_moved_is_busy_on_local_storage() {
-        let (config, root) = crate::lease::tests::local_config("cursor-checked");
-        crate::lease::tests::put_head(&config).await;
-        let fresh = CursorLease::acquire_checked(
-            &config,
-            "fresh",
-            SyncKind::Permissions,
-            Some(&Checked {
-                state: None,
-                floor: 7,
-            }),
-        )
-        .await
-        .unwrap();
-        let checked = fresh.state().await.unwrap();
-        assert_eq!(checked.lease.as_ref().unwrap().epoch, 8);
-        fresh.release().await.unwrap();
-        let stored = CursorLease::peek(&config, "fresh", SyncKind::Permissions)
-            .await
-            .unwrap()
-            .unwrap();
-        let mut moved = stored.clone();
-        moved.sequence += 1;
-        for state in [Some(moved), None] {
-            let busy = CursorLease::acquire_checked(
-                &config,
-                "fresh",
-                SyncKind::Permissions,
-                Some(&Checked { state, floor: 0 }),
-            )
-            .await;
-            assert_eq!(busy.err(), Some(WriterError::SyncBusy));
-        }
-        let same = CursorLease::acquire_checked(
-            &config,
-            "fresh",
-            SyncKind::Permissions,
-            Some(&Checked {
-                state: Some(stored),
-                floor: 0,
-            }),
-        )
-        .await
-        .unwrap();
-        same.release().await.unwrap();
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cursor_renewal_finishes_before_release_on_local_storage() {
         let (config, root) = crate::lease::tests::local_config("cursor-renewal");
@@ -400,7 +330,6 @@ pub(crate) mod tests {
                 &config,
                 &format!("source-{index}"),
                 SyncKind::Content,
-                None,
                 |lease| {
                     if release_failed {
                         let mut state = rt.block_on(lease.state()).unwrap();

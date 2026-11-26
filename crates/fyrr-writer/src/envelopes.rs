@@ -124,8 +124,6 @@ struct StatusLink {
     source_id: String,
     previous: Option<String>,
     lease_generation: u64,
-    sequence: u64,
-    ends_read: bool,
 }
 
 impl From<&PreparedEnvelope> for StatusLink {
@@ -135,8 +133,6 @@ impl From<&PreparedEnvelope> for StatusLink {
             source_id: envelope.source_id.clone(),
             previous: envelope.previous.clone(),
             lease_generation: envelope.lease_generation,
-            sequence: envelope.sequence,
-            ends_read: crate::apply::complete_read(envelope),
         }
     }
 }
@@ -156,12 +152,6 @@ impl crate::commit::Link for StatusLink {
     }
     fn lease_generation(&self) -> u64 {
         self.lease_generation
-    }
-    fn sequence(&self) -> u64 {
-        self.sequence
-    }
-    fn ends_read(&self) -> bool {
-        self.ends_read
     }
 }
 
@@ -270,7 +260,7 @@ pub async fn status(config: &Config) -> Result<serde_json::Value> {
     // Every link after what the manifest applied, then which of them no
     // publication resolved: one that is listed and unresolved, or one that the
     // walk read by ID and no manifest names.
-    let found = crate::commit::chains(
+    let (links, blocked) = crate::commit::chains(
         config,
         &head,
         &policy,
@@ -279,7 +269,7 @@ pub async fn status(config: &Config) -> Result<serde_json::Value> {
         &|_: &str| -> Result<bool> { Ok(false) },
     )
     .await?;
-    for link in &found.unresolved {
+    for link in links {
         if permissions.contains_key(&link.id)
             || !applied_page(
                 store.clone(),
@@ -294,29 +284,11 @@ pub async fn status(config: &Config) -> Result<serde_json::Value> {
         }
     }
     // A source whose chain does not reach what the manifest applied publishes
-    // nothing of its permissions, content or listings until it is whole again;
-    // one with the end of a read no completed read has passed holds its content
-    // and listings, and is reported blocked once the lease of that read has
-    // expired: while it is live, the read is in progress.
-    let blocked_sources: Vec<&String> = found
-        .blocked
-        .iter()
-        .chain(
-            found
-                .waiting
-                .iter()
-                .filter(|(_, live)| !**live)
-                .map(|(s, _)| s),
-        )
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect();
-    // What a read in progress holds is pending; what a block holds is not.
+    // nothing of its permissions, content or listings until it is whole again.
+    let blocked_sources: Vec<&String> = blocked.iter().collect();
     pending += held
         .iter()
-        .filter(|(source, _)| {
-            !found.blocked.contains(*source) && found.waiting.get(*source) != Some(&false)
-        })
+        .filter(|(source, _)| !blocked.contains(*source))
         .map(|(_, count)| count)
         .sum::<usize>();
     let mut warnings = crate::maintenance::purge_warnings(config, &head).await?;

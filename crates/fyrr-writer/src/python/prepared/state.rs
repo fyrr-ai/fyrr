@@ -212,8 +212,37 @@ impl Preparation<'_> {
         let mut content_count = 0;
         let mut content_bytes = 0;
         for object in objects {
-            let envelope = cached_envelope(self.rt, store.as_ref(), index, &object)?;
             let path = object.location;
+            let stamp = serde_json::to_string(&(
+                object.e_tag.as_ref(),
+                object.version.as_ref(),
+                object.size,
+                object.last_modified,
+            ))
+            .map_err(|_| WriterError::PublicationInvalid)?;
+            let cached: Option<(String, PreparedEnvelope)> = index.get(
+                crate::commit::history::index::Evidence::Preparation,
+                path.as_ref(),
+            )?;
+            let envelope = if let Some((old, envelope)) = cached {
+                if old != stamp {
+                    return Err(WriterError::RestoreHistoryIdentityChanged);
+                }
+                envelope
+            } else {
+                let envelope: PreparedEnvelope = self
+                    .rt
+                    .block_on(fyrr_reader::storage::read_contract(store.as_ref(), &path))?;
+                if object.e_tag.is_some() || object.version.is_some() {
+                    index.put(
+                        crate::commit::history::index::Evidence::Preparation,
+                        path.as_ref(),
+                        &(stamp, &envelope),
+                        false,
+                    )?;
+                }
+                envelope
+            };
             if !path
                 .filename()
                 .and_then(|name| name.strip_suffix(".json"))
@@ -368,133 +397,6 @@ impl Preparation<'_> {
         }
         Ok(())
     }
-}
-
-/// The envelope `object` holds, read once a command: a body whose object has an
-/// etag or a version is kept in the command's evidence, and read from there.
-fn cached_envelope(
-    rt: &tokio::runtime::Runtime,
-    store: &dyn object_store::ObjectStore,
-    index: &crate::commit::history::index::Index,
-    object: &object_store::ObjectMeta,
-) -> Result<PreparedEnvelope> {
-    let stamp = serde_json::to_string(&(
-        object.e_tag.as_ref(),
-        object.version.as_ref(),
-        object.size,
-        object.last_modified,
-    ))
-    .map_err(|_| WriterError::PublicationInvalid)?;
-    let cached: Option<(String, PreparedEnvelope)> = index.get(
-        crate::commit::history::index::Evidence::Preparation,
-        object.location.as_ref(),
-    )?;
-    if let Some((old, envelope)) = cached {
-        if old != stamp {
-            return Err(WriterError::RestoreHistoryIdentityChanged);
-        }
-        return Ok(envelope);
-    }
-    let envelope: PreparedEnvelope =
-        rt.block_on(fyrr_reader::storage::read_contract(store, &object.location))?;
-    if object.e_tag.is_some() || object.version.is_some() {
-        index.put(
-            crate::commit::history::index::Evidence::Preparation,
-            object.location.as_ref(),
-            &(stamp, &envelope),
-            false,
-        )?;
-    }
-    Ok(envelope)
-}
-
-/// The permissions cursor of `source` as the log allows a worker to take it,
-/// checked before anything is written: one that is not there is lost when a
-/// chain is left that it confirmed (a publication applied some of it, or a
-/// chained envelope of it waits), and one that is there is older than its log
-/// when an envelope of a later lease than its own is in it. Either refuses the
-/// read with `permission_cursor_lost`, unless the cursor moved meanwhile, as
-/// another worker's read ends: that is `sync_busy`. A new cursor takes a lease
-/// generation above every one in the log. The envelopes are read through the
-/// command's evidence, as the preparation reads them.
-pub(super) fn checked_cursor(
-    config: &fyrr_core::config::Config,
-    source: &str,
-    rt: &tokio::runtime::Runtime,
-    evidence: &mut CommandEvidence,
-) -> Result<crate::sync_lease::Checked> {
-    let peek = || {
-        rt.block_on(crate::sync_lease::CursorLease::peek(
-            config,
-            source,
-            SyncKind::Permissions,
-        ))
-    };
-    let cursor = peek()?;
-    let head = rt
-        .block_on(fyrr_reader::storage::optional_head(config))?
-        .ok_or(WriterError::NamespaceUnavailable)?;
-    evidence.refresh(config, rt, &head)?;
-    let Snapshot {
-        published, index, ..
-    } = evidence
-        .snapshot
-        .as_ref()
-        .ok_or(WriterError::PublicationInvalid)?;
-    let (store, root) = fyrr_reader::storage::namespace_store(config)?;
-    let mut lost = cursor.is_none()
-        && rt
-            .block_on(crate::commit::previous_manifest(
-                store.as_ref(),
-                &root,
-                &head,
-            ))?
-            .is_some_and(|m| m.authorization_applied.contains_key(source));
-    let epoch = cursor
-        .as_ref()
-        .and_then(|c| c.lease.as_ref())
-        .map_or(0, |lease| lease.epoch);
-    let mut floor = 0;
-    if !lost {
-        let objects: Vec<_> =
-            rt.block_on(store.list(Some(&root.join("envelopes"))).try_collect())?;
-        for object in objects {
-            let envelope = cached_envelope(rt, store.as_ref(), index, &object)?;
-            if envelope.namespace != config.namespace.name {
-                return Err(WriterError::EnvelopeNamespaceInvalid);
-            }
-            if envelope.source_id != source
-                || envelope.kind != SyncKind::Permissions
-                || envelope.lease_generation == 0
-            {
-                continue;
-            }
-            floor = floor.max(envelope.lease_generation);
-            lost |= match &cursor {
-                None => {
-                    !published.applied.contains(&envelope.envelope_id)
-                        && !published.rejected.contains(&envelope.envelope_id)
-                }
-                Some(_) => envelope.lease_generation > epoch,
-            };
-            // The first proof is enough; the cursor is read again at once to
-            // tell a lost one from one that a read moved meanwhile.
-            if lost {
-                break;
-            }
-        }
-    }
-    if lost {
-        return Err(if peek()? == cursor {
-            WriterError::PermissionCursorLost
-        } else {
-            WriterError::SyncBusy
-        });
-    }
-    Ok(crate::sync_lease::Checked {
-        state: cursor,
-        floor,
-    })
 }
 
 #[cfg(test)]

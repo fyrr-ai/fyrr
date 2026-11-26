@@ -241,47 +241,34 @@ and cursors; each step is idempotent, so an interrupted purge is run again.
 
 The permission reads of a source form a chain: its cursor names the newest
 read, each envelope names the one before, and the publication names the
-newest one applied. When the chain from the cursor does not reach that one (an
-envelope of it was deleted, or the cursor was deleted or restored from an
-older copy), the committer blocks the source: none of its permissions, content
-or listings publish, so no revocation is skipped, and the other sources go on.
-`fyrr writer status` lists it in `blocked_sources`, and the committer logs
-`telemetry permissions=blocked source=SOURCE_ID`. Nothing else is published for
-it until the chain is whole. Alert on a non-empty `blocked_sources`: a
-revocation the source read waits for an operator.
+newest one applied. An envelope that no cursor confirmed (a read that failed,
+or whose worker died before it wrote its cursor) is not on the chain and
+publishes nothing: the next read redoes it, with no operator.
+
+Cursor objects (`cursors/SOURCE_ID-permissions.json`) and envelopes
+(`envelopes/ID.json`) are internal: never delete, copy, edit or restore them
+by hand. When the chain from the cursor does not reach the one the publication
+applied (an envelope of it was deleted), or the cursor is missing while the log
+holds envelopes it chained, the committer blocks the source: none of its
+permissions, content or listings publish, so no revocation is skipped, and the
+other sources go on. `fyrr writer status` lists it in `blocked_sources`, and
+the committer logs `telemetry permissions=blocked source=SOURCE_ID`. A worker
+does not make a new cursor for a source whose cursor is missing: it fails the
+read with `permission_cursor_lost` and writes nothing, so the block holds
+however often it tries. Alert on a non-empty `blocked_sources`.
+
+The only recovery is to purge the source (`fyrr writer source purge SOURCE_ID
+--confirm`), which is final, and configure it again under a new source ID: it
+reads its content and rights from the start. Putting back an older copy of a
+cursor is not supported and is not detected: the reads after the copy are
+lost, so their rights changes, revocations included, are published only when
+the connector reports them again, and when a publication already carries one
+of them the source stays blocked until it is purged.
 
 An envelope in the log that does not parse is not isolated this way: `fyrr
 writer commit` and `fyrr writer status` fail with `publication_invalid` for
 every source until it is removed or put back
 ([#370](https://github.com/fyrr-ai/fyrr/issues/370)).
-
-A worker does not make a new permissions cursor for such a source, nor read
-from one of an older lease than its log (a copy put back after a later lease's
-read moved it): it fails the read with `permission_cursor_lost` before it writes
-anything, so the block holds however often it tries.
-
-The end of a read that its cursor does not hold yet (a read between its end
-and its cursor write, one whose worker died, or a copy of the cursor taken
-during it and put back) holds the content and listings of its source until a
-read completes after it. A healthy read holds them only for that moment. While
-the read's lease is live, `fyrr writer status` counts what waits as pending;
-once it has expired, it lists the source in `blocked_sources`. A crash heals
-with no operator: the next read that completes reads from the cursor again and
-ends the hold.
-
-To end the block, put back the cursor the last read wrote
-(`cursors/SOURCE_ID-permissions.json`) or the missing envelope
-(`envelopes/ID.json`) from a backup or the object versions the storage keeps:
-the next commit publishes what waited. Only a cursor copy taken while no read
-of the source ran keeps every confirmed read. A copy taken during a read takes
-the source back to where that read started: the next read starts from the
-copy, and the read in progress when it was taken is published only if the
-connector reports its changes again. A copy older than a read that a
-publication already carries keeps the source blocked for good, whatever reads
-follow: its chain never reaches what the publication applied. When no valid
-copy exists, purge the source (`fyrr writer source purge SOURCE_ID --confirm`), which is final, and
-configure it again under a new source ID: it reads its content and rights from
-the start.
 
 ## Upgrades
 
