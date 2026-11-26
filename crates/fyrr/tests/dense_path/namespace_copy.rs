@@ -115,7 +115,7 @@ fn visible(config: &Path) {
         json!([]),
         "{denied}"
     );
-    // A document with a connector map, which is read from beside the dataset.
+    // A document with a connector map, which the copied rows hold.
     let map = client.call(
         "fetch",
         json!({"source_id": "metadata", "root_id": "doc-0"}),

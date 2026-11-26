@@ -1,5 +1,4 @@
 //! Authorized tool operations on the existing pinned reader.
-use crate::embedding::digest;
 use crate::error::*;
 use crate::retrieval::Candidate;
 use crate::search::{PreparedReader, column, ids, strings};
@@ -13,7 +12,6 @@ use fyrr_core::limits::mcp::{
 };
 use fyrr_core::mcp::*;
 use lance::dataset::scanner::{ColumnOrdering, RowAddrMask, RowAddrTreeMap};
-use object_store::ObjectStoreExt;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};

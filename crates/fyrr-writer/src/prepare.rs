@@ -142,7 +142,7 @@ pub fn schema_with(dimensions: u32, element: DenseElement, extra: Vec<Field>) ->
         Field::new("searchable_text", DataType::Utf8, false),
         Field::new("metadata_json", DataType::Utf8, false),
         Field::new("record_order", DataType::UInt64, true),
-        Field::new("connector_map_ref", DataType::Utf8, true),
+        Field::new("connector_map", DataType::Binary, true),
         Field::new("source_uri", DataType::Utf8, true),
         Field::new("source_type", DataType::Utf8, true),
         Field::new("project", DataType::Utf8, true),

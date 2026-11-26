@@ -127,7 +127,7 @@ impl PreparedReader {
         }
         let stage = Instant::now();
         let counters = self.mirror.counters();
-        let mut columns = vec!["searchable_text", "metadata_json", "connector_map_ref"];
+        let mut columns = vec!["searchable_text", "metadata_json", "connector_map"];
         columns.extend(self.connector_columns());
         let batch = self
             .rows_by_id(&row_ids, &columns, IncompatibleIndex)
@@ -356,32 +356,12 @@ impl PreparedReader {
             .last()
             .is_none_or(|d| d.source_id != source || d.root_id != root)
         {
-            let references = strings(batch, "connector_map_ref")?;
-            let connector_map = if references.is_null(row) {
+            let maps: &arrow_array::BinaryArray =
+                column(batch, "connector_map", PublicationRowsInvalid)?;
+            let connector_map = if maps.is_null(row) {
                 None
             } else {
-                let reference = references.value(row);
-                fyrr_core::limits::check_digest("metadata reference", reference)
-                    .map_err(|_| StorageUnavailable)?;
-                let store = self.control_store.clone();
-                let payload = store
-                    .get(
-                        &self
-                            .control_root
-                            .clone()
-                            .join("document-metadata")
-                            .join(format!("{}.json", &reference[7..])),
-                    )
-                    .await
-                    .map_err(|_| StorageUnavailable)?;
-                if payload.meta.size > fyrr_core::limits::MAX_CONNECTOR_MAP_BYTES as u64 {
-                    return Err(StorageUnavailable);
-                }
-                let bytes = payload.bytes().await.map_err(|_| StorageUnavailable)?;
-                if digest(&bytes) != reference {
-                    return Err(StorageUnavailable);
-                }
-                Some(serde_json::from_slice(&bytes).map_err(|_| StorageUnavailable)?)
+                Some(serde_json::from_slice(maps.value(row)).map_err(|_| StorageUnavailable)?)
             };
             result.documents.push(FetchedDocument {
                 document_changed: None,

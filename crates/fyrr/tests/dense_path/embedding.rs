@@ -418,14 +418,6 @@ async fn tools_writer_embedding_failures_deadline_spend_and_no_partial_stage_on_
         );
         let loaded = fyrr_core::config::load(&config).unwrap();
         let (store, ns) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
-        assert!(
-            store
-                .list_with_delimiter(Some(&ns.clone().join("document-metadata")))
-                .await
-                .unwrap()
-                .objects
-                .is_empty()
-        );
         let staged = store
             .list_with_delimiter(Some(&ns.join("dataset.lance").join("data")))
             .await

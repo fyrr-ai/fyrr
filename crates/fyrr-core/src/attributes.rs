@@ -33,7 +33,7 @@ pub const BUILT_IN_COLUMNS: [&str; 16] = [
     "searchable_text",
     "metadata_json",
     "record_order",
-    "connector_map_ref",
+    "connector_map",
     "source_uri",
     "source_type",
     "project",

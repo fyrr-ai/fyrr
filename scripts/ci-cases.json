@@ -1914,11 +1914,7 @@
         "tier": "full",
         "seconds": 10.0
       },
-      "full:fyrr:test:dense_path/metadata_io::page_metadata_coalesces_equal_keys_and_bounds_independent_puts": {
-        "tier": "full",
-        "seconds": 10.0
-      },
-      "full:fyrr:test:dense_path/metadata_io::metadata_failure_keeps_cursor_lease_until_admitted_write_finishes": {
+      "full:fyrr:test:dense_path/metadata_io::connector_maps_are_stored_in_their_rows_and_fetched_with_them": {
         "tier": "full",
         "seconds": 10.0
       },
