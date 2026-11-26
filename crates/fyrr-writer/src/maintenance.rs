@@ -32,7 +32,7 @@ use std::collections::{BTreeMap, BTreeSet};
 pub(crate) const INDEX_SEGMENT_LIMIT: usize = 64;
 // The newest segments of an index that one step of `writer serve` merges, so that a write that
 // waits for the lease waits for a short step. `writer maintain` merges an index in one step.
-const MERGE_STEP_SEGMENTS: usize = 16;
+const MERGE_STEP_SEGMENTS: usize = 32;
 // Merge throughput measured on #317: 3,000,000 rows in 2,147 s on `writer maintain`, cores 0-3,
 // `writer.threads = 2`. Re-measure with `scripts/bench-scale --maintain` when the merge changes.
 const MERGE_ROWS_PER_SECOND: u128 = 1_400;
