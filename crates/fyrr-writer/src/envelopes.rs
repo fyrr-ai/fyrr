@@ -241,10 +241,22 @@ pub async fn status(config: &Config) -> Result<serde_json::Value> {
         .filter(|e| retired(&e.source_id))
         .count();
     permissions.retain(|_, e| !retired(&e.source_id));
+    // The sources whose permissions a publication applied are checked too: their
+    // chain breaks when the cursor goes, whatever is pending.
+    let applied_sources = crate::commit::previous_manifest(store.as_ref(), &root, &head)
+        .await?
+        .map(|manifest| {
+            manifest
+                .authorization_applied
+                .into_keys()
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
     let sources: BTreeSet<String> = permissions
         .values()
         .map(|e| e.source_id.clone())
         .chain(held.keys().cloned())
+        .chain(applied_sources)
         .collect();
     // Every link after what the manifest applied, then which of them no
     // publication resolved: one that is listed and unresolved, or one that the
@@ -417,12 +429,27 @@ pub(crate) async fn cleanup_held(
     let (store, root, durability) = fyrr_reader::storage::cleanup_namespace_store(config)?;
     // What a cursor confirmed is read before the log is: an envelope a worker
     // confirms meanwhile is the newer, and the one before it is still reached.
+    // The cursors on storage, whatever the configuration names.
     let mut cursors = BTreeMap::new();
-    for source in &config.sources {
+    let listed: Vec<_> = {
+        let (cursor_store, cursor_root) = namespace_store(config)?;
+        cursor_store
+            .list(Some(&cursor_root.join("cursors")))
+            .try_collect()
+            .await?
+    };
+    for object in listed {
+        let Some(source) = object
+            .location
+            .filename()
+            .and_then(|name| name.strip_suffix("-permissions.json"))
+        else {
+            continue;
+        };
         if let Some(state) =
-            crate::sync_lease::CursorLease::peek(config, &source.id, SyncKind::Permissions).await?
+            crate::sync_lease::CursorLease::peek(config, source, SyncKind::Permissions).await?
         {
-            cursors.insert(source.id.clone(), state);
+            cursors.insert(source.to_owned(), state);
         }
     }
     let crate::commit::CleanupEvidence {

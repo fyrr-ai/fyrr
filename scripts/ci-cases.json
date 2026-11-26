@@ -2736,6 +2736,10 @@
         "tier": "full",
         "seconds": 60
       },
+      "full:fyrr:test:dense_path/incremental::incremental_a_missing_cursor_blocks_its_source_on_storage": {
+        "tier": "full",
+        "seconds": 60
+      },
       "full:fyrr:test:dense_path/incremental::incremental_members_behind_waiting_permissions_are_applied_on_storage": {
         "tier": "full",
         "seconds": 60

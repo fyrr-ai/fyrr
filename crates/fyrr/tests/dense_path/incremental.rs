@@ -2836,6 +2836,57 @@ async fn incremental_a_permission_envelope_of_exactly_the_bound_publishes_on_sto
     assert_eq!(row_readers(&batch, "b").len(), 2500);
 }
 
+/// A missing cursor is not an empty one: a source whose cursor is gone while
+/// envelopes it chained wait, before the first publication, is blocked, its
+/// content waits for the permission change, and `writer status` lists it;
+/// once the cursor is back the source publishes. After a publication, a
+/// cursor that goes blocks its source in `writer status` with nothing pending.
+#[tokio::test]
+#[ignore = "real CLI and local storage; scripts/ci"]
+async fn incremental_a_missing_cursor_blocks_its_source_on_storage() {
+    let (worker, commit, root) = fixture_host(768, false);
+    drop_other_sources(&worker).await;
+    initial(&root);
+    worker_sync(
+        &worker,
+        &["incremental", "--kind", "content", "--kind", "permissions"],
+    );
+    let loaded = fyrr_core::config::load(&worker).unwrap();
+    let (store, ns) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
+    let path = ns.join("cursors").join("incremental-permissions.json");
+    let kept = store.get(&path).await.unwrap().bytes().await.unwrap();
+    store.delete(&path).await.unwrap();
+    let status = command(&commit, &["writer", "status"]);
+    assert_eq!(
+        status["blocked_sources"],
+        json!(["incremental"]),
+        "{status}"
+    );
+    publish(&commit);
+    let head = fyrr_reader::storage::optional_head(&loaded.config)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        head.content.is_none(),
+        "the content waits for its permissions"
+    );
+    store.put(&path, kept.clone().into()).await.unwrap();
+    publish(&commit);
+    assert!(!row_readers(&rows(&worker).await, "a").is_empty());
+    let status = command(&commit, &["writer", "status"]);
+    assert_eq!(status["blocked_sources"], json!([]), "{status}");
+    // After a publication, with nothing pending.
+    store.delete(&path).await.unwrap();
+    let status = command(&commit, &["writer", "status"]);
+    assert_eq!(
+        status["blocked_sources"],
+        json!(["incremental"]),
+        "{status}"
+    );
+    store.put(&path, kept.into()).await.unwrap();
+}
+
 /// A copy has no chain and nothing applied: its sources read again from the start.
 #[tokio::test]
 #[ignore = "real CLI and local storage; scripts/ci"]

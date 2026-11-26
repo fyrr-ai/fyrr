@@ -153,10 +153,20 @@ pub(crate) async fn chains<L: Link>(
         let applied = manifest
             .as_ref()
             .and_then(|m| m.authorization_applied.get(source));
-        let last = crate::sync_lease::CursorLease::peek(config, source, SyncKind::Permissions)
-            .await?
-            .and_then(|state| state.last)
-            .map(|last| last.id);
+        let cursor =
+            crate::sync_lease::CursorLease::peek(config, source, SyncKind::Permissions).await?;
+        // A missing cursor of a source whose envelopes a worker chained lost
+        // what confirmed them: the source is blocked until it is put back.
+        if cursor.is_none()
+            && listed
+                .values()
+                .any(|link| link.source_id() == source.as_str() && link.lease_generation() > 0)
+        {
+            crate::telemetry::permissions_blocked(source);
+            blocked.insert(source.clone());
+            continue;
+        }
+        let last = cursor.and_then(|state| state.last).map(|last| last.id);
         match walk(
             config,
             store.as_ref(),

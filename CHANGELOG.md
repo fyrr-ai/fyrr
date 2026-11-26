@@ -54,7 +54,7 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   steps within `writer.commit.group_max_rows` and `group_max_bytes`. A root
   that does not fit an envelope alone fails the read with
   `permission_root_oversized`. `writer.envelope_max_bytes` must now hold the
-  envelope that ends a read with the largest cursors, about 194 KiB (the
+  envelope that ends a read with the largest cursors, about 193 KiB (the
   default is 256 MiB); a configuration with a smaller bound is refused when it
   is loaded. `fyrr writer status` lists the sources whose permission chain is
   broken in `blocked_sources`.

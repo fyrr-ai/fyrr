@@ -64,13 +64,14 @@ fn to_the_microsecond<S: serde::Serializer>(
 }
 
 /// The largest envelope that ends a permission read in `namespace`: no root,
-/// the longest IDs and numbers, and cursors of the most bytes, each escaped as
-/// JSON escapes a control character. `writer.envelope_max_bytes` holds it, so
+/// the longest source ID and numbers, its flags as they encode longest (it
+/// ends a read; it may leave the cursor), and cursors of the most bytes, each
+/// escaped as JSON escapes a control character. `writer.envelope_max_bytes` holds it, so
 /// that the envelope that ends a read is never over the bound.
 pub fn largest_permission_end(namespace: &str) -> PreparedEnvelope {
     use chrono::TimeZone;
-    // `"` is the longest a character of an ID encodes to: JSON doubles it.
-    let source = "\"".repeat(crate::limits::MAX_ID_BYTES);
+    // A source ID is of characters JSON does not escape.
+    let source = "a".repeat(crate::config::SOURCE_ID_MAX_BYTES);
     let cursor = "\u{1}".repeat(crate::limits::MAX_CURSOR_BYTES);
     let id = leased_envelope_id(
         namespace,
@@ -107,7 +108,7 @@ pub fn largest_permission_end(namespace: &str) -> PreparedEnvelope {
         lease_generation: u64::MAX,
         previous: Some(id),
         payload: EnvelopePayload::Permissions(PermissionsPayload {
-            complete_read: false,
+            complete_read: true,
             documents: Vec::new(),
             container_grants: Vec::new(),
         }),
