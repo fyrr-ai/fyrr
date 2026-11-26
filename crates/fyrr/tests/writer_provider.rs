@@ -187,3 +187,107 @@ async fn prepared_timeout_names_flag_and_rerun_preserves_durable_work_on_storage
         String::from_utf8_lossy(&verified.stderr)
     );
 }
+
+/// The service's workers that failed so far.
+fn failed_workers(log: &Path) -> usize {
+    std::fs::read_to_string(log)
+        .unwrap()
+        .matches("writer_service event=worker_failed")
+        .count()
+}
+
+/// Waits until `count` workers have failed, as the log shows it.
+fn wait_for_failures(log: &Path, count: usize) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    while failed_workers(log) < count {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "worker {count} never failed"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+}
+
+/// Moves the test clock by `by`, then gives the service real time to act on it.
+fn advance_and_settle(by: u64) {
+    fyrr_core::clock::advance(std::time::Duration::from_secs(by)).unwrap();
+    std::thread::sleep(std::time::Duration::from_secs(3));
+}
+
+/// The cursor's position in the namespace's storage, once a worker has saved one.
+fn saved_cursor(storage: &Path) -> Option<String> {
+    let mut stack = vec![storage.to_owned()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(dir).unwrap().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.ends_with("cursors/fixture-content.json") {
+                let state: serde_json::Value =
+                    serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+                return state["cursor"].as_str().map(str::to_owned);
+            }
+        }
+    }
+    None
+}
+
+#[test]
+#[ignore = "real service, workers and local storage; scripts/ci"]
+fn a_failing_source_is_retried_with_growing_delays_and_a_success_resets_them() {
+    let fixture = Fixture::new("sentinel-failing", "raise");
+    let text = std::fs::read_to_string(&fixture.config).unwrap().replace(
+        "[sources.settings]",
+        "[sources.intervals]\ncontent='10m'\nreconcile='10m'\n[sources.settings]",
+    );
+    std::fs::write(&fixture.config, &text).unwrap();
+    let log = fixture.sandbox.output().join("service.log");
+    let mut service = fixture
+        .sandbox
+        .configured_command(&fixture.config, ["writer", "serve", "--jobs", "1"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::fs::File::create(&log).unwrap())
+        .spawn()
+        .unwrap();
+    // The first worker starts at once and fails. The next waits 60 s of the
+    // test clock, the one after 120 s, the one after that 240 s.
+    wait_for_failures(&log, 1);
+    advance_and_settle(40);
+    assert_eq!(failed_workers(&log), 1, "retried before 60 s");
+    advance_and_settle(40);
+    wait_for_failures(&log, 2);
+    advance_and_settle(100);
+    assert_eq!(failed_workers(&log), 2, "retried before 120 s");
+    advance_and_settle(40);
+    wait_for_failures(&log, 3);
+    advance_and_settle(200);
+    assert_eq!(failed_workers(&log), 3, "retried before 240 s");
+    // The source recovers, and runs when its backoff has passed.
+    let healed = text.replace("mode='raise'", "mode='print'");
+    std::fs::write(&fixture.config, healed).unwrap();
+    advance_and_settle(60);
+    let storage = fixture.sandbox.output().join("storage");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    while saved_cursor(&storage).as_deref() != Some("printed") {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the recovered source never ran"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    assert_eq!(failed_workers(&log), 3, "a recovered source failed");
+    // The success reset the delay: when the source fails again after its
+    // interval, the retry waits 60 s, not 480 s.
+    std::fs::write(&fixture.config, &text).unwrap();
+    advance_and_settle(11 * 60);
+    wait_for_failures(&log, 4);
+    advance_and_settle(40);
+    assert_eq!(failed_workers(&log), 4, "retried before 60 s");
+    advance_and_settle(40);
+    wait_for_failures(&log, 5);
+    // SIGTERM lets the service stop its workers.
+    let _ = std::process::Command::new("kill")
+        .args(["-TERM", &service.id().to_string()])
+        .status();
+    let _ = service.wait();
+}
