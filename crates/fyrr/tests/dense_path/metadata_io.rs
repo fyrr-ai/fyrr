@@ -49,7 +49,7 @@ async fn connector_maps_are_stored_in_their_rows_and_fetched_with_them() {
         .column_by_name("connector_map")
         .unwrap()
         .as_any()
-        .downcast_ref::<arrow_array::BinaryArray>()
+        .downcast_ref::<arrow_array::LargeBinaryArray>()
         .unwrap();
     for row in 0..rows.num_rows() {
         let n: usize = roots.value(row)["doc-".len()..].parse().unwrap();

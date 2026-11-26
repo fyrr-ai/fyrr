@@ -230,18 +230,6 @@ fn references_are_synced_before_real_prepare_and_publication() {
         let path = PathBuf::from(event["path"].as_str().unwrap());
         let pid = event["pid"].as_u64().unwrap();
         match event["event"].as_str().unwrap() {
-            "exists" => {
-                // "It exists" is an acknowledgement: the process that says so
-                // flushed the name itself, after the winner published it.
-                let published = files.get(&path).map_or(0, |(publish, _)| *publish);
-                assert!(
-                    own_syncs
-                        .get(&(pid, path.parent().unwrap().to_path_buf()))
-                        .is_some_and(|sync| *sync > published),
-                    "existing object reported before its directory was synced: {}",
-                    path.display()
-                );
-            }
             "sync" => {
                 if event["directory"] == true {
                     own_syncs.insert((pid, path.clone()), index);

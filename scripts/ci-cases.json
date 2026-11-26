@@ -1251,6 +1251,14 @@
         "tier": "quick",
         "seconds": 0.0
       },
+      "full:fyrr-writer:lib:fyrr_writer/prepare::tests::a_page_holds_the_connector_map_of_every_record_within_its_bounds": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
+      "full:fyrr-writer:lib:fyrr_writer/prepare::tests::only_a_table_of_this_major_with_connector_maps_is_committed": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
       "full:fyrr-reader:lib:fyrr_reader/search::open_tests::an_attribute_must_be_a_nullable_column_of_its_type_with_its_index_on_it": {
         "tier": "quick",
         "seconds": 0.0

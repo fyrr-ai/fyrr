@@ -99,7 +99,7 @@ pub(super) async fn content_page(
         payload: EnvelopePayload::Content(ContentPayload {
             embedding: identity(&config.embedding),
             chunk_profile: chunk_identity(),
-            table_schema_version: SchemaVersion::new(1, 2),
+            table_schema_version: fyrr_core::envelope::TABLE_SCHEMA_VERSION,
             documents: rows.documents,
             fragments,
             quarantined: rows.quarantined,
@@ -532,7 +532,7 @@ impl RowColumns {
                 Arc::new(StringArray::from(self.texts)),
                 Arc::new(StringArray::from(self.metadata)),
                 Arc::new(UInt64Array::from(self.record_orders)),
-                Arc::new(BinaryArray::from_iter(self.maps)),
+                Arc::new(LargeBinaryArray::from_iter(self.maps)),
                 Arc::new(StringArray::from(self.uris)),
                 Arc::new(StringArray::from(self.types)),
                 Arc::new(StringArray::from(self.projects)),

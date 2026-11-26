@@ -15,6 +15,10 @@ use crate::version::{Contract, SchemaVersion};
 /// The envelope contract version written by this build.
 pub const ENVELOPE_CONTRACT_VERSION: SchemaVersion = SchemaVersion::new(6, 0);
 
+/// The version of the namespace table this build writes fragments in and
+/// commits to. 2.0 holds a connector map in the `connector_map` column.
+pub const TABLE_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(2, 0);
+
 /// A prepared envelope.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct PreparedEnvelope {

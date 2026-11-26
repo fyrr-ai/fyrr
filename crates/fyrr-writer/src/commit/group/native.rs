@@ -118,6 +118,7 @@ impl<'a> ContentWork<'a> {
                 let EnvelopePayload::Content(payload) = &envelope.payload else {
                     unreachable!()
                 };
+                crate::apply::check_table(payload, None)?;
                 for fragment in crate::apply::initial_deletes(config, envelope, sequence).await? {
                     fragments.push(
                         serde_json::from_value(fragment)

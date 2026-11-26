@@ -11,9 +11,9 @@ pub async fn content(
     let EnvelopePayload::Content(payload) = &envelope.payload else {
         return Err(WriterError::EnvelopeInvalid);
     };
+    super::check_table(payload, Some(dataset))?;
     if payload.embedding != fyrr_reader::embedding::identity(&config.embedding)
         || payload.chunk_profile != crate::prepare::chunk_identity()
-        || payload.table_schema_version.major != 1
     {
         reject(config, envelope, "envelope_profile_mismatch").await?;
         return Ok((Vec::new(), Vec::new(), false));

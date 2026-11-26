@@ -356,7 +356,7 @@ impl PreparedReader {
             .last()
             .is_none_or(|d| d.source_id != source || d.root_id != root)
         {
-            let maps: &arrow_array::BinaryArray =
+            let maps: &arrow_array::LargeBinaryArray =
                 column(batch, "connector_map", PublicationRowsInvalid)?;
             let connector_map = if maps.is_null(row) {
                 None

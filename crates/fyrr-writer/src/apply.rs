@@ -104,6 +104,18 @@ pub async fn verify_files(config: &Config, payload: &ContentPayload) -> Result<(
     }
     Ok(())
 }
+/// Whether this build commits `payload`: fragments of its table major and,
+/// once the table exists, a table that holds connector maps in their rows.
+/// Anything else was written before table 2.0, and its namespace is
+/// recreated, never upgraded.
+pub fn check_table(payload: &ContentPayload, dataset: Option<&Dataset>) -> Result<()> {
+    if payload.table_schema_version.major != TABLE_SCHEMA_VERSION.major
+        || dataset.is_some_and(|dataset| dataset.schema().field("connector_map").is_none())
+    {
+        return Err(WriterError::NamespaceLayoutOld);
+    }
+    Ok(())
+}
 async fn fragment_rows(
     config: &Config,
     dataset: &Dataset,
