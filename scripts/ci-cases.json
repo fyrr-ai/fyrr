@@ -143,6 +143,10 @@
         "tier": "quick",
         "seconds": 0.0
       },
+      "full:fyrr-reader:lib:fyrr_reader/generation::tests::only_the_first_settlement_decides": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
       "full:fyrr-reader:lib:fyrr_reader/http::place_tests::a_place_is_made_by_closing_an_idle_namespace_only": {
         "tier": "quick",
         "seconds": 0.0

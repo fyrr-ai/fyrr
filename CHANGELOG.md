@@ -663,6 +663,11 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Fixed
 
+- A serving reader no longer turns its generation cold when a second
+  subject's admission is built. The roots of the vector index grow a little
+  after their first searches, and each admission compared that new size with
+  the reservation again; at 3,000,000 rows the second one found 143 KB too
+  little and every dense query after it scanned all rows exactly.
 - The TypeScript client treated a write with an empty `conditions` object as a
   conditional one and never repeated it after a lost connection; the Python
   client and the server read it as no conditions. All three now agree: only a
