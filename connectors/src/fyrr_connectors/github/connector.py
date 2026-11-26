@@ -52,8 +52,6 @@ class GitHub(Connector[Settings, Scope]):
     def _open(self):
         settings, scope = self.context.settings, self.context.scope
         assert isinstance(settings, Settings) and isinstance(scope, Scope)
-        if self.context.permissions not in ("fixed", "sync"):
-            raise ValueError("github_permissions_invalid")
         self.client = Client(settings.api_endpoint)
         self.auth = AppAuth(self.client, settings)
         self.tree = Tree(self.client)

@@ -98,6 +98,29 @@ def test_rate_limits_honor_server_waits(github, index, status, headers, expected
     assert github.sleeps == [expected]
 
 
+@pytest.mark.parametrize("status", [403, 429])
+def test_a_retry_after_date_in_the_past_is_no_wait_and_retries_are_bounded(github, index, status):
+    past = {"Retry-After": "Wed, 21 Oct 2015 07:28:00 GMT"}
+    github.fail("/installation/repositories", status, headers=past)
+    index.sync()
+    assert github.sleeps == []
+    github.requests.clear()
+    github.fail("/installation/repositories", status, headers=past, times=ATTEMPTS + 3)
+    with pytest.raises(ApiError) as caught:
+        index.sync()
+    assert caught.value.status == status and caught.value.transient
+    asked = [path for _, path, _ in github.requests if path == "/installation/repositories"]
+    assert len(asked) == ATTEMPTS  # the first call and five retries
+
+
+@pytest.mark.parametrize("value", ["-1", "nan", "soon"])
+def test_an_invalid_retry_after_is_refused_without_a_wait(github, index, value):
+    github.fail("/installation/repositories", 429, headers={"Retry-After": value})
+    with pytest.raises(ValueError, match="rate_header_invalid"):
+        index.sync()
+    assert github.sleeps == []
+
+
 def test_plain_permission_403_is_not_retried(github, index):
     github.fail("/installation/repositories", 403, times=ATTEMPTS)
     with pytest.raises(ApiError) as caught:
