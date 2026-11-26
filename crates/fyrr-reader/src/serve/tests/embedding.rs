@@ -266,6 +266,27 @@ async fn embedding_wait_revocation_refuses_old_authorization_on_storage() {
     fixture.close().await;
 }
 
+/// A policy published while a request waits on its embedding, without a
+/// native slot, refuses the request when it is then cancelled: its check finds
+/// the change before the reader's head records it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "real S3 publication, fake provider and stdio cancellation"]
+async fn a_policy_change_before_a_cancellation_refuses_the_request_on_storage() {
+    let mut fixture = ParkedEmbedding::open("10s").await;
+    fixture.parked(1).await;
+    let config = fixture.config.clone();
+    retire_allowed_source(&config, &mut fixture.head).await;
+    fixture.wire.cancel(1).await;
+    let reply = fixture.wire.reply().await;
+    assert_eq!(reply["id"], 1);
+    assert_eq!(
+        reply["result"]["structuredContent"]["code"], "authorization_unavailable",
+        "{reply}"
+    );
+    assert!(reply["result"]["structuredContent"]["hits"].is_null());
+    fixture.close().await;
+}
+
 /// Publishes a policy generation that retires the permission-synced `allowed`
 /// source: the grant change that makes a reader rebuild its admission.
 async fn retire_allowed_source(

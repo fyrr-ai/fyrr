@@ -97,7 +97,7 @@ pub(super) async fn execute(
         Err(DeadlineExceeded)
     } else {
         reader.mirror.start_request();
-        let granted = grant(&reader);
+        let granted = grant(&reader.head);
         let work = async {
             #[cfg(test)]
             reader.test_hooks.native_work.wait_once().await;

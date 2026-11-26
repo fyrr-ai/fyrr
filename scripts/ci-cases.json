@@ -2216,6 +2216,10 @@
       "full:fyrr:test:dense_path/write_api::identity_write_api_text_follows_the_namespace_analyzer_on_storage": {
         "tier": "full",
         "seconds": 40
+      },
+      "full:fyrr:test:dense_path/embedding::tools_policy_change_before_a_cancellation_on_storage": {
+        "tier": "quick",
+        "seconds": 2.858
       }
     },
     "children": {
@@ -2223,6 +2227,12 @@
         "tier": "quick",
         "parents": [
           "full:fyrr:test:dense_path/embedding::tools_embedding_wait_revocation_on_storage"
+        ]
+      },
+      "full:fyrr-reader:lib:fyrr_reader/serve::tests::embedding::a_policy_change_before_a_cancellation_refuses_the_request_on_storage": {
+        "tier": "quick",
+        "parents": [
+          "full:fyrr:test:dense_path/embedding::tools_policy_change_before_a_cancellation_on_storage"
         ]
       }
     }
