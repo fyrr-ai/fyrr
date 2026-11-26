@@ -783,6 +783,10 @@
         "tier": "quick",
         "seconds": 0.1
       },
+      "full:fyrr-writer:lib:fyrr_writer/lease::tests::a_slow_renewal_within_the_ttl_keeps_the_lease_on_local_storage": {
+        "tier": "quick",
+        "seconds": 4.33
+      },
       "full:fyrr-writer:lib:fyrr_writer/sync_lease::tests::cursor_renewal_finishes_before_release_on_local_storage": {
         "tier": "quick",
         "seconds": 1.313

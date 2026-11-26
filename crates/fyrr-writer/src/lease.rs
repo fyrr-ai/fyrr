@@ -29,11 +29,18 @@ impl Renewal {
     {
         let (stop, mut stopping) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
+            // Renewals start `interval` apart, counted from the start of the
+            // last one: a slow write, as on a busy disk, delays the next
+            // renewal only by as much as it outlasts the interval, so the
+            // lease lapses only when one renewal takes longer than the TTL.
+            let mut ticks =
+                tokio::time::interval_at(tokio::time::Instant::now() + interval, interval);
+            ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
                 tokio::select! {
                     biased;
                     _ = &mut stopping => break,
-                    () = tokio::time::sleep(interval) => {}
+                    _ = ticks.tick() => {}
                 }
                 if !renew().await {
                     break;

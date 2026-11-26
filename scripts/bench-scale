@@ -545,12 +545,22 @@ def load(run, corpus):
     try:
         for first in range(0, corpus.rows, WRITE_ROWS):
             body = corpus.body(first)
+            # A 503 (`busy`, `unavailable`, `outcome_unknown`) carries
+            # `Retry-After: 1`; repeating an upsert of the same IDs is safe.
+            # The batch's seconds count from its first answered attempt.
+            attempted = None
             for _ in range(600):
                 try:
+                    begun = time.perf_counter()
                     status, answer, took = write.call(
                         "POST", path, run.secrets["env"]["FYRR_BENCH_WRITE_KEY"], body
                     )
-                    break
+                    attempted = attempted or begun
+                    if status != 503:
+                        took = time.perf_counter() - attempted
+                        break
+                    print("write answered 503 %s, again" % answer, file=sys.stderr)
+                    time.sleep(1)
                 except OSError:
                     time.sleep(0.1)
             else:
