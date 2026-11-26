@@ -771,6 +771,10 @@
         "tier": "quick",
         "seconds": 0.1
       },
+      "full:fyrr-writer:lib:fyrr_writer/sync_lease::tests::a_checked_cursor_that_moved_is_busy_on_local_storage": {
+        "tier": "quick",
+        "seconds": 1.313
+      },
       "full:fyrr-writer:lib:fyrr_writer/sync_lease::tests::cursor_renewal_finishes_before_release_on_local_storage": {
         "tier": "quick",
         "seconds": 1.313
@@ -2749,6 +2753,10 @@
         "seconds": 60
       },
       "full:fyrr:test:dense_path/incremental::incremental_an_older_cursor_put_back_keeps_its_source_blocked_on_storage": {
+        "tier": "full",
+        "seconds": 60
+      },
+      "full:fyrr:test:dense_path/incremental::incremental_a_cursor_copy_taken_during_a_read_blocks_until_the_next_read_on_storage": {
         "tier": "full",
         "seconds": 60
       },

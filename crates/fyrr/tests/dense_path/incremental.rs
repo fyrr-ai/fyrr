@@ -1846,10 +1846,14 @@ async fn incremental_permission_envelope_no_cursor_confirmed_is_inert_on_storage
         &[("b", "p8")],
     )
     .await;
-    // The end of a read its worker did not confirm, as one in progress, is not
-    // a lost cursor: the source is not blocked.
+    // The end of a read its worker did not confirm, its lease expired, blocks
+    // the source until the next read, which redoes it.
     let status = command(&commit, &["writer", "status"]);
-    assert_eq!(status["blocked_sources"], json!([]), "{status}");
+    assert_eq!(
+        status["blocked_sources"],
+        json!(["incremental"]),
+        "{status}"
+    );
     input(
         &root,
         json!({"epoch":3,"permissions":[[{"id":"a","revision":"p4","readers":[]}]]}),
@@ -3117,6 +3121,84 @@ async fn incremental_an_older_cursor_put_back_keeps_its_source_blocked_on_storag
         "r1",
         "the content still waits"
     );
+}
+
+/// A copy of the cursor taken during a read, as its lease was taken, put back
+/// after that read confirmed a revocation: while the copied lease is live the
+/// read counts as in progress; once it has expired the end of the read that
+/// the copy does not hold blocks the source, so new content does not publish
+/// with the old rights, and the next read, which a worker is not refused,
+/// reads from the copy again and unblocks it.
+#[tokio::test]
+#[ignore = "real CLI and local storage; scripts/ci"]
+async fn incremental_a_cursor_copy_taken_during_a_read_blocks_until_the_next_read_on_storage() {
+    let (worker, commit, root) = fixture();
+    publish_initial(&worker, &commit, &root);
+    let granted = row_readers(&rows(&worker).await, "a");
+    let loaded = fyrr_core::config::load(&worker).unwrap();
+    let (store, ns) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
+    let path = ns.join("cursors").join("incremental-permissions.json");
+    // A read takes the lease; the copy is the cursor as the lease wrote it.
+    let lease = fyrr_writer::sync_lease::CursorLease::acquire(
+        &loaded.config,
+        "incremental",
+        SyncKind::Permissions,
+    )
+    .await
+    .unwrap();
+    let copy = store.get(&path).await.unwrap().bytes().await.unwrap();
+    let mut state = lease.state().await.unwrap();
+    let read = put_permission_envelope(
+        &worker,
+        state.sequence + 1,
+        state.last.as_ref().map(|last| last.id.clone()),
+        state.lease.as_ref().unwrap().epoch,
+        &[("a", "p9")],
+    )
+    .await;
+    state.sequence = read.sequence;
+    state.last = Some(fyrr_core::connector::LastEnvelope {
+        sequence: read.sequence,
+        id: read.envelope_id.clone(),
+    });
+    lease.write(state).await.unwrap();
+    lease.release().await.unwrap();
+    input(
+        &root,
+        json!({"epoch":2,"content":[[doc("a","r2","fixture document 2")]]}),
+    );
+    worker_sync(&worker, &["incremental", "--kind", "content"]);
+    store.put(&path, copy.into()).await.unwrap();
+    // The copied lease expires.
+    let ttl = loaded.config.writer.commit.lease_ttl.as_duration();
+    fyrr_core::clock::advance(ttl + std::time::Duration::from_secs(1)).unwrap();
+    let status = command(&commit, &["writer", "status"]);
+    assert_eq!(
+        status["blocked_sources"],
+        json!(["incremental"]),
+        "{status}"
+    );
+    publish(&commit);
+    let batch = rows(&worker).await;
+    let row = roots(&batch).iter().position(|id| id == "a").unwrap();
+    assert_eq!(
+        fyrr_writer::apply::strings(&batch, "source_revision")
+            .unwrap()
+            .value(row),
+        "r1",
+        "the content waits"
+    );
+    assert_eq!(row_readers(&batch, "a"), granted);
+    // The next read is not refused and reads from the copy again.
+    input(
+        &root,
+        json!({"epoch":3,"permissions":[[{"id":"a","revision":"p9","readers":[]}]]}),
+    );
+    worker_sync(&worker, &["incremental", "--kind", "permissions"]);
+    let status = command(&commit, &["writer", "status"]);
+    assert_eq!(status["blocked_sources"], json!([]), "{status}");
+    publish(&commit);
+    assert!(row_readers(&rows(&worker).await, "a").is_empty());
 }
 
 /// A copy has no chain and nothing applied: its sources read again from the start.

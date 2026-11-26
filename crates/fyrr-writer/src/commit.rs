@@ -164,7 +164,7 @@ pub(crate) async fn chains<L: Link>(
             .filter(|link| link.source_id() == source.as_str() && link.lease_generation() > 0)
             .any(|link| match &cursor {
                 None => true,
-                Some(state) => stale(state, link, listed.values()),
+                Some(state) => stale(state, link),
             });
         if lost {
             crate::telemetry::permissions_blocked(source);
@@ -195,23 +195,23 @@ pub(crate) async fn chains<L: Link>(
 }
 
 /// Whether `link` shows `cursor` older than its log: written by a later lease
-/// than the cursor's, or the end of a read after the cursor's position that
-/// another read follows, so that a cursor confirmed it. A refused worker
+/// than the cursor's, or the end of a read of the cursor's own lease after its
+/// position while that lease has expired: a worker that died before it
+/// confirmed the read, or a copy of the cursor put back after the read moved
+/// it. The source then waits for the next read, which redoes it; a lease that
+/// is live is a read in progress, which does not block. A refused worker
 /// writes nothing, so the cursor's lease does not move while it is refused.
-/// The end of a read in progress, or of one a worker died before confirming,
-/// is neither: its read is read again.
-pub(crate) fn stale<'a, L: Link + 'a>(
-    cursor: &fyrr_core::connector::CursorState,
-    link: &L,
-    links: impl Iterator<Item = &'a L>,
-) -> bool {
+pub(crate) fn stale<L: Link>(cursor: &fyrr_core::connector::CursorState, link: &L) -> bool {
     let epoch = cursor.lease.as_ref().map_or(0, |lease| lease.epoch);
+    let expired = cursor
+        .lease
+        .as_ref()
+        .is_none_or(|lease| lease.expires_at <= fyrr_core::clock::now());
     link.lease_generation() > epoch
-        || (link.ends_read()
-            && link.sequence() > cursor.sequence
-            && links
-                .into_iter()
-                .any(|next| next.previous().map(String::as_str) == Some(link.id())))
+        || (link.lease_generation() == epoch
+            && expired
+            && link.ends_read()
+            && link.sequence() > cursor.sequence)
 }
 
 /// The links of a chain after `applied`, as one walk finds them.
@@ -225,7 +225,6 @@ pub(crate) struct Walk<L> {
 /// What a walk reads of a permissions envelope that was listed, by its ID: the
 /// whole envelope for the committer, less for a count.
 pub(crate) trait Link: Clone + From<PreparedEnvelope> {
-    fn id(&self) -> &str;
     fn source_id(&self) -> &str;
     fn previous(&self) -> Option<&String>;
     fn lease_generation(&self) -> u64;
@@ -235,9 +234,6 @@ pub(crate) trait Link: Clone + From<PreparedEnvelope> {
 }
 
 impl Link for PreparedEnvelope {
-    fn id(&self) -> &str {
-        &self.envelope_id
-    }
     fn source_id(&self) -> &str {
         &self.source_id
     }
@@ -330,59 +326,6 @@ pub(crate) async fn walk<L: Link>(
     }
     found.unresolved.reverse();
     Ok(Some(found))
-}
-
-/// Whether the log refuses `cursor` of the permissions of `source`, as a
-/// worker is to take it, and the highest lease generation of its envelopes.
-/// A cursor that is not there is lost when a chain is left that it confirmed (a
-/// publication applied some of it, or a chained envelope of it waits); one
-/// that is there is older than the log when an envelope of a later lease than
-/// its own is in it. A new cursor takes a generation above every one in the
-/// log, so that its envelopes are never those of an older worker.
-pub(crate) async fn permission_log(
-    config: &Config,
-    source: &str,
-    cursor: Option<&fyrr_core::connector::CursorState>,
-) -> Result<(bool, u64)> {
-    let Some(head) = fyrr_reader::storage::optional_head(config).await? else {
-        return Ok((false, 0));
-    };
-    let (store, root) = namespace_store(config)?;
-    if cursor.is_none()
-        && previous_manifest(store.as_ref(), &root, &head)
-            .await?
-            .is_some_and(|m| m.authorization_applied.contains_key(source))
-    {
-        return Ok((true, 0));
-    }
-    let epoch = cursor
-        .and_then(|c| c.lease.as_ref())
-        .map_or(0, |lease| lease.epoch);
-    let (paths, resolved) = envelope_paths(config, &head).await?;
-    let mut generation = 0;
-    // One envelope at a time: only what this source's permissions say is kept.
-    for path in paths {
-        let envelope: PreparedEnvelope =
-            fyrr_reader::storage::read_contract(store.as_ref(), &path).await?;
-        if envelope.namespace != config.namespace.name {
-            return Err(WriterError::EnvelopeNamespaceInvalid);
-        }
-        if envelope.source_id != source
-            || envelope.kind != SyncKind::Permissions
-            || envelope.lease_generation == 0
-        {
-            continue;
-        }
-        let refused = match cursor {
-            None => !resolved.contains(&envelope.envelope_id),
-            Some(_) => envelope.lease_generation > epoch,
-        };
-        if refused {
-            return Ok((true, 0));
-        }
-        generation = generation.max(envelope.lease_generation);
-    }
-    Ok((false, generation))
 }
 
 pub async fn envelope_paths(
