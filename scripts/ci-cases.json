@@ -2353,6 +2353,10 @@
         "tier": "full",
         "seconds": 40
       },
+      "full:fyrr:test:dense_path/write_api::identity_write_api_maintains_a_sparse_vector_attribute_on_storage": {
+        "tier": "full",
+        "seconds": 60
+      },
       "full:fyrr:test:dense_path/write_api::identity_write_api_searches_named_vector_attributes_on_storage": {
         "tier": "full",
         "seconds": 40
@@ -2518,7 +2522,7 @@
         "tier": "full",
         "seconds": 240.0
       },
-      "full:fyrr:test:dense_path/maintenance::maintenance_merges_the_vector_segments_in_tiers_on_storage": {
+      "full:fyrr:test:dense_path/maintenance::maintenance_grows_the_vector_model_in_bounded_steps_on_storage": {
         "tier": "full",
         "seconds": 240.0
       },

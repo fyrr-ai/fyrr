@@ -74,6 +74,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 fn run(config: &Path, args: &[&str]) -> Output {
+    run_with(config, args, &[])
+}
+/// `run` with more environment, such as the debug builds' `FYRR_TEST_*` settings.
+fn run_with(config: &Path, args: &[&str], env: &[(&str, &str)]) -> Output {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     Command::new("bash")
         .args(["-c", "umask 022; exec \"$@\"", "fyrr-test"])
@@ -83,6 +87,7 @@ fn run(config: &Path, args: &[&str]) -> Output {
         .args(args)
         .env("VIRTUAL_ENV", root.join("connectors/.venv"))
         .env("PYTHONPATH", root.join("crates/fyrr/tests/providers"))
+        .envs(env.iter().copied())
         .output()
         .expect("execute fyrr")
 }

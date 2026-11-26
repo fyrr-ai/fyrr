@@ -73,13 +73,23 @@ pub(crate) fn head_write_failed(stage: HeadWriteStage, error: &Error) {
     eprintln!("telemetry head_write=failed stage={stage} category={category}");
 }
 
-/// An index merge step that finished, at the rate it rewrote rows.
+/// An index step that finished, at the rate it rewrote rows: `train`, `encode` or `copy` of a
+/// vector index, `merge` of another (whose rows are the table's).
 #[allow(clippy::print_stderr)]
-pub(crate) fn index_merge_done(rows: u64, took: std::time::Duration) {
+pub(crate) fn index_merge_done(kind: &str, rows: u64, took: std::time::Duration) {
     let seconds = took.as_secs_f64();
     let rate = rows as f64 / seconds.max(0.001);
     eprintln!(
-        "telemetry index_merge=done rows={rows} seconds={seconds:.1} rows_per_second={rate:.0}"
+        "telemetry index_merge=done kind={kind} rows={rows} seconds={seconds:.1} rows_per_second={rate:.0}"
+    );
+}
+
+/// A compaction step that finished, with the rows it rewrote.
+#[allow(clippy::print_stderr)]
+pub(crate) fn compaction_done(rows: u64, took: std::time::Duration) {
+    eprintln!(
+        "telemetry compaction=done rows={rows} seconds={:.1}",
+        took.as_secs_f64()
     );
 }
 

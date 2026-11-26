@@ -5677,6 +5677,59 @@ async fn identity_write_api_reranks_as_a_query_asks_within_the_spend_limit_on_st
     assert_eq!(provider.calls(), 5);
 }
 
+/// A vector attribute that most rows leave null keeps the model of its first
+/// build: Lance sizes a new model by all the rows of the table, and two writes
+/// of 1,100 rows ask for 4 partitions, which 6 vectors cannot train. The
+/// built-in vector, which every row has, gets its model of 4 partitions, and
+/// `writer maintain` succeeds.
+#[tokio::test]
+#[ignore = "real writer and reader executables on local storage; scripts/ci"]
+async fn identity_write_api_maintains_a_sparse_vector_attribute_on_storage() {
+    const ROWS: usize = 1_100;
+    let (config, root) = setup_on(Backend::Local);
+    let address = free_address();
+    configure(&config, &address, "");
+    let writer = Writer::start(&config, &root, address).await;
+    for first in [0, ROWS] {
+        let mut upserts = Vec::new();
+        for n in first..first + ROWS {
+            let mut row = json!({
+                "id": format!("r{n}"),
+                "text": format!("row{n}"),
+                "vector": vector(n, 1024),
+                "readers": ["grp:allow"],
+            });
+            if n < first + 3 {
+                row["small"] = json!(vector(30 + n, 16));
+            }
+            upserts.push(row);
+        }
+        let mut body = json!({"upserts": upserts});
+        if first == 0 {
+            body["settings"] = json!({"vectors": {"small": {"dimensions": 16}}});
+        }
+        assert_eq!(writer.post(WRITE_KEY, "dense-fixture", &body).await.0, 200);
+    }
+    let maintained = run_when_free(&config, &["writer", "maintain"]).await;
+    let (_, manifest) = super::coordination::publication(&config).await;
+    let partitions = |name: &str| -> Vec<_> {
+        manifest
+            .indexes
+            .iter()
+            .filter(|index| index.name == name)
+            .map(|index| index.partitions)
+            .collect()
+    };
+    assert_eq!(partitions("vector_idx"), [Some(4)], "{maintained}");
+    let small = partitions(&fyrr_core::attributes::vector_index_name("small"));
+    assert!(
+        !small.is_empty() && small.iter().all(|p| *p == Some(1)),
+        "{small:?}"
+    );
+    drop(writer);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 /// A namespace declares named vector attributes beside the built-in `vector`,
 /// each with its own dimensions and index: a query names the one it searches,
 /// text is embedded only for an attribute that names a `string` attribute it

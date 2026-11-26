@@ -458,6 +458,12 @@ pub(crate) async fn idle(
     })
 }
 
+/// Vectors per partition that k-means trains on. Lance records it with the index, and the
+/// maintenance step that trains a larger model reuses it. At 4,096 partitions, Lance's 256 trained
+/// for 229-277 s and 128 for 132-287 s of a 300 s step on a loaded host (#319); 64 trains on
+/// 262,144 vectors.
+pub(crate) const VECTOR_SAMPLE_RATE: usize = 64;
+
 fn vector_index_params(
     rows: usize,
     rq_bits: u8,
@@ -469,11 +475,7 @@ fn vector_index_params(
         IvfBuildParams {
             num_partitions: Some(rows.div_ceil(partition_rows as usize).max(1)),
             target_partition_size: Some(partition_rows as usize),
-            // Vectors per partition that k-means trains on. Lance records it with the index, and
-            // the maintenance step that trains a larger model reuses it. At 4,096 partitions,
-            // Lance's 256 trained for 229-277 s and 128 for 132-287 s of a 300 s step on a
-            // loaded host (#319); 64 trains on 262,144 vectors.
-            sample_rate: 64,
+            sample_rate: VECTOR_SAMPLE_RATE,
             ..Default::default()
         },
         RQBuildParams::new(rq_bits),
