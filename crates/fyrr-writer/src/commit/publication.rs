@@ -5,8 +5,8 @@ use fyrr_core::attributes::{
 use lance::index::DatasetIndexInternalExt;
 use lance_index::metrics::NoOpMetricsCollector;
 
-/// The newest chained permissions envelope applied, by source.
-pub(crate) type PermissionsApplied = BTreeMap<String, String>;
+/// The newest chained envelope resolved, by source.
+pub(crate) type ChainApplied = BTreeMap<String, String>;
 
 /// Publish native work through the same immutable manifest and fenced head CAS.
 /// `carry` holds the options of the indexes that stand as they were built: the
@@ -20,7 +20,7 @@ pub(crate) async fn publish(
     mut head: ServingHead,
     lineage: CommitLineage,
     receipts: Vec<String>,
-    permissions: PermissionsApplied,
+    chained: ChainApplied,
     acl_changed: bool,
     cursor_rewinds: Vec<String>,
     maintenance_completed: bool,
@@ -33,7 +33,7 @@ pub(crate) async fn publish(
         &lineage,
         1,
         receipts,
-        permissions,
+        chained,
         acl_changed,
         cursor_rewinds,
         maintenance_completed,
@@ -61,7 +61,7 @@ pub(crate) async fn write_manifest(
     lineage: &CommitLineage,
     first_sequence: u64,
     receipts: Vec<String>,
-    permissions: PermissionsApplied,
+    chained: ChainApplied,
     acl_changed: bool,
     mut cursor_rewinds: Vec<String>,
     maintenance_completed: bool,
@@ -269,12 +269,12 @@ pub(crate) async fn write_manifest(
         sequence,
     )
     .await?;
-    // Carried forward, and moved on by the permissions envelopes this one applied.
-    let mut authorization_applied = previous_manifest
+    // Carried forward, and moved on by the chained envelopes this one resolved.
+    let mut chain_applied = previous_manifest
         .as_ref()
-        .map(|m| m.authorization_applied.clone())
+        .map(|m| m.chain_applied.clone())
         .unwrap_or_default();
-    authorization_applied.extend(permissions);
+    chain_applied.extend(chained);
     let manifest = ContentManifest {
         schema_version: MANIFEST_CONTRACT_VERSION,
         namespace: config.namespace.name.clone(),
@@ -309,7 +309,7 @@ pub(crate) async fn write_manifest(
         incarnation: head.incarnation.clone(),
         envelope_evidence: evidence,
         stats,
-        authorization_applied,
+        chain_applied,
     };
     let manifest_path = format!("publications/{publication_id}.json");
     put_immutable(

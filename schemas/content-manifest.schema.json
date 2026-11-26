@@ -112,12 +112,12 @@
       "$ref": "#/$defs/PublicationStats",
       "description": "What the version holds."
     },
-    "authorization_applied": {
+    "chain_applied": {
       "type": "object",
       "additionalProperties": {
         "type": "string"
       },
-      "description": "The newest chained permissions envelope of each source that this\npublication and every older one applied. The committer walks the chain of\nthe cursor back to it."
+      "description": "The newest chained envelope of each source (the write API's content, a\nconnector's permissions) that this publication and every older one\nresolved. The committer walks the chain of the cursor back to it."
     }
   },
   "required": [

@@ -1118,7 +1118,7 @@ pub async fn non_content(
     put_envelope(config, envelope, true, state, lease).await
 }
 
-/// The envelope that is not content that `state` puts next: a permissions
+/// The envelope that is not content that `state` puts next: a chained
 /// envelope follows the one before it in the chain, and carries the
 /// generation of the lease it is written under.
 #[allow(clippy::too_many_arguments)]
@@ -1136,28 +1136,10 @@ fn build_envelope(
         .sequence
         .checked_add(1)
         .ok_or(WriterError::CursorSequenceOverflow)?;
-    let chained = kind == SyncKind::Permissions;
-    let lease_generation = state
-        .lease
-        .as_ref()
-        .filter(|_| chained)
-        .map_or(0, |lease| lease.epoch);
-    let previous = state
-        .last
-        .as_ref()
-        .filter(|_| chained)
-        .map(|last| last.id.clone());
+    let (lease_generation, previous) = link(state, kind, source);
     Ok(PreparedEnvelope {
         schema_version: ENVELOPE_CONTRACT_VERSION,
-        envelope_id: fyrr_core::envelope::leased_envelope_id(
-            &config.namespace.name,
-            source,
-            kind,
-            sequence,
-            state.rejection_generation,
-            state.cursor.as_deref(),
-            lease_generation,
-        ),
+        envelope_id: next_id(config, state, kind, source)?,
         namespace: config.namespace.name.clone(),
         source_id: source.into(),
         kind,
@@ -1172,6 +1154,50 @@ fn build_envelope(
         previous,
         payload,
     })
+}
+
+/// The lease generation and the predecessor of the envelope of `kind` that
+/// `state` puts next: none unless the kind is chained.
+fn link(state: &CursorState, kind: SyncKind, source: &str) -> (u64, Option<String>) {
+    if kind != crate::commit::chain_kind(source) {
+        return (0, None);
+    }
+    (
+        state.lease.as_ref().map_or(0, |lease| lease.epoch),
+        state.last.as_ref().map(|last| last.id.clone()),
+    )
+}
+
+/// The ID of the envelope of `kind` that `state` puts next.
+fn next_id(config: &Config, state: &CursorState, kind: SyncKind, source: &str) -> Result<String> {
+    let sequence = state
+        .sequence
+        .checked_add(1)
+        .ok_or(WriterError::CursorSequenceOverflow)?;
+    Ok(fyrr_core::envelope::leased_envelope_id(
+        &config.namespace.name,
+        source,
+        kind,
+        sequence,
+        state.rejection_generation,
+        state.cursor.as_deref(),
+        link(state, kind, source).0,
+    ))
+}
+
+/// Records in `state` that `envelope` is put: a chained one is the newest
+/// link that the cursor write confirms.
+fn record(state: &mut CursorState, envelope: &PreparedEnvelope) {
+    state.sequence = envelope.sequence;
+    if envelope.advances_cursor {
+        state.cursor = Some(envelope.cursor.end.clone());
+    }
+    if envelope.kind == crate::commit::chain_kind(&envelope.source_id) {
+        state.last = Some(fyrr_core::connector::LastEnvelope {
+            sequence: envelope.sequence,
+            id: envelope.envelope_id.clone(),
+        });
+    }
 }
 
 /// Puts `envelope` and records it in `state`. `confirmed` writes the cursor
@@ -1196,18 +1222,9 @@ async fn put_envelope(
         &envelope,
     )
     .await?;
-    state.sequence = envelope.sequence;
-    if envelope.advances_cursor {
-        state.cursor = Some(envelope.cursor.end.clone());
-    }
-    if envelope.kind == SyncKind::Permissions {
-        state.last = Some(fyrr_core::connector::LastEnvelope {
-            sequence: envelope.sequence,
-            id: envelope.envelope_id.clone(),
-        });
-        if crate::apply::complete_read(&envelope) {
-            state.completed_generation = state.completed_generation.max(state.rejection_generation);
-        }
+    record(state, &envelope);
+    if envelope.kind == SyncKind::Permissions && crate::apply::complete_read(&envelope) {
+        state.completed_generation = state.completed_generation.max(state.rejection_generation);
     }
     if !confirmed {
         return Ok(());

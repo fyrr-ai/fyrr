@@ -19,14 +19,8 @@ pub(super) async fn content_page(
         .sequence
         .checked_add(1)
         .ok_or(WriterError::CursorSequenceOverflow)?;
-    let id = envelope_id(
-        &config.namespace.name,
-        &source.id,
-        SyncKind::Content,
-        sequence,
-        state.rejection_generation,
-        state.cursor.as_deref(),
-    );
+    let id = next_id(config, state, SyncKind::Content, &source.id)?;
+    let (lease_generation, previous) = link(state, SyncKind::Content, &source.id);
     let envelope_path = root.clone().join("envelopes").join(format!("{id}.json"));
     lease.state().await?;
     for change in &changes {
@@ -100,8 +94,8 @@ pub(super) async fn content_page(
         advances_cursor,
         base_head,
         created_at: fyrr_core::clock::now(),
-        lease_generation: 0,
-        previous: None,
+        lease_generation,
+        previous,
         payload: EnvelopePayload::Content(ContentPayload {
             embedding: identity(&config.embedding),
             chunk_profile: chunk_identity(),
@@ -127,10 +121,7 @@ pub(super) async fn content_page(
     lease.persist_observed().await?;
     crate::commit::ensure_writable(config).await?;
     put_immutable(store.as_ref(), &envelope_path, &envelope).await?;
-    if advances_cursor {
-        state.cursor = Some(batch.cursor.end.clone());
-    }
-    state.sequence = sequence;
+    record(state, &envelope);
     lease.write(state.clone()).await?;
     Ok(quarantined_count)
 }
