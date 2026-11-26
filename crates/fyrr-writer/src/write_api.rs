@@ -83,20 +83,19 @@ impl Commits {
             .unwrap_or_default()
     }
     /// Commits what waits for the namespace of `config`, under the lease `lease` that a
-    /// maintenance run holds, and wakes the requests to look at what was published.
-    pub(crate) async fn commit_waiting(
+    /// maintenance run holds: the requests that wait, and the envelopes its sources left.
+    /// The requests are woken to look at what was published.
+    pub(crate) async fn commit_pending(
         &self,
         config: &Config,
         lease: &crate::lease::LeaseGuard,
     ) -> crate::Result<()> {
-        let waits = self
-            .waiting
-            .lock()
-            .is_ok_and(|waiting| waiting.contains_key(&config.namespace.name));
-        if waits {
-            crate::commit::drain(config, false, lease, None).await?;
-            self.done.send_modify(|rounds| *rounds += 1);
+        let head = lease.head().await?;
+        if crate::commit::pending(config, &head).await?.is_empty() {
+            return Ok(());
         }
+        crate::commit::drain(config, false, lease, None).await?;
+        self.done.send_modify(|rounds| *rounds += 1);
         Ok(())
     }
     fn wait(&self, name: &str) -> Waiting<'_> {

@@ -166,7 +166,7 @@ pub(crate) fn lineage(lease: &LeaseGuard, head: &ServingHead) -> CommitLineage {
 /// Every native step starts from the head after fresh authorization discovery.
 /// Orphan recovery runs once at command start and again after a failed native step.
 ///
-/// A write that waits for the lease is committed here, under the lease the run holds: it
+/// What waits for the namespace is committed here, under the lease the run holds: a write
 /// waits for the step in progress, not for the run.
 async fn boundary(
     config: &Config,
@@ -175,7 +175,7 @@ async fn boundary(
     writes: Option<&crate::write_api::Commits>,
 ) -> Result<ServingHead> {
     if let Some(writes) = writes {
-        writes.commit_waiting(config, lease).await?;
+        writes.commit_pending(config, lease).await?;
     }
     cached_drain_authorization(config, lease, history, false).await?;
     lease.head().await
