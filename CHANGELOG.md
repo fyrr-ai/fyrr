@@ -48,6 +48,20 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   documents again. A
   local put no longer opens a root lock file. See
   [operations](docs/operations.md#upgrades).
+- A permission read is published whole, in one publication, or not at all:
+  its roots are written in parts and an envelope without roots ends the read
+  and moves the cursor, and the committer writes the rows a read rewrites in
+  steps within `writer.commit.group_max_rows` and `group_max_bytes`. A root
+  that does not fit an envelope alone fails the read with
+  `permission_root_oversized`. `writer.envelope_max_bytes` must now hold the
+  envelope that ends a read with the largest cursors, about 193 KiB (the
+  default is 256 MiB); a configuration with a smaller bound is refused when it
+  is loaded. `fyrr writer status` lists the sources whose permission chain is
+  broken in `blocked_sources`; a worker fails a permission read with
+  `permission_cursor_lost` when the cursor of such a source is missing.
+  Cursor objects are internal: never delete, copy or restore them; a lost
+  cursor blocks its source until `fyrr writer source purge`. See
+  [operations](docs/operations.md#blocked-sources).
 - The excerpt of a hit in a namespace with an `[namespace.analyzer]`, or with
   `fts_stem`, `fts_remove_stop_words` or `fts_ascii_folding`, is chosen with the
   tokens of its full-text index, as the lexical lane and `highlights` already

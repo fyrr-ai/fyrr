@@ -187,6 +187,7 @@ pub async fn purge(config: &Config, source: &str, confirm: bool) -> Result<serde
                 head,
                 work,
                 Vec::new(),
+                Default::default(),
                 true,
                 Vec::new(),
                 false,

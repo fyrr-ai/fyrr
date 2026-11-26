@@ -887,12 +887,15 @@ async fn discovers_authorization_after_failed_cursor(operation: &str) {
             .await
             .unwrap()
             .unwrap();
-        assert!(
+        // A members envelope is found by the log; a permissions one only when a
+        // cursor confirmed it, and this cursor write failed.
+        assert_eq!(
             fyrr_writer::commit::pending(&loaded.config, &head)
                 .await
                 .unwrap()
                 .iter()
-                .any(|e| e.kind.is_authorization())
+                .any(|e| e.kind.is_authorization()),
+            kind == "members"
         );
         let after: fyrr_core::connector::CursorState =
             fyrr_reader::storage::read_contract(store.as_ref(), &cursor_path)
@@ -905,6 +908,17 @@ async fn discovers_authorization_after_failed_cursor(operation: &str) {
             command(&commit, &["writer", "maintain"]);
         }
         let config = reader_config(&worker, &root, "every");
+        if kind == "permissions" {
+            let mut reader = tools::Mcp::open(&config);
+            assert!(
+                readable(&fetch(&mut reader, "a")),
+                "an envelope no cursor confirmed is not applied"
+            );
+            drop(reader);
+            // The repeated read applies it.
+            worker_sync(&worker, &["incremental", "--kind", kind]);
+            publish(&commit);
+        }
         let mut reader = tools::Mcp::open(&config);
         assert!(
             !readable(&fetch(&mut reader, "a")),

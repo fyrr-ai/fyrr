@@ -17,7 +17,8 @@ Setting a deployment up (topology, images, scheduling) is in
 - `fyrr writer status` prints the serving `content_sequence`, envelope and
   pending-envelope counts, quarantined entries per reason, the directory's
   identity generation, the age of the last permission and member read per
-  source (`source_reads`; null for a read that never completed) and a `warnings` list with fixed codes (for example
+  source (`source_reads`; null for a read that never completed), the
+  [blocked sources](#blocked-sources) (`blocked_sources`) and a `warnings` list with fixed codes (for example
   `physical_purge_deadline_at_risk`). It never names documents or users.
 - `fyrr reader check` exits nonzero when the publication cannot be admitted;
   the HTTP server answers `/readyz`. A reader whose request scheduler fails
@@ -235,6 +236,39 @@ Retirement is final: every reader denies the source from its next version
 check on (`reader.version_check_interval`) and
 the [committer](architecture.md#terms) rejects its envelopes. Purge also removes its rows, envelopes
 and cursors; each step is idempotent, so an interrupted purge is run again.
+
+### Blocked sources
+
+The permission reads of a source form a chain: its cursor names the newest
+read, each envelope names the one before, and the publication names the
+newest one applied. An envelope that no cursor confirmed (a read that failed,
+or whose worker died before it wrote its cursor) is not on the chain and
+publishes nothing: the next read redoes it, with no operator.
+
+Cursor objects (`cursors/SOURCE_ID-permissions.json`) and envelopes
+(`envelopes/ID.json`) are internal: never delete, copy, edit or restore them
+by hand. When the chain from the cursor does not reach the one the publication
+applied (an envelope of it was deleted), or the cursor is missing while the log
+holds envelopes it chained, the committer blocks the source: none of its
+permissions, content or listings publish, so no revocation is skipped, and the
+other sources go on. `fyrr writer status` lists it in `blocked_sources`, and
+the committer logs `telemetry permissions=blocked source=SOURCE_ID`. A worker
+does not make a new cursor for a source whose cursor is missing: it fails the
+read with `permission_cursor_lost` and writes nothing, so the block holds
+however often it tries. Alert on a non-empty `blocked_sources`.
+
+The only recovery is to purge the source (`fyrr writer source purge SOURCE_ID
+--confirm`), which is final, and configure it again under a new source ID: it
+reads its content and rights from the start. Putting back an older copy of a
+cursor is not supported and is not detected: the reads after the copy are
+lost, so their rights changes, revocations included, are published only when
+the connector reports them again, and when a publication already carries one
+of them the source stays blocked until it is purged.
+
+An envelope in the log that does not parse is not isolated this way: `fyrr
+writer commit` and `fyrr writer status` fail with `publication_invalid` for
+every source until it is removed or put back
+([#370](https://github.com/fyrr-ai/fyrr/issues/370)).
 
 ## Upgrades
 

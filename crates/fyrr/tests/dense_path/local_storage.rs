@@ -335,13 +335,14 @@ async fn lifetime_history_keeps_maintenance_restore_and_receipts_available() {
         for id in 0..RECEIPTS_PER_PUBLICATION {
             let mut envelope = member.clone();
             envelope.sequence = 1_000_000 + offset * RECEIPTS_PER_PUBLICATION + id;
-            envelope.envelope_id = fyrr_core::envelope::envelope_id(
+            envelope.envelope_id = fyrr_core::envelope::leased_envelope_id(
                 &envelope.namespace,
                 &envelope.source_id,
                 envelope.kind,
                 envelope.sequence,
                 envelope.rejection_generation,
                 envelope.cursor.start.as_deref(),
+                envelope.lease_generation,
             );
             envelope.created_at = fyrr_core::clock::now() - chrono::Duration::days(4);
             envelope.validate().unwrap();

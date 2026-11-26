@@ -17,7 +17,7 @@
     "content_sequence": 41,
     "lance_version": 118
   },
-  "created_at": "2026-09-30T10:00:03Z",
+  "created_at": "2026-09-30T10:00:03.000000Z",
   "payload": {
     "type": "content",
     "embedding": {

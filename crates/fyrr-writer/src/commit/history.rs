@@ -141,6 +141,7 @@ impl RestoreHistory {
     pub(crate) async fn pending(
         &mut self,
         config: &Config,
+        head: &ServingHead,
         authorization: bool,
     ) -> Result<Vec<PreparedEnvelope>> {
         let (store, root) = namespace_store(config)?;
@@ -221,6 +222,11 @@ impl RestoreHistory {
                 pending.push(envelope);
             }
         }
+        let index = &self.index;
+        let mut pending = super::confirmed(config, head, pending, &|id: &str| -> Result<bool> {
+            Ok(index.contains(Evidence::Applied, id)? || index.contains(Evidence::Rejected, id)?)
+        })
+        .await?;
         pending.sort_by(|a, b| (&a.source_id, a.sequence).cmp(&(&b.source_id, b.sequence)));
         Ok(pending)
     }

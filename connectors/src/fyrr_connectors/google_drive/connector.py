@@ -469,7 +469,8 @@ class GoogleDrive(Connector[Settings, Scope]):
         feeds = self._open(sync_only=True)
         state = Cursor.decode(cursor)
         state.retain(feeds)
-        # Shared-drive membership first, so a revoke never waits behind files.
+        # Shared-drive membership first. The writer publishes the whole read at
+        # once, so a revoke waits for the read to complete.
         drives: dict[str, frozenset[str]] = {}
         grants = []
         for feed in feeds:

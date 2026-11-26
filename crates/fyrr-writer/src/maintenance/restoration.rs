@@ -138,7 +138,7 @@ pub(super) async fn cached_drain_authorization(
     history: &mut commit::RestoreHistory,
     snapshot: bool,
 ) -> Result<usize> {
-    let pending = history.pending(config, true).await?;
+    let pending = history.pending(config, &lease.head().await?, true).await?;
     if pending.is_empty() {
         return Ok(0);
     }
@@ -721,7 +721,11 @@ async fn publish_restored(
 
     // Authorization inputs arriving here are drained at the final boundary;
     // they must never be rejected as stale content and hide a queued revoke.
-    for envelope in attempt.history.pending(config, false).await? {
+    for envelope in attempt
+        .history
+        .pending(config, &attempt.head, false)
+        .await?
+    {
         if envelope.kind.is_authorization() {
             continue;
         }
@@ -755,6 +759,7 @@ async fn publish_restored(
         attempt.head,
         attempt.work,
         Vec::new(),
+        Default::default(),
         true,
         rewinds,
         false,
