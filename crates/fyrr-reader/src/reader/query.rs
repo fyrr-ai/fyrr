@@ -52,10 +52,10 @@ impl PreparedReader {
         );
         let (total, before, telemetry, _pin) = self.request_prologue().await?;
         // An unknown included attribute is refused even when nothing matches.
-        self.returned_columns(args.fields.as_ref())?;
-        crate::rerank::scored_column(self, args.rerank.as_ref())?;
-        crate::boost::check(self, args.boosts.as_deref())?;
-        crate::cap::check(self, args.caps.as_deref())?;
+        self.returned_columns(args.members.fields.as_ref())?;
+        crate::rerank::scored_column(self, args.members.rerank.as_ref())?;
+        crate::boost::check(self, args.members.boosts.as_deref())?;
+        crate::cap::check(self, args.members.caps.as_deref())?;
         let deadline = deadline.unwrap_or_else(|| {
             total
                 + std::time::Duration::from_millis(u64::from(
@@ -128,7 +128,7 @@ impl PreparedReader {
         mut telemetry: Telemetry,
         mut completion: Option<(&mut Option<DenseCompletion>, usize)>,
     ) -> Result<SearchOutput> {
-        if let Some(subs) = &args.sub_queries {
+        if let Some(subs) = &args.members.sub_queries {
             return self
                 .search_sub_queries(args, subs, embedding_deadline, telemetry)
                 .await;
@@ -140,8 +140,11 @@ impl PreparedReader {
         let present = self.present_vector(args.vector_attribute.as_deref(), args.has_text())?;
         self.apply_filters(args.filter_tree().as_ref(), present)
             .await?;
-        self.apply_contains(args.contains.as_deref(), args.phrase.as_ref())
-            .await?;
+        self.apply_contains(
+            args.members.contains.as_deref(),
+            args.members.phrase.as_ref(),
+        )
+        .await?;
         let text = self.text_match(args)?;
         let predicate = self.request_predicate()?;
         let lexical_predicate =
@@ -336,13 +339,13 @@ impl PreparedReader {
             cfg.max_documents,
         );
         // The answer holds the hits of every sub-query, or the fused documents.
-        let documents = if args.fusion.is_some() {
+        let documents = if args.members.fusion.is_some() {
             args.effective_limit() as usize
         } else {
             subs.iter().map(|sub| sub.limit as usize).sum()
         };
         // A sum of limits above what an answer may hold is refused, not cut.
-        if args.fusion.is_none() && documents > max_documents {
+        if args.members.fusion.is_none() && documents > max_documents {
             return Err(InvalidArgument);
         }
         for sub in subs {
@@ -442,7 +445,7 @@ impl PreparedReader {
                 }
             }
             let stage = Instant::now();
-            let depth = crate::rerank::configured(self, args.rerank.as_ref())
+            let depth = crate::rerank::configured(self, args.members.rerank.as_ref())
                 .map_or(limit, |rerank| limit.max(rerank.candidates));
             ranked.push(if sub.query.is_some() {
                 compose(
@@ -468,7 +471,11 @@ impl PreparedReader {
             vec![]
         };
         // Nothing to rerank against without text; a request may supply it.
-        let scored_text = args.rerank.as_ref().and_then(|r| r.query.as_deref());
+        let scored_text = args
+            .members
+            .rerank
+            .as_ref()
+            .and_then(|r| r.query.as_deref());
         let texts: Vec<&str> = subs
             .iter()
             .map(|sub| scored_text.or(sub.query.as_deref()).unwrap_or(""))
@@ -481,7 +488,7 @@ impl PreparedReader {
             self,
             &texts,
             &mut ranked,
-            args.rerank.as_ref(),
+            args.members.rerank.as_ref(),
             &mut telemetry,
         )
         .await?
@@ -507,8 +514,14 @@ impl PreparedReader {
             args.effective_limit() as usize,
             max_documents,
         );
-        self.hydrate_selected(selected, degraded, telemetry, None, args.fields.as_ref())
-            .await
+        self.hydrate_selected(
+            selected,
+            degraded,
+            telemetry,
+            None,
+            args.members.fields.as_ref(),
+        )
+        .await
     }
 
     async fn lexical_batch(
@@ -555,9 +568,12 @@ impl PreparedReader {
                     let mut ranked = Vec::with_capacity(results.len());
                     for result in &results {
                         let (rows, _, _) = result.as_ref().map_err(|code| *code)?;
-                        let bonus =
-                            crate::boost::bonuses(self, args.boosts.as_deref(), [&[], rows])
-                                .await?;
+                        let bonus = crate::boost::bonuses(
+                            self,
+                            args.members.boosts.as_deref(),
+                            [&[], rows],
+                        )
+                        .await?;
                         let selection = crate::cap::selection(self, args, [&[], rows]).await?;
                         ranked.push(compose(
                             Vec::new(),
@@ -577,7 +593,7 @@ impl PreparedReader {
                         args.text_hits
                             .filter(|_| args.order == Some(SearchOrder::UpdatedAt))
                             .map(|count| (count, output)),
-                        args.fields.as_ref(),
+                        args.members.fields.as_ref(),
                     )
                     .await
                 }
@@ -766,10 +782,11 @@ impl PreparedReader {
                     predicate.to_owned(),
                 ));
             }
-            let depth = crate::rerank::configured(self, args.rerank.as_ref())
+            let depth = crate::rerank::configured(self, args.members.rerank.as_ref())
                 .map_or(k, |rerank| k.max(rerank.candidates));
             let bonus =
-                crate::boost::bonuses(self, args.boosts.as_deref(), [&dense, &lexical]).await?;
+                crate::boost::bonuses(self, args.members.boosts.as_deref(), [&dense, &lexical])
+                    .await?;
             let selection = crate::cap::selection(self, args, [&dense, &lexical]).await?;
             let selected = if args.has_text() {
                 compose(
@@ -835,7 +852,7 @@ impl PreparedReader {
             // No native hydration or rerank preparation may run on a parked slot.
             // Optional reranking fails open to the prepared composition in this
             // contended deadline path; normal reranking retains its existing path.
-            if crate::rerank::configured(self, args.rerank.as_ref()).is_some()
+            if crate::rerank::configured(self, args.members.rerank.as_ref()).is_some()
                 && !result.hits.is_empty()
             {
                 degraded.push(Lane::Rerank);
@@ -846,7 +863,11 @@ impl PreparedReader {
         }
         drop(fallback);
         // Nothing to rerank against without text; a request may supply it.
-        let scored_text = args.rerank.as_ref().and_then(|r| r.query.as_deref());
+        let scored_text = args
+            .members
+            .rerank
+            .as_ref()
+            .and_then(|r| r.query.as_deref());
         let texts: Vec<&str> = queries
             .iter()
             .map(|query| scored_text.unwrap_or(query))
@@ -856,7 +877,7 @@ impl PreparedReader {
                 self,
                 &texts,
                 &mut ranked_queries,
-                args.rerank.as_ref(),
+                args.members.rerank.as_ref(),
                 &mut telemetry,
             )
             .await?
@@ -871,7 +892,7 @@ impl PreparedReader {
             args.text_hits
                 .filter(|_| args.order == Some(SearchOrder::UpdatedAt))
                 .map(|count| (count, output)),
-            args.fields.as_ref(),
+            args.members.fields.as_ref(),
         )
         .await
     }

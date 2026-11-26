@@ -1572,6 +1572,10 @@
         "tier": "quick",
         "seconds": 0.0
       },
+      "full:fyrr-core:test:mcp/query_members_split_off_the_arguments_of_the_search_tool": {
+        "tier": "quick",
+        "seconds": 0.001
+      },
       "full:fyrr-core:test:mcp/routing_telemetry_schema_accepts_only_bounded_outcomes": {
         "tier": "quick",
         "seconds": 0.004

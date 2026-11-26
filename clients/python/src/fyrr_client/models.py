@@ -21,7 +21,7 @@ class DeleteNamespaceRequest(TypedDict):
 
 class QueryRequest(TypedDict):
     """The body of `POST /v1/namespaces/{namespace}/query`: the arguments of the
-    `search` tool and twelve members that are no tool arguments.
+    `search` tool, `consistency` and eleven members that are no tool arguments.
     """
     query: NotRequired[str | None]
     """Query text, 1-4096 UTF-8 bytes. Omit only for a filter-only listing with order=updated_at or order_by."""

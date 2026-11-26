@@ -22,14 +22,6 @@ pub(crate) enum ToolCall {
     /// `GET /v1/namespaces/{namespace}`: no MCP tool, so `parse` never makes it.
     Report,
 }
-/// The members of a JSON `query` request that decide what a text matches:
-/// `query_match`, `query_attributes`, `phrase` and `contains`.
-type Matching = (
-    Option<fyrr_core::mcp::TermMatch>,
-    Option<Vec<fyrr_core::mcp::QueryAttribute>>,
-    Option<fyrr_core::mcp::Phrase>,
-    Option<Vec<fyrr_core::mcp::Contains>>,
-);
 
 impl ToolCall {
     pub(crate) fn parse(name: &str, args: Value) -> Result<Self> {
@@ -54,35 +46,11 @@ impl ToolCall {
     }
     /// The call of the JSON `query` route: the `search` arguments and the
     /// members that are no tool arguments, validated together.
-    pub(crate) fn query(
-        args: Value,
-        fields: Option<fyrr_core::mcp::ReturnFields>,
-        fusion: Option<fyrr_core::mcp::Fusion>,
-        rerank: Option<fyrr_core::mcp::RerankChoice>,
-        sub_queries: Option<Vec<fyrr_core::mcp::SubQuery>>,
-        matching: Matching,
-        ranking: (
-            Option<Vec<fyrr_core::mcp::Boost>>,
-            Option<bool>,
-            Option<Vec<fyrr_core::mcp::ValueCap>>,
-        ),
-    ) -> Result<Self> {
+    pub(crate) fn query(args: Value, members: fyrr_core::mcp::QueryMembers) -> Result<Self> {
         let mut search: SearchInput = serde_json::from_value(args).map_err(|_| InvalidArgument)?;
-        (
-            search.fields,
-            search.fusion,
-            search.rerank,
-            search.sub_queries,
-            (
-                search.query_match,
-                search.query_attributes,
-                search.phrase,
-                search.contains,
-            ),
-            (search.boosts, search.group_documents, search.caps),
-        ) = (fields, fusion, rerank, sub_queries, matching, ranking);
+        search.members = members;
         search.validate().map_err(|_| InvalidArgument)?;
-        if let Some(fields) = &search.fields {
+        if let Some(fields) = &search.members.fields {
             fields.validate().map_err(|_| InvalidArgument)?;
         }
         Ok(Self::Search(Box::new(search)))

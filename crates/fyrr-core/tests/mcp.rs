@@ -11,7 +11,7 @@ use fyrr_core::limits::mcp::{
 };
 use fyrr_core::mcp::{
     Comparison, ErrorCode, FetchInput, FetchOutput, Filter, ListFiltersInput, ListFiltersOutput,
-    MCP_CONTRACT_VERSION, META_SCHEMA_VERSION_KEY, Op, SearchInput, SearchOutput,
+    MCP_CONTRACT_VERSION, META_SCHEMA_VERSION_KEY, Op, QueryMembers, SearchInput, SearchOutput,
     TOOLS_LIST_MAX_BYTES, ToolError, tools_list,
 };
 use serde::Serialize;
@@ -49,6 +49,38 @@ fn truncation_is_optional_additive_and_has_bounded_numeric_counts() {
         value["truncated"]["text_dropped"] = invalid;
         assert!(!validator.is_valid(&value));
         assert!(serde_json::from_value::<SearchOutput>(value.clone()).is_err());
+    }
+}
+
+/// The route of the JSON `query` splits the members that are no tool arguments off
+/// the body, whichever they are, and leaves exactly the arguments of the tool.
+#[test]
+fn query_members_split_off_the_arguments_of_the_search_tool() {
+    let (members, rest) = QueryMembers::split(json!({
+        "query": "text",
+        "limit": 3,
+        "query_match": "all",
+        "group_documents": false,
+        "fusion": null,
+    }))
+    .expect("members decode");
+    assert_eq!(rest, json!({"query": "text", "limit": 3}));
+    assert_eq!(members.group_documents, Some(false));
+    assert!(members.query_match.is_some() && members.fusion.is_none());
+    assert!(serde_json::from_value::<SearchInput>(rest).is_ok());
+    // A member that does not decode is refused; a member of the tool is not one.
+    assert!(QueryMembers::split(json!({"query": "t", "query_match": "some"})).is_none());
+    assert!(QueryMembers::split(json!({"group_documents": "no"})).is_none());
+    let (members, rest) = QueryMembers::split(json!({"nope": 1})).expect("splits");
+    assert_eq!(members, QueryMembers::default());
+    // What is left is refused by the tool's own arguments, and so is a member of the
+    // route: the `search` tool takes none of them.
+    assert!(serde_json::from_value::<SearchInput>(rest).is_err());
+    for arguments in [
+        json!({"query": "t", "fusion": {"method": "rrf"}}),
+        json!({"query": "t", "members": {}}),
+    ] {
+        assert!(serde_json::from_value::<SearchInput>(arguments).is_err());
     }
 }
 

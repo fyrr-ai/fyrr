@@ -35,10 +35,10 @@ pub(crate) async fn selection(
     lanes: [&[Candidate]; 2],
 ) -> Result<Selection> {
     let mut selection = Selection {
-        records: args.group_documents == Some(false),
+        records: args.members.group_documents == Some(false),
         caps: Vec::new(),
     };
-    let Some(caps) = args.caps.as_deref() else {
+    let Some(caps) = args.members.caps.as_deref() else {
         return Ok(selection);
     };
     let row_ids: Vec<u64> = lanes
