@@ -2684,6 +2684,22 @@
         "tier": "full",
         "seconds": 20.0
       },
+      "full:fyrr:test:dense_path/incremental::incremental_idle_permission_reread_publishes_nothing_on_storage": {
+        "tier": "full",
+        "seconds": 20.0
+      },
+      "full:fyrr:test:dense_path/incremental::incremental_a_grant_removed_inside_one_read_publishes_the_removal_on_storage": {
+        "tier": "full",
+        "seconds": 20.0
+      },
+      "full:fyrr:test:dense_path/incremental::incremental_a_removal_after_cleanup_publishes_on_storage": {
+        "tier": "full",
+        "seconds": 20.0
+      },
+      "full:fyrr:test:dense_path/incremental::incremental_a_same_revision_restores_rights_narrowed_by_content_on_storage": {
+        "tier": "full",
+        "seconds": 20.0
+      },
       "full:fyrr:test:dense_path/incremental::incremental_connector_fields_are_typed_columns_on_storage": {
         "tier": "full",
         "seconds": 20.0

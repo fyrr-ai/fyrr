@@ -239,6 +239,24 @@ impl Preparation<'_> {
             // A permission read is held the same way: its roots are put as
             // parts, and the envelope that ends the read confirms them all.
             let mut permissions = crate::prepare::HeldPermissions::new(limits);
+            // A read that repeats the published rights writes nothing: only when
+            // nothing of the source waits to be published, so the published
+            // rows are what the committer applies the read to, and not when the
+            // read replaces a rejection, which it must end.
+            let mut repeats = match dataset {
+                Some(dataset)
+                    if self.kind == SyncKind::Permissions
+                        && !replaces_rejection
+                        && !pending.source_pending =>
+                {
+                    Some(self.rt.block_on(crate::prepare::PermissionRepeats::new(
+                        self.config,
+                        &self.source.id,
+                        dataset.clone(),
+                    ))?)
+                }
+                _ => None,
+            };
             let mut checker =
                 BatchChecker::new(&self.source.id, self.kind, limits, state.cursor.clone());
             let cursor = state.cursor.clone();
@@ -277,6 +295,14 @@ impl Preparation<'_> {
                         held.push(batch);
                         Ok(())
                     } else if self.kind == SyncKind::Permissions {
+                        let mut batch = batch;
+                        if let Some(repeats) = &mut repeats {
+                            self.rt.block_on(repeats.retain_changes(
+                                self.config,
+                                &self.source.id,
+                                &mut batch,
+                            ))?;
+                        }
                         permissions.push(self.config, &self.source.id, batch, state, base)?;
                         self.rt.block_on(crate::prepare::permission_parts(
                             self.config,

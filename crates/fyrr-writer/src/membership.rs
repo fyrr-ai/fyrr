@@ -602,3 +602,34 @@ pub(crate) async fn published_members_equal(
             published.groups.iter().collect(),
         ))
 }
+
+/// The container grants of `source` that the published identity holds, by
+/// container ID, their readers as tokens.
+pub(crate) async fn published_container_grants(
+    config: &Config,
+    source: &str,
+) -> Result<BTreeMap<String, fyrr_core::connector::ContainerGrant>> {
+    let Some(head) = fyrr_reader::storage::optional_head(config).await? else {
+        return Ok(BTreeMap::new());
+    };
+    let (store, root) = namespace_store(config)?;
+    let identity: IdentityArtifact =
+        fyrr_reader::storage::artifact(store.as_ref(), &root, &head.identity).await?;
+    let id = format!("permissions:{source}");
+    let Some(input) = identity.inputs.iter().find(|i| i.id == id) else {
+        return Ok(BTreeMap::new());
+    };
+    let snapshot: PreparedEnvelope = fyrr_reader::storage::read_contract(
+        store.as_ref(),
+        &object_store::path::Path::from(format!("{root}/{}", input.object)),
+    )
+    .await?;
+    let EnvelopePayload::Permissions(payload) = snapshot.payload else {
+        return Err(WriterError::PermissionSnapshotInvalid);
+    };
+    Ok(payload
+        .container_grants
+        .into_iter()
+        .map(|grant| (grant.container_id.clone(), grant))
+        .collect())
+}
