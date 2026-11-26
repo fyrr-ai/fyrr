@@ -478,7 +478,7 @@
       },
       "QueryRequest": {
         "type": "object",
-        "description": "The body of `POST /v1/namespaces/{namespace}/query`: the arguments of the\n`search` tool and twelve members that are no tool arguments.",
+        "description": "The body of `POST /v1/namespaces/{namespace}/query`: the arguments of the\n`search` tool, `consistency` and the [`QueryMembers`], which are no tool arguments.",
         "properties": {
           "query": {
             "type": [

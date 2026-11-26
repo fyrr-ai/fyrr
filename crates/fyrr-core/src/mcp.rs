@@ -151,39 +151,60 @@ pub struct SearchInput {
     /// Deadline in milliseconds; default 10000.
     #[schemars(range(min = 1, max = 300_000))]
     pub deadline_ms: Option<u32>,
-    /// Set by the HTTP query route from its `fields` member; no tool argument.
+    /// The members of the HTTP `query` route that are no tool arguments; set by that route.
     #[serde(skip)]
+    #[schemars(skip)]
+    pub members: QueryMembers,
+}
+
+/// The members of the JSON `query` request that are no `search` tool arguments,
+/// declared once: the schema of the route flattens them next to `SearchInput`, and
+/// the route splits them off the body with [`QueryMembers::split`].
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize, JsonSchema)]
+pub struct QueryMembers {
+    /// What a hit returns besides its document fields.
     pub fields: Option<ReturnFields>,
-    /// Set by the HTTP query route from its `fusion` member; no tool argument.
-    #[serde(skip)]
+    /// With `queries`: one ranking of all sub-queries instead of their round-robin merge.
     pub fusion: Option<Fusion>,
-    /// Set by the HTTP query route from its `rerank` member; no tool argument.
-    #[serde(skip)]
+    /// Switches the configured reranker off, or names what it scores.
     pub rerank: Option<RerankChoice>,
-    /// Set by the HTTP query route from its `query_match` member; no tool argument.
-    #[serde(skip)]
-    pub query_match: Option<TermMatch>,
-    /// Set by the HTTP query route from its `contains` member; no tool argument.
-    #[serde(skip)]
-    pub contains: Option<Vec<Contains>>,
-    /// Set by the HTTP query route from its `query_attributes` member; no tool argument.
-    #[serde(skip)]
-    pub query_attributes: Option<Vec<QueryAttribute>>,
-    /// Set by the HTTP query route from its `phrase` member; no tool argument.
-    #[serde(skip)]
-    pub phrase: Option<Phrase>,
-    /// Set by the HTTP query route from its `sub_queries` member; no tool argument.
-    #[serde(skip)]
+    /// 1-16 searches of their own, each with its filter, ranking and limit, instead of `query`, `queries` and `vector`.
     pub sub_queries: Option<Vec<SubQuery>>,
-    /// Set by the HTTP query route from its `boosts` member; no tool argument.
-    #[serde(skip)]
+    /// With `query`: `all` ranks only the documents that hold every term; default `any`.
+    pub query_match: Option<TermMatch>,
+    /// With `query` or `queries`: 1-8 attributes with a full-text index that the text ranking scores, each with a weight; default `searchable_text`. A string array attribute stands alone.
+    #[schemars(length(min = 1, max = 8))]
+    pub query_attributes: Option<Vec<QueryAttribute>>,
+    /// With `query`, `queries` or a vector ranking: the tokens of `text` occur in the document next to one another in this order; also required of a hit, like `filter`. Needs `fts_positions`. Not with a listing or `sub_queries`.
+    pub phrase: Option<Phrase>,
+    /// Conditions on full-text attributes, each also required of a hit, like `filter`. Not with a listing.
+    #[schemars(length(min = 1, max = 16))]
+    pub contains: Option<Vec<Contains>>,
+    /// 1-8 terms added to the relevance score of a text or vector ranking: a weight times a function of an attribute. Not with a listing, `sub_queries` or `fusion`.
+    #[schemars(length(min = 1, max = 8))]
     pub boosts: Option<Vec<Boost>>,
-    /// Set by the HTTP query route from its `group_documents` member; no tool argument.
-    #[serde(skip)]
+    /// `false` returns every matching record, not the best one of each document; default `true`. Not with a listing, `queries` or `sub_queries`.
     pub group_documents: Option<bool>,
-    /// Set by the HTTP query route from its `caps` member; no tool argument.
-    #[serde(skip)]
+    /// 1-4 caps of at most `max` hits per value of an attribute; the total `limit` still applies. Not with a listing, `queries` or `sub_queries`.
+    #[schemars(length(min = 1, max = 4))]
     pub caps: Option<Vec<ValueCap>>,
+}
+
+impl QueryMembers {
+    /// Splits the members off the arguments of a JSON `query` request: the members,
+    /// and the arguments of the `search` tool that are left. `None` when a member does
+    /// not decode.
+    pub fn split(arguments: serde_json::Value) -> Option<(Self, serde_json::Value)> {
+        #[derive(Deserialize)]
+        struct Split {
+            #[serde(flatten)]
+            members: QueryMembers,
+            #[serde(flatten)]
+            rest: serde_json::Map<String, serde_json::Value>,
+        }
+        let split: Split = serde_json::from_value(arguments).ok()?;
+        Some((split.members, serde_json::Value::Object(split.rest)))
+    }
 }
 
 /// The `query_match` member of a JSON `query` request: whether a document
@@ -1398,7 +1419,7 @@ impl SearchInput {
     }
     /// Whether the request searches by query text or by sub-queries, not by a vector alone or as a listing.
     pub fn has_text(&self) -> bool {
-        self.query.is_some() || self.queries.is_some() || self.sub_queries.is_some()
+        self.query.is_some() || self.queries.is_some() || self.members.sub_queries.is_some()
     }
     /// The filter tree of one sub-query: the request's and the sub-query's own,
     /// joined by `and`.
@@ -1411,12 +1432,13 @@ impl SearchInput {
         }
     }
     pub fn effective_limit(&self) -> u32 {
-        self.limit
-            .unwrap_or(if self.queries.is_some() || self.sub_queries.is_some() {
+        self.limit.unwrap_or(
+            if self.queries.is_some() || self.members.sub_queries.is_some() {
                 MULTI_QUERY_LIMIT
             } else {
                 DEFAULT_SEARCH_LIMIT
-            })
+            },
+        )
     }
     pub fn validate(&self) -> Result<(), &'static str> {
         let listing = !self.has_text() && !self.has_dense();
@@ -1439,7 +1461,7 @@ impl SearchInput {
                         .iter()
                         .all(|q| bounded_text(q, MAX_QUERY_BYTES) && !q.trim().is_empty())
             })
-            && self.sub_queries.as_ref().is_none_or(|subs| {
+            && self.members.sub_queries.as_ref().is_none_or(|subs| {
                 self.query.is_none()
                     && self.queries.is_none()
                     && !self.has_dense()
@@ -1450,7 +1472,7 @@ impl SearchInput {
                     && (1..=MAX_QUERIES).contains(&subs.len())
                     && subs.iter().all(SubQuery::valid)
                     // The request's limit sizes the fused answer, and only that.
-                    && (self.fusion.is_some() || self.limit.is_none())
+                    && (self.members.fusion.is_some() || self.limit.is_none())
             })
             && (self.has_text()
                 || self.has_dense()
@@ -1472,12 +1494,12 @@ impl SearchInput {
                     && keys.iter().all(|key| bounded_text(&key.field, 128))
             })
             && (self.queries.is_none() || self.limit.is_none_or(|v| v <= MULTI_QUERY_LIMIT))
-            && self.fusion.as_ref().is_none_or(|fusion| {
+            && self.members.fusion.as_ref().is_none_or(|fusion| {
                 let lists = self
                     .queries
                     .as_ref()
                     .map(Vec::len)
-                    .or(self.sub_queries.as_ref().map(Vec::len));
+                    .or(self.members.sub_queries.as_ref().map(Vec::len));
                 lists.is_some_and(|lists| {
                     fusion.rank_constant != Some(0)
                         && fusion.weights.as_ref().is_none_or(|weights| {
@@ -1488,44 +1510,44 @@ impl SearchInput {
                         })
                 })
             })
-            && self.rerank.as_ref().is_none_or(|r| r.validate().is_ok())
+            && self.members.rerank.as_ref().is_none_or(|r| r.validate().is_ok())
             // A sub-query has its own filter and ranking, which these do not reach.
-            && self.query_match.is_none_or(|_| self.has_text() && self.sub_queries.is_none())
-            && self.query_attributes.as_ref().is_none_or(|attributes| {
+            && self.members.query_match.is_none_or(|_| self.has_text() && self.members.sub_queries.is_none())
+            && self.members.query_attributes.as_ref().is_none_or(|attributes| {
                 // Only a text ranking has attributes to score, and a sub-query has its own.
                 self.has_text()
-                    && self.sub_queries.is_none()
+                    && self.members.sub_queries.is_none()
                     && (1..=MAX_QUERY_ATTRIBUTES).contains(&attributes.len())
                     && attributes.iter().enumerate().all(|(i, a)| {
                         a.is_valid() && attributes[..i].iter().all(|b| b.attribute != a.attribute)
                     })
             })
-            && self.phrase.as_ref().is_none_or(|phrase| {
+            && self.members.phrase.as_ref().is_none_or(|phrase| {
                 // A listing has no ranking to narrow, and a sub-query has its own filter.
-                !listing && self.sub_queries.is_none() && phrase.is_valid()
+                !listing && self.members.sub_queries.is_none() && phrase.is_valid()
             })
-            && self.contains.as_ref().is_none_or(|conditions| {
+            && self.members.contains.as_ref().is_none_or(|conditions| {
                 // A listing has no ranking to narrow, and it reads by predicate.
                 !listing
-                    && self.sub_queries.is_none()
+                    && self.members.sub_queries.is_none()
                     && (1..=MAX_CONTAINS).contains(&conditions.len())
                     && conditions.iter().all(Contains::is_valid)
             })
-            && self.boosts.as_ref().is_none_or(|boosts| {
+            && self.members.boosts.as_ref().is_none_or(|boosts| {
                 // A listing has no ranking to boost, a sub-query has its own, and
                 // a fusion of `queries` ranks by position in each list, not by score.
                 !listing
-                    && self.sub_queries.is_none()
-                    && self.fusion.is_none()
+                    && self.members.sub_queries.is_none()
+                    && self.members.fusion.is_none()
                     && (1..=MAX_BOOSTS).contains(&boosts.len())
                     && boosts.iter().all(Boost::is_valid)
             })
             // A listing has no ranking to select from, and `queries` and
             // `sub_queries` merge several of them: a cap or a record per hit would
             // count over the merge or over each list. Grouping on is the default.
-            && (self.group_documents != Some(false) && self.caps.is_none()
-                || !listing && self.queries.is_none() && self.sub_queries.is_none())
-            && self.caps.as_ref().is_none_or(|caps| {
+            && (self.members.group_documents != Some(false) && self.members.caps.is_none()
+                || !listing && self.queries.is_none() && self.members.sub_queries.is_none())
+            && self.members.caps.as_ref().is_none_or(|caps| {
                 (1..=MAX_CAPS).contains(&caps.len())
                     && caps.iter().enumerate().all(|(i, cap)| {
                         bounded_text(&cap.attribute, 128)
@@ -1535,7 +1557,7 @@ impl SearchInput {
             })
             && self.text_hits.is_none_or(|v| {
                 self.output != Some(OutputMode::Metadata)
-                    && (v <= self.effective_limit() || self.sub_queries.is_some())
+                    && (v <= self.effective_limit() || self.members.sub_queries.is_some())
             })
             && self.excerpt_chars.is_none_or(|v| {
                 (1..=EXCERPT_CODEPOINTS).contains(&v)

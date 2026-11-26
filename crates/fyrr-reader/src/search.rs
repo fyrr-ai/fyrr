@@ -119,7 +119,7 @@ fn select_hits<'q>(
     let hit = |query_index: usize, rank: usize, k: usize, candidate: Candidate| SelectedHit {
         candidate,
         query: queries[query_index],
-        query_index: (args.queries.is_some() || args.sub_queries.is_some()).then(|| {
+        query_index: (args.queries.is_some() || args.members.sub_queries.is_some()).then(|| {
             let Ok(index) = u32::try_from(query_index) else {
                 unreachable!("validated query batch index");
             };
@@ -134,7 +134,7 @@ fn select_hits<'q>(
             .excerpt_chars
             .unwrap_or(fyrr_core::limits::mcp::EXCERPT_CODEPOINTS),
     };
-    if let Some(fusion) = &args.fusion {
+    if let Some(fusion) = &args.members.fusion {
         return reciprocal_rank_fusion(ranked, fusion)
             .into_iter()
             .take(k.min(max_documents))
@@ -148,6 +148,7 @@ fn select_hits<'q>(
         .map(|(query_index, mut rows)| {
             // A sub-query is cut at its own limit.
             let k = args
+                .members
                 .sub_queries
                 .as_ref()
                 .map_or(k, |subs| subs[query_index].limit as usize);
@@ -158,7 +159,7 @@ fn select_hits<'q>(
                 .collect()
         })
         .collect();
-    if args.sub_queries.is_some() || args.group_documents == Some(false) {
+    if args.members.sub_queries.is_some() || args.members.group_documents == Some(false) {
         // Each sub-query keeps its own hits, in request order; so does the one
         // query that asks for every record, which `interleave` would take
         // once for each document.

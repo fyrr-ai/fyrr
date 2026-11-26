@@ -566,7 +566,7 @@ impl PreparedReader {
             vec![],
             telemetry,
             None,
-            args.fields.as_ref(),
+            args.members.fields.as_ref(),
         )
         .await
     }

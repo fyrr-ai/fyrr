@@ -72,7 +72,7 @@ impl PreparedReader {
     /// (the pin test records it); lift it when a newer Lance does.
     pub(super) fn text_match(&self, args: &SearchInput) -> Result<TextMatch> {
         let mut attributes = Vec::new();
-        for named in args.query_attributes.iter().flatten() {
+        for named in args.members.query_attributes.iter().flatten() {
             if named.attribute != TextMatch::TEXT {
                 self.check_full_text(&named.attribute)?;
             }
@@ -91,7 +91,7 @@ impl PreparedReader {
             return Err(InvalidArgument);
         }
         Ok(TextMatch {
-            all_terms: args.query_match == Some(TermMatch::All),
+            all_terms: args.members.query_match == Some(TermMatch::All),
             attributes,
         })
     }

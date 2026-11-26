@@ -475,20 +475,6 @@ fn strong_read(arguments: &mut serde_json::Value) -> Result<bool, ReaderError> {
     }
 }
 
-/// Takes `name` off the arguments of a JSON `query` call, where it is no
-/// argument of the tool: `fields`, `fusion`, `rerank`, `sub_queries`, `query_match`,
-/// `query_attributes`, `phrase`, `contains`, `boosts`, `group_documents` or `caps`.
-fn query_member<T: serde::de::DeserializeOwned>(
-    arguments: &mut serde_json::Value,
-    name: &str,
-) -> Result<Option<T>, ReaderError> {
-    arguments
-        .as_object_mut()
-        .and_then(|arguments| arguments.remove(name))
-        .map(|member| serde_json::from_value(member).map_err(|_| InvalidArgument))
-        .transpose()
-}
-
 /// What a request asks of its caller: the roles its route accepts, one of which
 /// the caller needs, and, for a route that names one, the namespace.
 struct Needs<'a> {
@@ -631,27 +617,10 @@ async fn boundary_inner(state: HttpState, mut request: Request, next: Next) -> R
                         "aggregate" => crate::serve::ToolCall::aggregate(arguments),
                         "recall" => crate::serve::ToolCall::recall(arguments),
                         "search" => {
-                            let fields = query_member(&mut arguments, "fields")?;
-                            let fusion = query_member(&mut arguments, "fusion")?;
-                            let rerank = query_member(&mut arguments, "rerank")?;
-                            let sub_queries = query_member(&mut arguments, "sub_queries")?;
-                            let query_match = query_member(&mut arguments, "query_match")?;
-                            let query_attributes =
-                                query_member(&mut arguments, "query_attributes")?;
-                            let phrase = query_member(&mut arguments, "phrase")?;
-                            let contains = query_member(&mut arguments, "contains")?;
-                            let boosts = query_member(&mut arguments, "boosts")?;
-                            let group_documents = query_member(&mut arguments, "group_documents")?;
-                            let caps = query_member(&mut arguments, "caps")?;
-                            crate::serve::ToolCall::query(
-                                arguments,
-                                fields,
-                                fusion,
-                                rerank,
-                                sub_queries,
-                                (query_match, query_attributes, phrase, contains),
-                                (boosts, group_documents, caps),
-                            )
+                            let (members, arguments) =
+                                fyrr_core::mcp::QueryMembers::split(arguments)
+                                    .ok_or(InvalidArgument)?;
+                            crate::serve::ToolCall::query(arguments, members)
                         }
                         _ => crate::serve::ToolCall::parse(name, arguments),
                     }

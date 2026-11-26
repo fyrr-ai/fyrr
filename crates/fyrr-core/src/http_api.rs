@@ -11,10 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::attributes::AttributeSchema;
-use crate::mcp::{
-    AggregateInput, Boost, Contains, FetchInput, Filter, Fusion, Phrase, QueryAttribute,
-    RecallInput, RerankChoice, ReturnFields, SearchInput, SubQuery, TermMatch, ValueCap,
-};
+use crate::mcp::{AggregateInput, FetchInput, Filter, QueryMembers, RecallInput, SearchInput};
 use crate::publication::NamespaceSettings;
 
 /// How current the version is that a `query` or `fetch` answer is read from.
@@ -28,39 +25,15 @@ pub enum Consistency {
 }
 
 /// The body of `POST /v1/namespaces/{namespace}/query`: the arguments of the
-/// `search` tool and twelve members that are no tool arguments.
+/// `search` tool, `consistency` and the [`QueryMembers`], which are no tool arguments.
 #[derive(Debug, Clone, PartialEq, JsonSchema)]
 pub struct QueryRequest {
     #[schemars(flatten)]
     pub search: SearchInput,
     /// Defaults to `cached`.
     pub consistency: Option<Consistency>,
-    /// What a hit returns besides its document fields.
-    pub fields: Option<ReturnFields>,
-    /// With `queries`: one ranking of all sub-queries instead of their round-robin merge.
-    pub fusion: Option<Fusion>,
-    /// Switches the configured reranker off, or names what it scores.
-    pub rerank: Option<RerankChoice>,
-    /// 1-16 searches of their own, each with its filter, ranking and limit, instead of `query`, `queries` and `vector`.
-    pub sub_queries: Option<Vec<SubQuery>>,
-    /// With `query`: `all` ranks only the documents that hold every term; default `any`.
-    pub query_match: Option<TermMatch>,
-    /// With `query` or `queries`: 1-8 attributes with a full-text index that the text ranking scores, each with a weight; default `searchable_text`. A string array attribute stands alone.
-    #[schemars(length(min = 1, max = 8))]
-    pub query_attributes: Option<Vec<QueryAttribute>>,
-    /// With `query`, `queries` or a vector ranking: the tokens of `text` occur in the document next to one another in this order; also required of a hit, like `filter`. Needs `fts_positions`. Not with a listing or `sub_queries`.
-    pub phrase: Option<Phrase>,
-    /// Conditions on full-text attributes, each also required of a hit, like `filter`. Not with a listing.
-    #[schemars(length(min = 1, max = 16))]
-    pub contains: Option<Vec<Contains>>,
-    /// 1-8 terms added to the relevance score of a text or vector ranking: a weight times a function of an attribute. Not with a listing, `sub_queries` or `fusion`.
-    #[schemars(length(min = 1, max = 8))]
-    pub boosts: Option<Vec<Boost>>,
-    /// `false` returns every matching record, not the best one of each document; default `true`. Not with a listing, `queries` or `sub_queries`.
-    pub group_documents: Option<bool>,
-    /// 1-4 caps of at most `max` hits per value of an attribute; the total `limit` still applies. Not with a listing, `queries` or `sub_queries`.
-    #[schemars(length(min = 1, max = 4))]
-    pub caps: Option<Vec<ValueCap>>,
+    #[schemars(flatten)]
+    pub members: QueryMembers,
 }
 
 /// The body of `POST /v1/namespaces/{namespace}/fetch`: the arguments of the
