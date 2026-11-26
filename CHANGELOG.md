@@ -12,8 +12,9 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 - An explicit `null` for a member of a JSON `query` request that is no tool
   argument (`fields`, `fusion`, `rerank`, `sub_queries`, `query_match`,
   `query_attributes`, `phrase`, `contains`, `boosts`, `group_documents`,
-  `caps`), and for `consistency` on `query`, `fetch` and `aggregate`, now means
-  the default instead of `400 invalid_argument`, as the OpenAPI schema says.
+  `caps`), and for `consistency` on `query`, `fetch`, `aggregate` and `recall`,
+  now means the default instead of `400 invalid_argument`, as the OpenAPI schema
+  says. A required member that is `null` is still refused.
 - Each stored contract has one major, whatever a document holds. v0.2.0
   writes and reads content manifest 5.0, policy artifact 4.0, prepared
   envelope and envelope rejection 6.0, and serving head, envelope checkpoint

@@ -202,7 +202,8 @@ curl -H "Authorization: Bearer $FYRR_KEY" \
 
 `query`, `fetch` and `aggregate` take one more member besides the arguments of the tool,
 `consistency`. It is no argument of the tool and `/mcp` has no such member. As for
-every member of these routes, `null` means the default.
+every optional member at the top level of these routes, `null` means the default; a
+member that is required stays required.
 
 | Value | Answer |
 | --- | --- |
