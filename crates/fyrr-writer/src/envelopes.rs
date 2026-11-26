@@ -126,14 +126,20 @@ struct StatusLink {
     lease_generation: u64,
 }
 
-impl From<PreparedEnvelope> for StatusLink {
-    fn from(envelope: PreparedEnvelope) -> Self {
+impl From<&PreparedEnvelope> for StatusLink {
+    fn from(envelope: &PreparedEnvelope) -> Self {
         Self {
-            id: envelope.envelope_id,
-            source_id: envelope.source_id,
-            previous: envelope.previous,
+            id: envelope.envelope_id.clone(),
+            source_id: envelope.source_id.clone(),
+            previous: envelope.previous.clone(),
             lease_generation: envelope.lease_generation,
         }
+    }
+}
+
+impl From<PreparedEnvelope> for StatusLink {
+    fn from(envelope: PreparedEnvelope) -> Self {
+        Self::from(&envelope)
     }
 }
 
@@ -210,15 +216,8 @@ pub async fn status(config: &Config) -> Result<serde_json::Value> {
                 // One of another namespace is read again by the walk, which
                 // refuses it, as the committer does.
                 if envelope.namespace == config.namespace.name {
-                    permissions.insert(
-                        envelope.envelope_id.clone(),
-                        StatusLink {
-                            id: envelope.envelope_id.clone(),
-                            source_id: envelope.source_id.clone(),
-                            previous: envelope.previous.clone(),
-                            lease_generation: envelope.lease_generation,
-                        },
-                    );
+                    let body: &PreparedEnvelope = &envelope;
+                    permissions.insert(envelope.envelope_id.clone(), StatusLink::from(body));
                 }
             } else if envelope.kind == SyncKind::Members {
                 pending += 1;

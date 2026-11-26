@@ -294,36 +294,36 @@ pub(crate) async fn walk<L: Link>(
     Ok(Some(found))
 }
 
-/// Whether the permissions of `source` have a chain that its cursor confirms:
-/// a publication applied some, or a chained envelope of it waits. A missing
-/// cursor of such a source is lost, not new, and is not made again.
-pub(crate) async fn chain_left(config: &Config, source: &str) -> Result<bool> {
+/// What the log holds of the permissions of `source`, for a cursor that is
+/// not there: whether a chain is left that its cursor confirmed (a publication
+/// applied some of it, or a chained envelope of it waits), and the highest
+/// lease generation of its envelopes. A missing cursor of a source with a
+/// chain left is lost, not new, and is not made again; a new one takes a
+/// generation above every one in the log, so that its envelopes are never
+/// those of an older worker.
+pub(crate) async fn permission_log(config: &Config, source: &str) -> Result<(bool, u64)> {
     let Some(head) = fyrr_reader::storage::optional_head(config).await? else {
-        return Ok(false);
+        return Ok((false, 0));
     };
     let (store, root) = namespace_store(config)?;
-    if previous_manifest(store.as_ref(), &root, &head)
+    let applied = previous_manifest(store.as_ref(), &root, &head)
         .await?
-        .is_some_and(|m| m.authorization_applied.contains_key(source))
-    {
-        return Ok(true);
-    }
+        .is_some_and(|m| m.authorization_applied.contains_key(source));
     let (paths, resolved) = envelope_paths(config, &head).await?;
-    let paths: Vec<_> = paths
-        .into_iter()
-        .filter(|path| {
-            !path
+    let mut left = applied;
+    let mut generation = 0;
+    for (path, envelope) in read_envelopes(config, &paths).await? {
+        if envelope.source_id != source || envelope.kind != SyncKind::Permissions {
+            continue;
+        }
+        generation = generation.max(envelope.lease_generation);
+        left |= envelope.lease_generation > 0
+            && !path
                 .filename()
                 .and_then(|n| n.strip_suffix(".json"))
-                .is_some_and(|id| resolved.contains(id))
-        })
-        .collect();
-    Ok(read_envelopes(config, &paths)
-        .await?
-        .into_iter()
-        .any(|(_, e)| {
-            e.source_id == source && e.kind == SyncKind::Permissions && e.lease_generation > 0
-        }))
+                .is_some_and(|id| resolved.contains(id));
+    }
+    Ok((left, generation))
 }
 
 pub async fn envelope_paths(

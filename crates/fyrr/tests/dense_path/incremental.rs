@@ -2976,6 +2976,49 @@ async fn incremental_a_restore_after_a_confirmed_split_read_keeps_the_chain_on_s
     assert_eq!(rights(&rows(&worker).await), (granted.clone(), granted));
 }
 
+/// A new cursor follows every lease generation of the log: after the cursor of
+/// a source whose read was rejected is gone, with no chain left to confirm, a
+/// read again takes a generation above the old one, so its envelopes are never
+/// those of the old chain, and is put.
+#[tokio::test]
+#[ignore = "real CLI and local storage; scripts/ci"]
+async fn incremental_a_new_cursor_follows_the_lease_generations_of_the_log_on_storage() {
+    let (worker, commit, root) = fixture_host(768, false);
+    drop_other_sources(&worker).await;
+    input(
+        &root,
+        json!({"epoch":1,"permissions":[[{"id":"a","revision":"p1","readers":["grp:group"]},{"id":"b","revision":"p1","readers":["grp:group"]}]]}),
+    );
+    worker_sync(&worker, &["incremental", "--kind", "permissions"]);
+    let old = cursor_of(&worker, SyncKind::Permissions).await;
+    let old_generation = old.lease.as_ref().unwrap().epoch;
+    let text = std::fs::read_to_string(&commit).unwrap().replace(
+        "[reader]",
+        "[writer]\nenvelope_max_rows=1\n[writer.commit]\ngroup_max_rows=1\n[reader]",
+    );
+    std::fs::write(&commit, text).unwrap();
+    publish(&commit);
+    let old_last = old.last.unwrap();
+    assert!(
+        resolved(&commit, &old_last.id).await.1,
+        "the read is rejected"
+    );
+    let loaded = fyrr_core::config::load(&worker).unwrap();
+    let (store, ns) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
+    store
+        .delete(&ns.join("cursors").join("incremental-permissions.json"))
+        .await
+        .unwrap();
+    worker_sync(&worker, &["incremental", "--kind", "permissions"]);
+    let new = cursor_of(&worker, SyncKind::Permissions).await;
+    assert!(
+        new.lease.as_ref().unwrap().epoch > old_generation,
+        "{} after {old_generation}",
+        new.lease.as_ref().unwrap().epoch
+    );
+    assert_ne!(new.last.unwrap().id, old_last.id);
+}
+
 /// A copy has no chain and nothing applied: its sources read again from the start.
 #[tokio::test]
 #[ignore = "real CLI and local storage; scripts/ci"]

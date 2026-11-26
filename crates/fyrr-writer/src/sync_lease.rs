@@ -115,10 +115,19 @@ impl CursorLease {
                 // A permissions cursor that is gone while its chain is left is
                 // lost: a new one would confirm a chain without it. The source
                 // stays blocked until the cursor is put back or it is purged.
-                None if kind == SyncKind::Permissions
-                    && crate::commit::chain_left(config, source).await? =>
-                {
-                    return Err(WriterError::PermissionCursorLost);
+                // A new one follows every lease generation of the log.
+                None if kind == SyncKind::Permissions => {
+                    let (left, generation) = crate::commit::permission_log(config, source).await?;
+                    if left {
+                        return Err(WriterError::PermissionCursorLost);
+                    }
+                    let mut state = crate::prepare::initial_cursor(config, source, kind);
+                    state.lease = (generation > 0).then(|| fyrr_core::publication::Lease {
+                        holder: String::new(),
+                        epoch: generation,
+                        expires_at: chrono::DateTime::UNIX_EPOCH,
+                    });
+                    (state, PutMode::Create)
                 }
                 None => (
                     crate::prepare::initial_cursor(config, source, kind),
