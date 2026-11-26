@@ -1720,6 +1720,20 @@ async fn identity_http_authentication_isolation_rate_limits_drain_and_refresh_on
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "local storage, native request failure and HTTP readiness"]
 async fn tools_failed_scheduler_refuses_readiness_on_storage() {
+    scheduler_test("http::scheduler_tests::readiness_refuses_failed_scheduler_on_storage").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "local storage and a first admission held past the deadline"]
+async fn tools_first_admission_past_the_deadline_answers_deadline_exceeded_on_storage() {
+    scheduler_test(
+        "http::scheduler_tests::a_first_admission_past_the_deadline_answers_deadline_exceeded_on_storage",
+    )
+    .await;
+}
+
+/// Runs the reader's scheduler test `name` on a published fixture, as an OIDC subject.
+async fn scheduler_test(name: &str) {
     let (_, issuer_root) = setup();
     let issuer = Issuer::new(&issuer_root).await;
     let (_, config, root, _) = fixture(&issuer).await;
@@ -1732,12 +1746,7 @@ async fn tools_failed_scheduler_refuses_readiness_on_storage() {
     let subject =
         fyrr_writer::directory::subject_key(&loaded.config, &issuer.url, "subject-0").unwrap();
     let output = Command::new(std::env::var_os("FYRR_ROUTING_TEST_BINARY").unwrap())
-        .args([
-            "http::scheduler_tests::readiness_refuses_failed_scheduler_on_storage",
-            "--exact",
-            "--ignored",
-            "--nocapture",
-        ])
+        .args([name, "--exact", "--ignored", "--nocapture"])
         .env("FYRR_TEST_EMBED_CONFIG", &config)
         .env("FYRR_TEST_SCHEDULER_SUBJECT", subject)
         .output()

@@ -97,6 +97,7 @@ pub(super) async fn execute(
         Err(DeadlineExceeded)
     } else {
         reader.mirror.start_request();
+        let granted = grant(&reader);
         let work = async {
             #[cfg(test)]
             reader.test_hooks.native_work.wait_once().await;
@@ -131,7 +132,7 @@ pub(super) async fn execute(
             }
         };
         let result = bounded(&context, work).await;
-        settle(&mut reader, result).await
+        settle(&mut reader, granted, result).await
     };
     let outcome = if job
         .subject

@@ -130,3 +130,85 @@ async fn readiness_refuses_failed_scheduler_on_storage() {
     );
     server.abort();
 }
+
+/// The first request of a valid subject whose permission computation outlasts
+/// the deadline answers `deadline_exceeded`: its admission never finished, but
+/// the rights it started under did not change. The next request binds again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "real publication and a held first admission past the deadline"]
+async fn a_first_admission_past_the_deadline_answers_deadline_exceeded_on_storage() {
+    let path = std::env::var_os("FYRR_TEST_EMBED_CONFIG").expect("publication fixture config");
+    let mut config = fyrr_core::config::load(std::path::Path::new(&path))
+        .unwrap()
+        .config;
+    config.reader.concurrency = 1;
+    config.embedding.reader_live = false;
+    let reader = crate::search::PreparedReader::open(&config).await.unwrap();
+    let hooks = reader.test_hooks.clone();
+    let subject = crate::auth::AuthenticatedSubject {
+        key: std::env::var("FYRR_TEST_SCHEDULER_SUBJECT").unwrap(),
+        identity: Some(reader.head.identity.clone()),
+        api_key: None,
+        expires: fyrr_core::clock::now().timestamp() + 600,
+    };
+    let service = crate::serve::start(reader).await.unwrap();
+    let search = |deadline_ms: Option<u32>| {
+        crate::serve::ToolCall::Search(Box::new(
+            serde_json::from_value(json!({
+                "query":"exactneedle", "limit":1, "output":"metadata", "deadline_ms": deadline_ms
+            }))
+            .unwrap(),
+        ))
+    };
+    // The admission scan is held, and never released, past the deadline.
+    hooks
+        .admission_scan
+        .enabled
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let mut reply = tokio::spawn({
+        let (service, subject) = (service.clone(), subject.clone());
+        let call = search(Some(1000));
+        async move {
+            service
+                .call_json(
+                    call,
+                    Some(subject),
+                    tokio::time::Instant::now(),
+                    Arc::default(),
+                    false,
+                )
+                .await
+        }
+    });
+    tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::select! {
+            () = hooks.admission_scan.entered.notified() => {},
+            response = &mut reply => panic!("request ended before its admission: {response:?}"),
+        }
+    })
+    .await
+    .expect("the first request reaches its admission scan");
+    let stopped = tokio::time::timeout(Duration::from_secs(10), reply)
+        .await
+        .unwrap()
+        .unwrap();
+    let stopped = serde_json::to_value(&stopped).unwrap();
+    assert_eq!(
+        stopped["structuredContent"]["code"], "deadline_exceeded",
+        "{stopped}"
+    );
+    let next = service.call_json(
+        search(None),
+        Some(subject),
+        tokio::time::Instant::now(),
+        Arc::default(),
+        false,
+    );
+    let next = serde_json::to_value(
+        tokio::time::timeout(Duration::from_secs(30), next)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_ne!(next["isError"], true, "{next}");
+}

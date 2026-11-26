@@ -6023,6 +6023,10 @@
       "full:fyrr:test:dense_path/http_mcp::tools_failed_scheduler_refuses_readiness_on_storage": {
         "tier": "full",
         "seconds": 29.653
+      },
+      "full:fyrr:test:dense_path/http_mcp::tools_first_admission_past_the_deadline_answers_deadline_exceeded_on_storage": {
+        "tier": "quick",
+        "seconds": 9.725
       }
     },
     "children": {
@@ -6030,6 +6034,12 @@
         "tier": "full",
         "parents": [
           "full:fyrr:test:dense_path/http_mcp::tools_failed_scheduler_refuses_readiness_on_storage"
+        ]
+      },
+      "full:fyrr-reader:lib:fyrr_reader/http::scheduler_tests::a_first_admission_past_the_deadline_answers_deadline_exceeded_on_storage": {
+        "tier": "quick",
+        "parents": [
+          "full:fyrr:test:dense_path/http_mcp::tools_first_admission_past_the_deadline_answers_deadline_exceeded_on_storage"
         ]
       }
     }
