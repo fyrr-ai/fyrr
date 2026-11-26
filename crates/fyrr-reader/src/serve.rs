@@ -223,6 +223,7 @@ pub(crate) struct TestHooks {
     pub(crate) filter_scan: TestGate,
     pub(crate) admission_probe: std::sync::Mutex<Option<AdmissionProbe>>,
     pub(crate) cache_warming: TestGate,
+    pub(crate) cleanup: TestGate,
 }
 
 #[cfg(test)]
@@ -263,15 +264,36 @@ async fn bounded<T>(
         result = work => result,
     }
 }
-async fn settle<T>(reader: &mut PreparedReader, result: Result<T>) -> Result<T> {
+/// The grant a request starts under: the identity and policy of the head.
+type Grant = (
+    fyrr_core::publication::GenerationPointer,
+    fyrr_core::publication::GenerationPointer,
+);
+fn grant(head: &fyrr_core::publication::ServingHead) -> Grant {
+    (head.identity.clone(), head.policy.clone())
+}
+async fn settle<T>(reader: &mut PreparedReader, granted: Grant, result: Result<T>) -> Result<T> {
     if matches!(result, Err(Cancelled | DeadlineExceeded)) {
         // A parked request must not queue behind native work merely to cancel.
         // interrupted refuses changed admission without rebuilding it if no
         // native permit is held; the next request performs its normal binding.
-        let cleanup = reader.interrupted();
-        match tokio::time::timeout(Duration::from_secs(1), cleanup).await {
-            Ok(Ok(false)) => result,
-            _ => Err(AuthorizationUnavailable),
+        let mut read = None;
+        let cleanup = async {
+            #[cfg(test)]
+            reader.test_hooks.cleanup.wait_once().await;
+            reader.interrupted_reading(&mut read).await
+        };
+        let _ = tokio::time::timeout(Duration::from_secs(1), cleanup).await;
+        // An interrupted request holds no answer, so it is refused as one only
+        // when the head the cleanup read grants other rights than the one the
+        // request started under. Rights that did not change keep the request's
+        // own code, also when its admission never finished or the cleanup
+        // failed or did not end within 1 s, as under load: a mask that never
+        // finished is never served, and the next request binds again.
+        if read.is_some_and(|head| grant(&head) != granted) {
+            Err(AuthorizationUnavailable)
+        } else {
+            result
         }
     } else {
         result

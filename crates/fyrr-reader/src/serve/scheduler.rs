@@ -502,9 +502,11 @@ impl Scheduler {
                     if let Some(subject) = &job.subject
                         && !matches!(job.request, ToolCall::Report)
                     {
+                        let granted = grant(&reader.head);
                         let bound = bounded(&timing, reader.bind_subject(subject)).await;
                         if let Err(code) = bound {
-                            let Err(code) = settle::<()>(&mut reader, Err(code)).await else {
+                            let Err(code) = settle::<()>(&mut reader, granted, Err(code)).await
+                            else {
                                 unreachable!("a refused binding cannot settle successfully");
                             };
                             reader.execution_slot.take();

@@ -2220,6 +2220,10 @@
       "full:fyrr:test:dense_path/write_api::identity_write_api_text_follows_the_namespace_analyzer_on_storage": {
         "tier": "full",
         "seconds": 40
+      },
+      "full:fyrr:test:dense_path/embedding::tools_policy_change_before_a_cancellation_on_storage": {
+        "tier": "quick",
+        "seconds": 2.858
       }
     },
     "children": {
@@ -2227,6 +2231,12 @@
         "tier": "quick",
         "parents": [
           "full:fyrr:test:dense_path/embedding::tools_embedding_wait_revocation_on_storage"
+        ]
+      },
+      "full:fyrr-reader:lib:fyrr_reader/serve::tests::embedding::a_policy_change_before_a_cancellation_refuses_the_request_on_storage": {
+        "tier": "quick",
+        "parents": [
+          "full:fyrr:test:dense_path/embedding::tools_policy_change_before_a_cancellation_on_storage"
         ]
       }
     }
@@ -5992,6 +6002,10 @@
       "full:fyrr:test:dense_path/embedding::tools_timed_out_admission_rebuild_refuses_stale_mask_on_storage": {
         "tier": "quick",
         "seconds": 9.929
+      },
+      "full:fyrr:test:dense_path/embedding::tools_slow_cleanup_after_a_deadline_answers_deadline_exceeded_on_storage": {
+        "tier": "quick",
+        "seconds": 4.783
       }
     },
     "children": {
@@ -6006,6 +6020,12 @@
         "parents": [
           "full:fyrr:test:dense_path/embedding::tools_timed_out_admission_rebuild_refuses_stale_mask_on_storage"
         ]
+      },
+      "full:fyrr-reader:lib:fyrr_reader/serve::tests::embedding::a_slow_cleanup_after_a_deadline_answers_deadline_exceeded_on_storage": {
+        "tier": "quick",
+        "parents": [
+          "full:fyrr:test:dense_path/embedding::tools_slow_cleanup_after_a_deadline_answers_deadline_exceeded_on_storage"
+        ]
       }
     }
   },
@@ -6017,6 +6037,10 @@
       "full:fyrr:test:dense_path/http_mcp::tools_failed_scheduler_refuses_readiness_on_storage": {
         "tier": "full",
         "seconds": 29.653
+      },
+      "full:fyrr:test:dense_path/http_mcp::tools_first_admission_past_the_deadline_answers_deadline_exceeded_on_storage": {
+        "tier": "quick",
+        "seconds": 9.725
       }
     },
     "children": {
@@ -6024,6 +6048,12 @@
         "tier": "full",
         "parents": [
           "full:fyrr:test:dense_path/http_mcp::tools_failed_scheduler_refuses_readiness_on_storage"
+        ]
+      },
+      "full:fyrr-reader:lib:fyrr_reader/http::scheduler_tests::a_first_admission_past_the_deadline_answers_deadline_exceeded_on_storage": {
+        "tier": "quick",
+        "parents": [
+          "full:fyrr:test:dense_path/http_mcp::tools_first_admission_past_the_deadline_answers_deadline_exceeded_on_storage"
         ]
       }
     }

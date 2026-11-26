@@ -506,15 +506,27 @@ impl PreparedReader {
     }
 
     pub(crate) async fn interrupted(&mut self) -> Result<bool> {
+        self.interrupted_reading(&mut None).await
+    }
+    /// `interrupted`, keeping in `read` the head it checked against as soon
+    /// as it is read, also when the check then fails or does not end.
+    pub(crate) async fn interrupted_reading(
+        &mut self,
+        read: &mut Option<ServingHead>,
+    ) -> Result<bool> {
         self.filter_selection = None;
         let rebuild = self.execution_slot.as_ref().is_none_or(|slot| slot.held());
-        self.refresh_authorization_inner(rebuild).await
+        self.refresh_authorization_inner(rebuild, read).await
     }
 
     pub(crate) async fn refresh_authorization(&mut self) -> Result<bool> {
-        self.refresh_authorization_inner(true).await
+        self.refresh_authorization_inner(true, &mut None).await
     }
-    pub(super) async fn refresh_authorization_inner(&mut self, rebuild: bool) -> Result<bool> {
+    pub(super) async fn refresh_authorization_inner(
+        &mut self,
+        rebuild: bool,
+        read: &mut Option<ServingHead>,
+    ) -> Result<bool> {
         let root = &self.control_root;
         let store = self.control_store.clone();
         let current: ServingHead = self.head_cache.read(&store, root).await.map_err(|code| {
@@ -524,6 +536,7 @@ impl PreparedReader {
                 AuthorizationUnavailable
             }
         })?;
+        *read = Some(current.clone());
         if current.namespace != self.config.namespace.name {
             return Err(AuthorizationUnavailable);
         }

@@ -266,6 +266,27 @@ async fn embedding_wait_revocation_refuses_old_authorization_on_storage() {
     fixture.close().await;
 }
 
+/// A policy published while a request waits on its embedding, without a
+/// native slot, refuses the request when it is then cancelled: its check finds
+/// the change before the reader's head records it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "real S3 publication, fake provider and stdio cancellation"]
+async fn a_policy_change_before_a_cancellation_refuses_the_request_on_storage() {
+    let mut fixture = ParkedEmbedding::open("10s").await;
+    fixture.parked(1).await;
+    let config = fixture.config.clone();
+    retire_allowed_source(&config, &mut fixture.head).await;
+    fixture.wire.cancel(1).await;
+    let reply = fixture.wire.reply().await;
+    assert_eq!(reply["id"], 1);
+    assert_eq!(
+        reply["result"]["structuredContent"]["code"], "authorization_unavailable",
+        "{reply}"
+    );
+    assert!(reply["result"]["structuredContent"]["hits"].is_null());
+    fixture.close().await;
+}
+
 /// Publishes a policy generation that retires the permission-synced `allowed`
 /// source: the grant change that makes a reader rebuild its admission.
 async fn retire_allowed_source(
@@ -386,6 +407,45 @@ async fn interrupted_admission_rebuild(deadline: bool) {
         json!([]),
         "a reused stdio worker must not expose rows from the retired source"
     );
+    wire.close().await;
+}
+
+/// A request past its deadline whose cleanup does not end within its 1 s, as
+/// on a loaded host, answers `deadline_exceeded`, not
+/// `authorization_unavailable`, and the reader serves the next request.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "real S3 publication and a stdio deadline with a slow cleanup"]
+async fn a_slow_cleanup_after_a_deadline_answers_deadline_exceeded_on_storage() {
+    let path = std::env::var_os("FYRR_TEST_EMBED_CONFIG").expect("publication fixture config");
+    let mut config = fyrr_core::config::load(std::path::Path::new(&path))
+        .unwrap()
+        .config;
+    config.reader.concurrency = 1;
+    config.embedding.reader_live = false;
+    let mut reader = PreparedReader::open(&config).await.unwrap();
+    reader.prewarm().await.unwrap();
+    let hooks = reader.test_hooks.clone();
+    let service = start(reader).await.unwrap();
+    let mut wire = EmbeddingWire::open(service).await;
+    let args = json!({"query":"exactneedle","limit":4,"output":"metadata"});
+    // The native work outlasts the deadline; the cleanup after it waits on a
+    // gate that is never opened.
+    hooks.native_work.enabled.store(true, Ordering::SeqCst);
+    hooks.cleanup.enabled.store(true, Ordering::SeqCst);
+    let mut late = args.clone();
+    late["deadline_ms"] = json!(1000);
+    wire.call(1, "search", late).await;
+    let stopped = wire.reply().await;
+    assert_eq!(stopped["id"], 1);
+    assert_eq!(
+        stopped["result"]["structuredContent"]["code"], "deadline_exceeded",
+        "{stopped}"
+    );
+    assert!(!hooks.cleanup.enabled.load(Ordering::SeqCst));
+    wire.call(2, "search", args).await;
+    let next = wire.reply().await;
+    assert_eq!(next["id"], 2);
+    assert_ne!(next["result"]["isError"], true, "{next}");
     wire.close().await;
 }
 

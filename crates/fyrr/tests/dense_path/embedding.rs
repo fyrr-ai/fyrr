@@ -453,6 +453,14 @@ async fn tools_embedding_wait_revocation_on_storage() {
     );
 }
 
+#[tokio::test]
+#[ignore = "real S3, native reader and SDK; policy change before a cancellation"]
+async fn tools_policy_change_before_a_cancellation_on_storage() {
+    parked_reader_test(
+        "serve::tests::embedding::a_policy_change_before_a_cancellation_refuses_the_request_on_storage",
+    );
+}
+
 fn parked_reader_test(selection: &str) {
     let (config, root, _) = tools::fixture();
     let binary =
@@ -485,6 +493,14 @@ fn tools_cancelled_admission_rebuild_refuses_stale_mask_on_storage() {
 fn tools_timed_out_admission_rebuild_refuses_stale_mask_on_storage() {
     parked_reader_test(
         "serve::tests::embedding::timed_out_admission_rebuild_cannot_reuse_stale_stdio_mask_on_storage",
+    );
+}
+
+#[test]
+#[ignore = "real S3 and a stdio deadline with a slow cleanup"]
+fn tools_slow_cleanup_after_a_deadline_answers_deadline_exceeded_on_storage() {
+    parked_reader_test(
+        "serve::tests::embedding::a_slow_cleanup_after_a_deadline_answers_deadline_exceeded_on_storage",
     );
 }
 
