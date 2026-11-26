@@ -4487,16 +4487,23 @@ async fn identity_write_api_fuses_the_sub_queries_of_a_query_as_it_asks_on_stora
     // A member that is `null` is the default, as the schema says: the same answer.
     let mut nulls = search(Value::Null);
     for member in [
+        "consistency",
+        "fields",
         "fusion",
         "rerank",
-        "query_match",
-        "contains",
-        "caps",
         "sub_queries",
+        "query_match",
+        "query_attributes",
+        "phrase",
+        "contains",
+        "boosts",
+        "group_documents",
+        "caps",
     ] {
         nulls[member] = Value::Null;
     }
     let defaulted = ask(&reader, nulls).await;
+    assert_eq!(defaulted.0, 200, "{}", defaulted.1);
     assert_eq!(defaulted.1["hits"], merged.1["hits"]);
 
     // With it, one ranking of at most `max_documents` documents, though the

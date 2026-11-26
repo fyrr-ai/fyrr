@@ -460,13 +460,14 @@ fn json_tool(request: &Request) -> Option<(&'static str, &'static [ApiKeyRole], 
 #[derive(Clone)]
 struct StrongRead;
 /// Takes `consistency` off the arguments of a JSON call, where it is no
-/// argument of the tool, and says whether it is `strong`; `cached` is the default.
+/// argument of the tool, and says whether it is `strong`; `cached` is the default,
+/// also for `null`.
 fn strong_read(arguments: &mut serde_json::Value) -> Result<bool, ReaderError> {
     match arguments
         .as_object_mut()
         .and_then(|arguments| arguments.remove("consistency"))
     {
-        None => Ok(false),
+        None | Some(serde_json::Value::Null) => Ok(false),
         Some(level) => match level.as_str() {
             Some("cached") => Ok(false),
             Some("strong") => Ok(true),
