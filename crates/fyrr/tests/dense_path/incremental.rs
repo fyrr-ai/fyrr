@@ -575,6 +575,152 @@ async fn incremental_idle_member_reread_publishes_nothing_on_storage() {
     assert_eq!(after.1.publication_id, before.1.publication_id);
 }
 
+/// A permission read that repeats the published rights, its documents and its
+/// container grants, writes no envelope and publishes nothing; its cursor still
+/// moves. A read that repeats only some of them writes the others.
+#[tokio::test]
+#[ignore = "real CLI and local storage; scripts/ci"]
+async fn incremental_idle_permission_reread_publishes_nothing_on_storage() {
+    let (worker, commit, root) = fixture();
+    publish_initial(&worker, &commit, &root);
+    let read = |epoch: u64, readers: Value| {
+        json!({"epoch":epoch,
+            "permissions":[[{"id":"a","revision":"p1","readers":["grp:group"]},{"id":"b","revision":"p1","readers":["grp:group"]}]],
+            "container_grants":[[{"container_id":"folder","container_kind":"folder","permission_revision":"c1","readers":readers}]]})
+    };
+    // The documents repeat what is published, the grant is new.
+    let staged = envelopes(&worker).await.len();
+    input(&root, read(2, json!(["grp:group", "grp:child"])));
+    worker_sync(&worker, &["incremental", "--kind", "permissions"]);
+    let written: Vec<_> = envelopes(&worker)
+        .await
+        .into_iter()
+        .filter(|(_, e)| e.kind == SyncKind::Permissions)
+        .filter_map(|(_, e)| match e.payload {
+            fyrr_core::envelope::EnvelopePayload::Permissions(p) => Some(p),
+            _ => None,
+        })
+        .filter(|p| !p.complete_read)
+        .collect();
+    assert_eq!(
+        envelopes(&worker).await.len(),
+        staged + 2,
+        "a part and its end"
+    );
+    assert!(
+        written
+            .iter()
+            .any(|p| p.documents.is_empty() && p.container_grants.len() == 1),
+        "only the grant is written"
+    );
+    publish(&commit);
+    let before = publication(&commit).await;
+    let staged = envelopes(&worker).await.len();
+    let cursor = cursor_of(&worker, SyncKind::Permissions).await;
+    // The same read again, its grant readers in another order, changes nothing.
+    input(
+        &root,
+        read(3, json!(["grp:child", "grp:group", "grp:child"])),
+    );
+    worker_sync(&worker, &["incremental", "--kind", "permissions"]);
+    assert_eq!(envelopes(&worker).await.len(), staged, "no envelope");
+    let moved = cursor_of(&worker, SyncKind::Permissions).await;
+    assert_ne!(moved.cursor, cursor.cursor, "the cursor moves");
+    assert_eq!(moved.last, cursor.last);
+    publish(&commit);
+    let after = publication(&commit).await;
+    assert_eq!(after.0.content, before.0.content);
+    assert_eq!(after.0.identity, before.0.identity);
+    assert_eq!(after.1.publication_id, before.1.publication_id);
+}
+
+/// A grant and its removal inside one read: the removal names the published
+/// revision again, and still publishes, since it follows the grant.
+#[tokio::test]
+#[ignore = "real CLI and local storage; scripts/ci"]
+async fn incremental_a_grant_removed_inside_one_read_publishes_the_removal_on_storage() {
+    let (worker, commit, root) = fixture();
+    publish_initial(&worker, &commit, &root);
+    input(
+        &root,
+        json!({"epoch":2,"permissions":[[{"id":"a","revision":"p0","readers":[]}]]}),
+    );
+    worker_sync(&worker, &["incremental", "--kind", "permissions"]);
+    publish(&commit);
+    assert!(row_readers(&rows(&worker).await, "a").is_empty());
+    input(
+        &root,
+        json!({"epoch":3,"permissions":[
+            [{"id":"a","revision":"p1","readers":["grp:group"]}],
+            [{"id":"a","revision":"p0","readers":[]}]]}),
+    );
+    worker_sync(&worker, &["incremental", "--kind", "permissions"]);
+    publish(&commit);
+    assert!(
+        row_readers(&rows(&worker).await, "a").is_empty(),
+        "the removal is published"
+    );
+}
+
+/// A removal after the envelopes of the reads before it were cleaned up: the
+/// rights it is compared with are the published rows, not the log.
+#[tokio::test]
+#[ignore = "real CLI and local storage; scripts/ci"]
+async fn incremental_a_removal_after_cleanup_publishes_on_storage() {
+    let (worker, commit, root) = fixture();
+    publish_initial(&worker, &commit, &root);
+    let granted = row_readers(&rows(&worker).await, "a");
+    let read = |epoch: u64, revision: &str, readers: Value| {
+        input(
+            &root,
+            json!({"epoch":epoch,"permissions":[[{"id":"a","revision":revision,"readers":readers}]]}),
+        );
+        worker_sync(&worker, &["incremental", "--kind", "permissions"]);
+        publish(&commit);
+    };
+    read(2, "p2", json!([]));
+    assert!(row_readers(&rows(&worker).await, "a").is_empty());
+    read(3, "p3", json!(["grp:group"]));
+    assert_eq!(row_readers(&rows(&worker).await, "a"), granted);
+    fyrr_core::clock::advance(std::time::Duration::from_secs(4 * 86_400)).unwrap();
+    command(&commit, &["writer", "maintain"]);
+    read(4, "p2", json!([]));
+    assert!(
+        row_readers(&rows(&worker).await, "a").is_empty(),
+        "the removal is published"
+    );
+}
+
+/// Content that narrows the readers of a document leaves it without a
+/// permission revision: a permission read that sends the same revision again
+/// restores its rights.
+#[tokio::test]
+#[ignore = "real CLI and local storage; scripts/ci"]
+async fn incremental_a_same_revision_restores_rights_narrowed_by_content_on_storage() {
+    let (worker, commit, root) = fixture();
+    publish_initial(&worker, &commit, &root);
+    let granted = row_readers(&rows(&worker).await, "a");
+    assert!(!granted.is_empty());
+    // Readers that share none of the published ones narrow them to nobody.
+    let mut narrowing = doc("a", "r2", "fixture document 0");
+    narrowing["readers"] = json!(["grp:child"]);
+    input(&root, json!({"epoch":2,"content":[[narrowing]]}));
+    worker_sync(&worker, &["incremental", "--kind", "content"]);
+    publish(&commit);
+    assert!(row_readers(&rows(&worker).await, "a").is_empty());
+    input(
+        &root,
+        json!({"epoch":3,"permissions":[[{"id":"a","revision":"p1","readers":["grp:group"]}]]}),
+    );
+    worker_sync(&worker, &["incremental", "--kind", "permissions"]);
+    publish(&commit);
+    assert_eq!(
+        row_readers(&rows(&worker).await, "a"),
+        granted,
+        "the rights are restored"
+    );
+}
+
 #[tokio::test]
 #[ignore = "real CLI and local storage; scripts/ci"]
 async fn incremental_sub_envelope_cursor_recovery_and_atomic_chunk_groups_on_storage() {

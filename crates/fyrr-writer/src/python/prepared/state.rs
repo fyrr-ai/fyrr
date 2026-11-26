@@ -163,6 +163,9 @@ pub(super) fn idle_until(
 
 pub(super) struct Pending {
     pub(super) paths: Vec<Path>,
+    /// Whether an envelope of the source, of any kind, is in the log and no
+    /// publication applied or rejected it.
+    pub(super) source_pending: bool,
     pub(super) content_paths: Vec<Path>,
     pub(super) cursors: Vec<(u64, Option<String>)>,
     pub(super) generation: u32,
@@ -189,6 +192,7 @@ impl Preparation<'_> {
         let mut durable_restore_sequence = 0;
         let mut members_tail = None;
         let mut completed_generation = 0;
+        let mut source_pending = false;
         evidence.refresh(self.config, self.rt, head)?;
         let Snapshot {
             published,
@@ -260,11 +264,11 @@ impl Preparation<'_> {
             if envelope.namespace != self.config.namespace.name {
                 return Err(WriterError::EnvelopeNamespaceInvalid);
             }
-            if envelope.source_id == self.source.id
-                && envelope.kind == SyncKind::Content
-                && !applied.contains(&envelope.envelope_id)
-            {
-                content_paths.push(path.clone());
+            if envelope.source_id == self.source.id && !applied.contains(&envelope.envelope_id) {
+                source_pending = true;
+                if envelope.kind == SyncKind::Content {
+                    content_paths.push(path.clone());
+                }
             }
             // A permissions envelope counts only once the cursor confirmed it: the
             // cursor holds what a read needs of them, and the committer reads
@@ -303,6 +307,7 @@ impl Preparation<'_> {
         }
         Ok(Pending {
             paths,
+            source_pending,
             content_paths,
             cursors: durable_cursors,
             generation: durable_generation,

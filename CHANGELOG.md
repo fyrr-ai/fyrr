@@ -9,6 +9,13 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Changed
 
+- A permission read that repeats the published rights writes no envelope and
+  publishes nothing; its cursor still moves. A document is left out of the read
+  when its permission revision is the one its published rows hold, and a
+  container grant when it equals the published one; what the read keeps is
+  compared in order, so a later change of the same document or container in
+  the read is kept. The comparison is made only when nothing of the source
+  waits to be published.
 - The reader's workers share the dataset its generation opened instead of
   each opening the pinned version again. Each worker still counts its own
   storage reads.

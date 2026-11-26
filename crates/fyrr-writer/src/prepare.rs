@@ -595,6 +595,94 @@ pub fn initial_cursor(config: &Config, source: &str, kind: SyncKind) -> CursorSt
     }
 }
 
+/// What a permission read is compared with, to leave out what repeats the
+/// published rights: a root whose permission revision is the one its rows hold,
+/// which the committer would skip, and a container grant equal to the
+/// published one. What the read keeps replaces them as it goes, so a later
+/// batch is compared with the state the earlier ones make. It is used only
+/// when nothing of the source waits to be published.
+pub(crate) struct PermissionRepeats {
+    dataset: Arc<lance::Dataset>,
+    revisions: std::collections::BTreeMap<String, Option<String>>,
+    grants: std::collections::BTreeMap<String, fyrr_core::connector::ContainerGrant>,
+}
+
+impl PermissionRepeats {
+    pub(crate) async fn new(
+        config: &Config,
+        source: &str,
+        dataset: Arc<lance::Dataset>,
+    ) -> Result<Self> {
+        Ok(Self {
+            dataset,
+            revisions: Default::default(),
+            grants: crate::membership::published_container_grants(config, source).await?,
+        })
+    }
+
+    /// Leaves out of `batch` the roots and grants that change nothing.
+    pub(crate) async fn retain_changes(
+        &mut self,
+        config: &Config,
+        source: &str,
+        batch: &mut ConnectorBatch,
+    ) -> Result<()> {
+        let fyrr_core::connector::BatchBody::PermissionChanges {
+            documents,
+            container_grants,
+        } = &mut batch.body
+        else {
+            return Err(WriterError::BatchInvalid);
+        };
+        let mut unknown: Vec<String> = documents
+            .iter()
+            .filter(|d| !self.revisions.contains_key(&d.root_id))
+            .map(|d| d.root_id.clone())
+            .collect();
+        unknown.sort();
+        unknown.dedup();
+        if !unknown.is_empty() {
+            let states = crate::apply::states(&self.dataset, source, &unknown).await?;
+            for root in unknown {
+                let revision = states
+                    .get(&root)
+                    .and_then(|s| s.permission.as_ref())
+                    .and_then(|p| p.revision.clone());
+                self.revisions.insert(root, revision);
+            }
+        }
+        documents.retain(|d| {
+            let repeat = self
+                .revisions
+                .get(&d.root_id)
+                .is_some_and(|r| r.as_ref() == Some(&d.permission_revision));
+            if !repeat {
+                self.revisions
+                    .insert(d.root_id.clone(), Some(d.permission_revision.clone()));
+            }
+            !repeat
+        });
+        let mut kept = Vec::new();
+        for grant in std::mem::take(container_grants) {
+            let mut tokens = grant.clone();
+            tokens.readers = grant
+                .readers
+                .iter()
+                .map(|t| crate::apply::reader_token(config, source, t))
+                .collect::<Result<_>>()?;
+            // Readers are a set: their order and repeats change no right.
+            tokens.readers.sort();
+            tokens.readers.dedup();
+            if self.grants.get(&grant.container_id) != Some(&tokens) {
+                self.grants.insert(grant.container_id.clone(), tokens);
+                kept.push(grant);
+            }
+        }
+        *container_grants = kept;
+        Ok(())
+    }
+}
+
 /// The permission batches of one read, held until they fill a part. A root or
 /// container named twice keeps its last state, as the later batch observed it.
 /// The roots go only into parts, which carry no end cursor, so a part is
