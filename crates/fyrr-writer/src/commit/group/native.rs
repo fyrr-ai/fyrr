@@ -80,6 +80,7 @@ impl<'a> ContentWork<'a> {
         non_content: &[&PreparedEnvelope],
         groups: Vec<Vec<&PreparedEnvelope>>,
         sequence: u64,
+        rejected: &mut Vec<String>,
     ) -> Result<()> {
         let config = self.config;
         let lease = self.lease;
@@ -106,7 +107,7 @@ impl<'a> ContentWork<'a> {
             if let Some(ds) = &mut self.dataset {
                 for envelope in group {
                     let (keys, fragments, narrowed) =
-                        crate::apply::content(config, ds, envelope, sequence).await?;
+                        crate::apply::content(config, ds, envelope, sequence, rejected).await?;
                     self.acl_changed |= narrowed;
                     apply_staged(config, ds, lease, &mut self.lineage, keys, fragments).await?;
                 }

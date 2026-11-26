@@ -2,11 +2,13 @@ use super::*;
 
 /// Stage one bounded envelope against the actual currently published/locally rebased pin.
 /// Old fragments are not copied; native delete vectors and new fragments share one Update.
+/// A refusal of the envelope adds its ID to `rejected`.
 pub async fn content(
     config: &Config,
     dataset: &Dataset,
     envelope: &PreparedEnvelope,
     sequence: u64,
+    rejected: &mut Vec<String>,
 ) -> Result<(Vec<String>, Vec<serde_json::Value>, bool)> {
     let EnvelopePayload::Content(payload) = &envelope.payload else {
         return Err(WriterError::EnvelopeInvalid);
@@ -15,13 +17,13 @@ pub async fn content(
     if payload.embedding != fyrr_reader::embedding::identity(&config.embedding)
         || payload.chunk_profile != crate::prepare::chunk_identity()
     {
-        reject(config, envelope, "envelope_profile_mismatch").await?;
+        reject(config, envelope, "envelope_profile_mismatch", rejected).await?;
         return Ok((Vec::new(), Vec::new(), false));
     }
     let staged = match verified_staged(config, dataset, envelope).await {
         Ok(rows) => rows,
         Err(reason) => {
-            reject(config, envelope, reason.as_str()).await?;
+            reject(config, envelope, reason.as_str(), rejected).await?;
             return Ok((Vec::new(), Vec::new(), false));
         }
     };
@@ -41,7 +43,8 @@ pub async fn content(
     };
     // The filters are evaluated here, once, against the state this envelope
     // is applied to: what the envelopes before it left.
-    let Some(documents) = with_filter_writes(config, dataset, envelope, payload).await? else {
+    let Some(documents) = with_filter_writes(config, dataset, envelope, payload, rejected).await?
+    else {
         return Ok((Vec::new(), Vec::new(), false));
     };
     let roots = documents
@@ -80,7 +83,7 @@ pub async fn content(
             let live = old.is_some_and(|old| !old.deleted && !old.content_purged);
             match condition_met(config, dataset, envelope, document, condition, live).await? {
                 None => {
-                    reject(config, envelope, "document_invalid").await?;
+                    reject(config, envelope, "document_invalid", rejected).await?;
                     return Ok(refused);
                 }
                 Some(false) => continue,
@@ -98,7 +101,7 @@ pub async fn content(
                     .as_ref()
                     .is_none_or(|b| b.content_sequence < old.publication_sequence)
             {
-                reject(config, envelope, "revision_conflict").await?;
+                reject(config, envelope, "revision_conflict", rejected).await?;
                 if api {
                     return Ok(refused);
                 }
@@ -110,7 +113,7 @@ pub async fn content(
                 && document.source_revision == old.revision
             {
                 if api {
-                    reject(config, envelope, "revision_conflict").await?;
+                    reject(config, envelope, "revision_conflict", rejected).await?;
                     return Ok(refused);
                 }
                 continue;
@@ -118,7 +121,7 @@ pub async fn content(
             if let (Some(incoming), Some(applied)) = (document.revision_order, old.revision_order) {
                 if incoming < applied || (incoming == applied && !old.content_purged) {
                     if api {
-                        reject(config, envelope, "revision_conflict").await?;
+                        reject(config, envelope, "revision_conflict", rejected).await?;
                         return Ok(refused);
                     }
                     continue;
@@ -130,14 +133,14 @@ pub async fn content(
                     old.revision.clone()
                 }
             {
-                reject(config, envelope, "revision_conflict").await?;
+                reject(config, envelope, "revision_conflict", rejected).await?;
                 if api {
                     return Ok(refused);
                 }
                 continue;
             }
         } else if document.expected_prior_revision.is_some() {
-            reject(config, envelope, "revision_conflict").await?;
+            reject(config, envelope, "revision_conflict", rejected).await?;
             if api {
                 return Ok(refused);
             }
@@ -190,7 +193,7 @@ pub async fn content(
                 // A patch writes whole rows of what is stored, a size its request
                 // could not know: the envelope is refused, as `write_rows` would.
                 Err(WriterError::EnvelopeBoundsInvalid) => {
-                    reject(config, envelope, "envelope_bounds_exceeded").await?;
+                    reject(config, envelope, "envelope_bounds_exceeded", rejected).await?;
                     return Ok(refused);
                 }
                 Err(error) => return Err(error),
@@ -290,7 +293,7 @@ pub async fn content(
             if payload.filter_writes.is_some()
                 || documents.iter().any(|d| d.intent == DocumentIntent::Patch) =>
         {
-            reject(config, envelope, "envelope_bounds_exceeded").await?;
+            reject(config, envelope, "envelope_bounds_exceeded", rejected).await?;
             return Ok(refused);
         }
         written => written?,
@@ -337,6 +340,7 @@ async fn with_filter_writes<'a>(
     dataset: &Dataset,
     envelope: &PreparedEnvelope,
     payload: &'a ContentPayload,
+    rejected: &mut Vec<String>,
 ) -> Result<Option<std::borrow::Cow<'a, [EnvelopeDocument]>>> {
     let Some(writes) = &payload.filter_writes else {
         return Ok(Some(std::borrow::Cow::Borrowed(&payload.documents)));
@@ -359,7 +363,7 @@ async fn with_filter_writes<'a>(
                 .is_some_and(|old| !old.deleted && !old.content_purged);
             match condition_met(config, dataset, envelope, &document, &condition, live).await? {
                 None => {
-                    reject(config, envelope, "document_invalid").await?;
+                    reject(config, envelope, "document_invalid", rejected).await?;
                     return Ok(None);
                 }
                 Some(false) => continue,
@@ -389,7 +393,7 @@ async fn with_filter_writes<'a>(
         deleted = match matching(config, dataset, filter).await? {
             Ok(roots) => roots,
             Err(reason) => {
-                reject(config, envelope, reason.as_str()).await?;
+                reject(config, envelope, reason.as_str(), rejected).await?;
                 return Ok(None);
             }
         };
@@ -408,7 +412,7 @@ async fn with_filter_writes<'a>(
         let matched = match matching(config, dataset, &patch.filter).await? {
             Ok(roots) => roots,
             Err(reason) => {
-                reject(config, envelope, reason.as_str()).await?;
+                reject(config, envelope, reason.as_str(), rejected).await?;
                 return Ok(None);
             }
         };

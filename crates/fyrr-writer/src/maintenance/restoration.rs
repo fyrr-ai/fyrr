@@ -729,16 +729,15 @@ async fn publish_restored(
         if envelope.kind.is_authorization() {
             continue;
         }
-        if !apply::rejected(config, &envelope.envelope_id).await? {
-            apply::reject(config, &envelope, "restore_refetch").await?;
-        }
-        attempt
-            .head
-            .rejected_envelope_ids
-            .push(envelope.envelope_id);
+        apply::reject(
+            config,
+            &envelope,
+            "restore_refetch",
+            &mut attempt.head.rejected_envelope_ids,
+        )
+        .await?;
     }
     attempt.head.rejected_envelope_ids.sort();
-    attempt.head.rejected_envelope_ids.dedup();
     let mut rewinds = Vec::new();
     for marker in latest.values() {
         let hash = fyrr_reader::embedding::digest(&fyrr_core::write_contract(marker));
