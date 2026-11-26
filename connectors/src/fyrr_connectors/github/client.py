@@ -87,10 +87,23 @@ class Client:
         self.server_time = datetime.now(UTC)
         self._wait = 0.0
 
-    def request(self, method: str, path: str, *, params=None, body=None, token: str | None = None):
+    def request(
+        self,
+        method: str,
+        path: str,
+        *,
+        params=None,
+        body=None,
+        token: str | None = None,
+        once: bool = False,
+    ):
+        """One call. With `once`, a failed connection is the only thing repeated: a request
+        that may have been sent is not sent again (it may have issued something)."""
         if not path.startswith("/") or path.startswith("//") or "#" in path:
             raise ValueError("github_path_invalid")
-        return self._request(method, path, params, body, token, _initial_wait=self._wait)
+        return self._request(
+            method, path, params, body, token, _initial_wait=self._wait, _unsent_only=once
+        )
 
     @_http.retry(
         _http.RetryPolicy(ATTEMPTS, budget=WAIT_BUDGET),

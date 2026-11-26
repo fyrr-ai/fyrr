@@ -19,6 +19,44 @@ def test_auth_verifies_installation_and_mints_read_only_token(github, index):
     assert len([method for method, _, _ in github.requests if method == "POST"]) == 1
 
 
+def test_a_token_request_that_may_have_been_sent_is_not_sent_again(github, index, monkeypatch):
+    import requests
+
+    handled = github.handle
+
+    def lost(method, path, params, headers):
+        reply = handled(method, path, params, headers)  # the server issued a token ...
+        if method == "POST":
+            raise requests.ReadTimeout("slow")  # ... and the answer was lost
+        return reply
+
+    monkeypatch.setattr(github, "handle", lost)
+    auth = AppAuth(Client(github.origin), Settings.parse(index.settings))
+    with pytest.raises(ApiError):
+        auth.refresh()
+    assert len([m for m, _, _ in github.requests if m == "POST"]) == 1
+
+
+def test_a_token_request_is_sent_again_after_a_failed_connection(github, index, monkeypatch):
+    import requests
+    import urllib3
+
+    handled = github.handle
+    refused = []
+
+    def unreachable(method, path, params, headers):
+        if method == "POST" and not refused:
+            refused.append(path)
+            reason = urllib3.exceptions.NewConnectionError(None, "refused")
+            raise requests.ConnectionError(urllib3.exceptions.MaxRetryError(None, "/", reason))
+        return handled(method, path, params, headers)
+
+    monkeypatch.setattr(github, "handle", unreachable)
+    auth = AppAuth(Client(github.origin), Settings.parse(index.settings))
+    assert auth.token() == github.token
+    assert len([m for m, _, _ in github.requests if m == "POST"]) == 1
+
+
 @pytest.mark.parametrize(
     "field,value", [("app_id", 99), ("installation_id", 99), ("account_id", 99)]
 )

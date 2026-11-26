@@ -172,6 +172,34 @@ def test_authorization_frames_are_bounded_before_first_yield(github, index):
             next(stream)
 
 
+def test_later_batches_are_measured_from_the_end_cursor_before_them(github, index):
+    from fyrr_connectors.connector import SyncKind
+    from fyrr_connectors.runtime import header_bytes
+
+    index.mode = "sync"
+    github.topic()
+    for user in range(1, 4):
+        github.collaborator(1, user)
+    index.limits = replace(index.limits, max_rows=1)
+    for kind in ("permissions", "members"):
+        batches = list(index.run(kind))
+        assert len(batches) > 1
+        # The limit that every batch passes when measured from the start of the call, though
+        # the later ones begin at the end of the batch before them, which is longer.
+        sizes = [header_bytes("github", SyncKind(kind), None, batch) for batch in batches]
+        starts = [None, *(batch.cursor for batch in batches[:-1])]
+        exact = [
+            header_bytes("github", SyncKind(kind), start, batch)
+            for start, batch in zip(starts, batches, strict=True)
+        ]
+        assert max(exact) > max(sizes)
+        index.limits = replace(index.limits, max_bytes=max(sizes))
+        with pytest.raises(ValueError, match="batch_limit"):
+            next(index.run(kind))
+        index.limits = replace(index.limits, max_bytes=max(exact))
+        assert len(list(index.run(kind))) == len(batches)
+
+
 def test_review_with_invalid_submitted_time_is_not_publication_evidence(github, index):
     github.topic(kind="pr")
     review = github.comment(kind="pr", state="APPROVED", body="Unproven review.")

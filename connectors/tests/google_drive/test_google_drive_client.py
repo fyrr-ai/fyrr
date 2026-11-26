@@ -305,6 +305,10 @@ def test_listing_over_aggregate_limit_never_completes(drive, index, monkeypatch)
         ("7", 7),
         ("Wed, 21 Oct 2015 07:28:00 GMT", 10),
         ("Wed, 21 Oct 2015 07:27:00 GMT", 0),
+        # The other two HTTP date formats (RFC 9110, 5.6.7) are GMT too, asctime without a zone.
+        ("Wednesday, 21-Oct-15 07:28:00 GMT", 10),
+        ("Wed Oct 21 07:28:00 2015", 10),
+        ("Wed Oct 21 07:27:00 2015", 0),
         ("soon", None),
         ("nan", None),
         ("-1", None),
@@ -315,6 +319,22 @@ def test_shared_retry_after_parser(value, expected, monkeypatch):
 
     monkeypatch.setattr(_http.time, "time", lambda: 1445412470)
     assert _http.retry_after(value) == expected
+
+
+def test_jitter_never_carries_a_wait_past_the_cap(monkeypatch):
+    from fyrr_connectors import _http
+
+    sleeps = []
+    monkeypatch.setattr(_http.time, "sleep", sleeps.append)
+    monkeypatch.setattr(_http.random, "uniform", lambda low, high: high)
+    retries = _http.Retries(
+        _http.RetryPolicy(wait_cap=60, jitter="wait", budget=300), ValueError("budget")
+    )
+    attempts = iter(retries)
+    next(attempts)
+    retries.wait = 60
+    next(attempts)
+    assert sleeps == [60]
 
 
 def test_retry_after_over_remaining_budget_fails_without_sleep(monkeypatch):

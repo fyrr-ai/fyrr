@@ -65,6 +65,7 @@ class AppAuth:
                     "metadata": "read",
                 }
             },
+            once=True,
         )
         if (
             not isinstance(body, dict)

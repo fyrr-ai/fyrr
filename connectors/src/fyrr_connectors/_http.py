@@ -8,11 +8,13 @@ import random
 import time
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
+from datetime import UTC
 from email.utils import parsedate_to_datetime
 from functools import wraps
 from urllib.parse import urlsplit
 
 import requests
+import urllib3
 
 #: Bounds of one provider read, shared by every client.
 MAX_RESPONSE = 16 << 20
@@ -49,8 +51,9 @@ def retry_after(value: str) -> float | None:
         return numeric
     try:
         date = parsedate_to_datetime(value)
+        # All three HTTP date formats are GMT (RFC 9110, 5.6.7); asctime names no zone.
         if date.tzinfo is None:
-            return None
+            date = date.replace(tzinfo=UTC)
         return max(0.0, date.timestamp() - time.time())
     except (ValueError, TypeError, OverflowError):
         return None
@@ -85,7 +88,9 @@ class Retries:
             if wait > self.policy.wait_cap:
                 raise self.error
             if attempt and self.policy.jitter == "wait":
-                wait += random.uniform(0, 1)
+                # The jitter never carries a wait past the cap or the budget.
+                room = min(self.policy.wait_cap, self.policy.budget - (time.monotonic() - began))
+                wait += max(0.0, min(random.uniform(0, 1), room - wait))
             if wait:
                 if wait + time.monotonic() - began > self.policy.budget:
                     raise self.error
@@ -101,12 +106,27 @@ class Retry:
     wait: float | None = None
 
 
+def unsent(error: Exception) -> bool:
+    """Whether a transport failure came before the request left: the connection was never made."""
+    if isinstance(error, requests.ConnectTimeout):
+        return True
+    if isinstance(error, requests.ConnectionError) and error.args:
+        reason = getattr(error.args[0], "reason", None)
+        return isinstance(
+            reason, (urllib3.exceptions.NewConnectionError, urllib3.exceptions.ConnectTimeoutError)
+        )
+    return False
+
+
 def retry(policy: RetryPolicy, transport_error, budget_error=None):
-    """Retry a provider operation while keeping its exceptions and wait policy."""
+    """Retry a provider operation while keeping its exceptions and wait policy.
+
+    A call made with `_unsent_only=True` repeats only after a failed connection, never after
+    an answer or a failure that may have come after the request was sent."""
 
     def decorate(operation):
         @wraps(operation)
-        def run(self, *args, _initial_wait=0, **kwargs):
+        def run(self, *args, _initial_wait=0, _unsent_only=False, **kwargs):
             retries = Retries(policy, (budget_error or transport_error)(), _initial_wait)
             failure = transport_error()
             for _ in retries:
@@ -114,12 +134,16 @@ def retry(policy: RetryPolicy, transport_error, budget_error=None):
                     result = operation(self, *args, _retry=retries, **kwargs)
                     if not isinstance(result, Retry):
                         return result
+                    if _unsent_only:
+                        raise result.error
                     failure = result.error
                     if budget_error is None:
                         retries.error = failure
                     if result.wait is not None:
                         retries.wait = result.wait
-                except (requests.RequestException, OSError):
+                except (requests.RequestException, OSError) as error:
+                    if _unsent_only and not unsent(error):
+                        raise transport_error() from None
                     failure = transport_error()
             raise failure from None
 

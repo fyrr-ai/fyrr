@@ -531,23 +531,25 @@ class GitHub(Connector[Settings, Scope]):
         width = min(256, self.context.limits.max_rows)
         limit = self.context.limits.max_bytes
 
+        def measure(batch: PermissionBatch) -> int:
+            # The first batch starts at the cursor of the call, every later one at the end of
+            # the batch before it: the frontier.
+            start = frontier if batches else cursor
+            return header_bytes(self.context.source_id, SyncKind.PERMISSIONS, start, batch)
+
         def seal(
             collection: Sequence[EntryT], make: Callable[[Sequence[EntryT]], PermissionBatch]
         ) -> None:
             pending: list[EntryT] = []
             for entry in collection:
                 candidate = make([*pending, entry])
-                size = header_bytes(self.context.source_id, SyncKind.PERMISSIONS, cursor, candidate)
-                if size > limit or len(pending) >= width:
+                if measure(candidate) > limit or len(pending) >= width:
                     if not pending:
                         raise ValueError("github_permission_batch_limit")
                     batches.append(make(pending))
                     pending = []
                     candidate = make([entry])
-                    size = header_bytes(
-                        self.context.source_id, SyncKind.PERMISSIONS, cursor, candidate
-                    )
-                    if size > limit:
+                    if measure(candidate) > limit:
                         raise ValueError("github_permission_batch_limit")
                 pending.append(entry)
             if pending:
@@ -583,8 +585,10 @@ class GitHub(Connector[Settings, Scope]):
         ]
         from ..runtime import header_bytes
 
+        start = cursor
         for batch in batches:
-            size = header_bytes(self.context.source_id, SyncKind.MEMBERS, cursor, batch)
+            size = header_bytes(self.context.source_id, SyncKind.MEMBERS, start, batch)
             if size > self.context.limits.max_bytes:
                 raise ValueError("github_member_batch_limit")
+            start = batch.cursor
         yield from batches
