@@ -244,13 +244,13 @@ impl PreparedReader {
             // A partition is a few local reads, and an index of the size its rows ask for has
             // thousands of them in every segment: read them INDEX_OPEN_CONCURRENCY at a time.
             let index = &index;
-            let counts: Vec<(u32, u64)> = futures::stream::iter(0..index.total_partitions())
+            let counts: Vec<(u32, u64, bool)> = futures::stream::iter(0..index.total_partitions())
                 .map(|partition| async move {
                     let mut stream = index
                         .partition_reader(partition, false, &NoOpMetricsCollector)
                         .await
                         .map_err(|_| PartitionMapUnavailable)?;
-                    let (mut rows, mut indexed) = (0u32, 0u64);
+                    let (mut rows, mut indexed, mut foreign) = (0u32, 0u64, false);
                     while let Some(batch) = stream
                         .try_next()
                         .await
@@ -267,10 +267,12 @@ impl PreparedReader {
                             {
                                 indexed += 1;
                                 rows += u32::from(eligible.selected(*id));
+                            } else {
+                                foreign |= eligible.selected(*id);
                             }
                         }
                     }
-                    Ok::<_, ReaderError>((rows, indexed))
+                    Ok::<_, ReaderError>((rows, indexed, foreign))
                 })
                 .buffered(INDEX_OPEN_CONCURRENCY)
                 .try_collect()
@@ -281,6 +283,7 @@ impl PreparedReader {
                 segment: metadata.uuid.to_string(),
                 admitted,
                 indexed_rows,
+                foreign: counts.iter().any(|count| count.2),
             });
         }
         Ok::<_, ReaderError>(maps)

@@ -69,9 +69,17 @@ pub struct PartitionMap {
     admitted: Vec<u32>,
     /// Rows of the segment's partitions that belong to covered fragments.
     indexed_rows: u64,
+    /// Whether the segment's files hold admitted rows of fragments it no longer answers for: a
+    /// maintenance step that encoded part of a segment again leaves them, and another segment
+    /// answers for those rows. A search of the segment then admits only its own fragments.
+    pub(crate) foreign: bool,
 }
 
 impl PartitionMap {
+    pub(crate) fn segment(&self) -> &str {
+        &self.segment
+    }
+
     pub(crate) fn admitted_rows(&self) -> u64 {
         self.admitted.iter().map(|rows| u64::from(*rows)).sum()
     }

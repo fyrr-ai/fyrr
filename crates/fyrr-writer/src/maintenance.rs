@@ -111,13 +111,38 @@ fn copy_rows(config: &Config, dimensions: usize) -> u64 {
     whole_rows(half_step(config) * COPY_DIMENSIONS_PER_SECOND / dimensions.max(1) as f64)
 }
 
-/// Whether training a model of `partitions` of `dimensions` fits a step's main work. At 128
+/// Whether training a model of `partitions` of `dimensions` fits a step's main work. Lance trains
+/// on the sample rate the index recorded when it was created: `VECTOR_SAMPLE_RATE` for every
+/// namespace of this release (earlier ones, with 256, are not supported). At 128
 /// dimensions it does up to Lance's ceiling of 4,096 partitions by default, at 1,024 up to 1,720.
 fn training_fits(config: &Config, partitions: usize, dimensions: usize) -> bool {
     test_step_rows().is_some()
         || (partitions * partitions * crate::commit::VECTOR_SAMPLE_RATE * dimensions) as f64
             / TRAIN_DISTANCES_PER_SECOND
             <= half_step(config)
+}
+
+/// The partitions a model of `dimensions` grows to: Lance's ceiling of 4,096, or fewer where its
+/// training must fit half a step (about 1,720 of 1,024 dimensions by default).
+fn largest_model(config: &Config, dimensions: usize) -> usize {
+    let ceiling = recommended_num_partitions(usize::MAX, 1);
+    let fits = (half_step(config) * TRAIN_DISTANCES_PER_SECOND
+        / (crate::commit::VECTOR_SAMPLE_RATE * dimensions.max(1)) as f64)
+        .sqrt();
+    usize::try_from(whole_rows(fits))
+        .unwrap_or(ceiling)
+        .min(ceiling)
+}
+
+/// The rows a compaction step may rewrite: half of what one step encodes against the largest model
+/// of the widest vector column, so that no fragment it makes outgrows a later encode step, nor the
+/// half of one that the step that trains encodes. 107,000 rows of 128 dimensions by default,
+/// 32,000 of 1,024.
+// shortcut: a row of a multi-vector attribute counts as one vector here; bound by its vectors
+// when a namespace with such an attribute compacts slowly.
+fn compaction_rows(config: &Config) -> u64 {
+    let dimensions = max_dimensions(config);
+    (encode_rows(config, largest_model(config, dimensions), dimensions) / 2).max(1)
 }
 
 /// The widest vector column of the namespace.
@@ -464,6 +489,73 @@ async fn merge_tier(dataset: &mut Dataset, options: &OptimizeOptions) -> lance::
     Ok(0)
 }
 
+/// The rows of each fragment of the dataset.
+fn fragment_rows(dataset: &Dataset) -> BTreeMap<u32, u64> {
+    dataset
+        .manifest()
+        .fragments
+        .iter()
+        .map(|f| (crate::narrow_u32(f.id), f.num_rows().unwrap_or(0) as u64))
+        .collect()
+}
+
+/// The segments of vector index `name` in the order of the manifest, the order they were
+/// committed in, each with the fragments it still answers for.
+fn vector_segments(
+    indices: &[lance::table::format::IndexMetadata],
+    name: &str,
+    fragments: &BTreeMap<u32, u64>,
+) -> Vec<(lance::table::format::IndexMetadata, Vec<u32>)> {
+    indices
+        .iter()
+        .filter(|segment| segment.name == name)
+        .map(|segment| {
+            let covered = segment
+                .fragment_bitmap
+                .iter()
+                .flat_map(|bitmap| bitmap.iter())
+                .filter(|id| fragments.contains_key(id))
+                .collect();
+            (segment.clone(), covered)
+        })
+        .collect()
+}
+
+/// The newest segment that answers for a fragment, its column and its model: the one Lance
+/// encodes the next write against. None for an index without one.
+// shortcut: Lance drops a segment once every row it answers for is gone, in the commit that
+// deletes them. A model lives only in its segments, so if the rows of the one segment a model
+// was trained into are all deleted before another step encodes against it (a run that stopped
+// right after training), the model is lost and a later step trains it again. Keep a model
+// apart from its segments if that proves frequent.
+async fn newest_model(
+    dataset: &Dataset,
+    segments: &[(lance::table::format::IndexMetadata, Vec<u32>)],
+) -> lance::Result<
+    Option<(
+        lance::table::format::IndexMetadata,
+        String,
+        std::sync::Arc<dyn lance_index::vector::VectorIndex>,
+    )>,
+> {
+    let Some((segment, _)) = segments
+        .iter()
+        .rev()
+        .find(|(_, covered)| !covered.is_empty())
+    else {
+        return Ok(None);
+    };
+    let column = dataset
+        .schema()
+        .field_by_id(segment.fields[0])
+        .map(|field| field.name.clone())
+        .unwrap_or_default();
+    let model = dataset
+        .open_vector_index(&column, &segment.uuid, &NoOpMetricsCollector)
+        .await?;
+    Ok(Some((segment.clone(), column, model)))
+}
+
 /// One step of a vector index: its kind and the rows it rewrote, 0 if the index is as it should
 /// be.
 ///
@@ -493,45 +585,20 @@ async fn vector_step(
     name: &str,
     mut options: OptimizeOptions,
 ) -> lance::Result<(&'static str, u64)> {
-    let fragments: BTreeMap<u32, u64> = dataset
-        .manifest()
-        .fragments
-        .iter()
-        .map(|f| (crate::narrow_u32(f.id), f.num_rows().unwrap_or(0) as u64))
-        .collect();
-    // In the order of the manifest, which is the order they were committed in: the last one is
-    // the one Lance encodes the next write against. With the fragments each still answers for.
-    let segments: Vec<_> = dataset
-        .load_indices()
-        .await?
-        .iter()
-        .filter(|segment| segment.name == name)
-        .map(|segment| {
-            let covered: Vec<u32> = segment
-                .fragment_bitmap
-                .iter()
-                .flat_map(|bitmap| bitmap.iter())
-                .filter(|id| fragments.contains_key(id))
-                .collect();
-            (segment.clone(), covered)
-        })
-        .collect();
-    let Some((newest, _)) = segments
-        .iter()
-        .rev()
-        .find(|(_, covered)| !covered.is_empty())
-    else {
+    let fragments = fragment_rows(dataset);
+    let segments = vector_segments(&dataset.load_indices().await?, name, &fragments);
+    let Some((newest, column, model)) = newest_model(dataset, &segments).await? else {
         return Ok(("copy", 0));
     };
-    let column = dataset
-        .schema()
-        .field_by_id(newest.fields[0])
-        .map(|field| field.name.clone())
-        .unwrap_or_default();
-    let model = dataset
-        .open_vector_index(&column, &newest.uuid, &NoOpMetricsCollector)
-        .await?;
     let dimensions = model.ivf_model().dimension();
+    // A row of a multi-vector attribute holds several vectors, and a step encodes each.
+    let covered: u64 = segments
+        .iter()
+        .find(|(segment, _)| segment.uuid == newest.uuid)
+        .map_or(0, |(_, covered)| {
+            covered.iter().map(|id| fragments[id]).sum()
+        });
+    let vectors_per_row = (model.num_rows() / covered.max(1)).max(1);
     // shortcut: Lance trains at most 4,096 partitions (`recommended_num_partitions`), and a model
     // grows only while training fits half a step. The model so stays at 4,096 partitions above
     // about 2,250,000 rows of 128 dimensions, and at about 1,720 of 1,024 dimensions by default;
@@ -548,15 +615,22 @@ async fn vector_step(
         && wanted >= (MODEL_GROWTH * current).min(ceiling)
         && training_fits(config, wanted, dimensions);
     // shortcut: Lance sizes the model by all the rows of the table, also those that leave the
-    // column null, so a column that leaves more than half of them null keeps its model: its
-    // vectors would fill fewer than half the partitions' target rows. Train with an explicit
-    // count when sparse columns need it.
+    // column null, so a column of which fewer than half the rows hold a vector keeps its model:
+    // its vectors would fill fewer than half the partitions' target rows. The vectors are the
+    // rows its segments index (a segment may still hold some of rows since deleted). Train with
+    // an explicit count when sparse columns need it.
     if grow {
-        let vectors = dataset
-            // Backticks make the name a column whatever it spells (`null`, `order`).
-            .count_rows(Some(format!("`{column}` IS NOT NULL")))
-            .await?;
-        grow = MODEL_GROWTH * vectors >= wanted * config.namespace.dense_partition_rows as usize;
+        let mut vectors = 0;
+        for (segment, covered) in &segments {
+            if !covered.is_empty() {
+                vectors += dataset
+                    .open_vector_index(&column, &segment.uuid, &NoOpMetricsCollector)
+                    .await?
+                    .num_rows();
+            }
+        }
+        grow = MODEL_GROWTH as u64 * vectors
+            >= (wanted * config.namespace.dense_partition_rows as usize) as u64;
     }
     // shortcut: training runs in the step's process and cannot stop at the deadline. It holds
     // the sample, 4,096 × 64 vectors (1.07 GB of 1,024 dimensions); `training_fits` keeps it
@@ -565,7 +639,7 @@ async fn vector_step(
         let start = std::time::Instant::now();
         let mut retrain = options.clone();
         retrain.retrain = true;
-        retrain.max_rows_per_task = Some(encode_rows(config, wanted, dimensions));
+        retrain.max_rows_per_task = Some(encode_rows(config, wanted, dimensions) / vectors_per_row);
         // The planner of a split rebuild trains the model and plans tasks against it. Only the
         // model is taken: the task below follows the segments instead, so that the step commits
         // alone.
@@ -575,7 +649,7 @@ async fn vector_step(
         };
         crate::telemetry::index_model_trained(name, wanted, start.elapsed());
         // Training spent up to half the step's main work: the step encodes half as many rows.
-        let budget = (encode_rows(config, wanted, dimensions) / 2).max(1);
+        let budget = (encode_rows(config, wanted, dimensions) / vectors_per_row / 2).max(1);
         (
             "train",
             task.reference,
@@ -597,7 +671,7 @@ async fn vector_step(
                 stale.push(segment);
             }
         }
-        let budget = encode_rows(config, current, dimensions);
+        let budget = (encode_rows(config, current, dimensions) / vectors_per_row).max(1);
         ("encode", newest.clone(), stale, budget)
     };
     stale.retain(|(_, covered)| !covered.is_empty());
@@ -614,7 +688,11 @@ async fn vector_step(
         } else {
             2 * others
         };
-        options.max_rows_per_segment = Some(copy_rows(config, dimensions).min(run).max(1));
+        options.max_rows_per_segment = Some(
+            (copy_rows(config, dimensions) / vectors_per_row)
+                .min(run)
+                .max(1),
+        );
         return Ok(("copy", merge_tier(dataset, &options).await?));
     }
     // The step that trained takes the smallest segment, the newest of them, which a later step
@@ -629,9 +707,11 @@ async fn vector_step(
     }
     // Whole segments, oldest first, while they fit the step; of a larger first one, its first
     // fragments.
-    // shortcut: a fragment is encoded whole. A write's fragment holds at most
-    // `envelope_max_rows` (50,000 by default) and a compacted one the rows of a compaction step;
-    // a larger `envelope_max_rows` can make one step encode more than its budget.
+    // shortcut: a fragment is encoded whole. A compacted one holds at most `compaction_rows`,
+    // half of what a step encodes against the largest model, and a write's one at most
+    // `envelope_max_rows` (50,000 by default, within an encode step up to 1,024 dimensions); a
+    // larger `envelope_max_rows`, or a wider vector column, can make one step encode more than
+    // its budget.
     let (mut encode, mut replaces, mut rows) = (Vec::new(), Vec::new(), 0u64);
     let mut rest = None;
     for (segment, covered) in stale {
@@ -652,9 +732,13 @@ async fn vector_step(
                 rows += fragments[id];
                 taken += 1;
             }
-            let mut left = segment.clone();
-            left.fragment_bitmap = Some(covered[taken..].iter().copied().collect());
-            rest = Some(left);
+            if taken == covered.len() {
+                replaces.push(segment.uuid);
+            } else {
+                let mut left = segment.clone();
+                left.fragment_bitmap = Some(covered[taken..].iter().copied().collect());
+                rest = Some(left);
+            }
         }
         break;
     }
@@ -734,8 +818,8 @@ async fn merge_step(
         .await?
     } else {
         // shortcut: any other index merges all its segments in one step. The full-text one took
-        // 98-111 s at 3,000,000 rows (#319), so it outgrows a 5-minute step at about 8,000,000:
-        // merge it in tiers before a namespace reaches that.
+        // 98-111 s at 3,000,000 rows (#319), so it outgrows a 5-minute step at about 8,000,000
+        // rows: #381 merges it in steps.
         commit::native_step(
             lease,
             dataset.optimize_indices(&options),
@@ -1562,39 +1646,15 @@ async fn compact_one(
     head: ServingHead,
 ) -> Result<bool> {
     let limit = config.writer.maintenance.step_max_duration.as_duration();
-    // The rewritten rows are encoded again against the newest model of every vector index, so a
-    // pair holds at most the rows a step encodes against all of them.
-    let budget = match test_step_rows() {
-        Some(rows) => rows,
-        None => {
-            let mut newest = BTreeMap::new();
-            for segment in dataset.load_indices().await?.iter() {
-                if is_vector_index(config, &segment.name) {
-                    newest.insert(segment.name.clone(), segment.clone());
-                }
-            }
-            let mut cost = 0;
-            for segment in newest.values() {
-                let column = dataset
-                    .schema()
-                    .field_by_id(segment.fields[0])
-                    .map(|field| field.name.clone())
-                    .unwrap_or_default();
-                let model = dataset
-                    .open_vector_index(&column, &segment.uuid, &NoOpMetricsCollector)
-                    .await?;
-                cost += model.total_partitions() * model.ivf_model().dimension();
-            }
-            whole_rows(half_step(config) * ENCODE_DISTANCES_PER_SECOND / cost.max(1) as f64)
-        }
-    };
+    // The rewritten rows are encoded again against the vector models.
+    let budget = compaction_rows(config);
     // Limit the actual source set, rather than asking the native planner to
     // discard an oversized bin. Deleted fragments take priority regardless of size.
     let fragments = &dataset.manifest().fragments;
     let rows = |f: &lance::table::format::Fragment| f.physical_rows.unwrap_or(0) as u64;
     // shortcut: a fragment with deletions is rewritten whole, since its deleted rows must leave
-    // storage. It holds at most `envelope_max_rows` (50,000 by default) or, once compacted, the
-    // rows of this budget; a larger `envelope_max_rows` can make this step longer.
+    // storage. It holds at most `envelope_max_rows` (50,000 by default) or, once compacted,
+    // `compaction_rows`; a larger `envelope_max_rows` can make this step longer.
     let selected: BTreeSet<_> =
         if let Some(fragment) = fragments.iter().find(|f| f.deletion_file.is_some()) {
             [fragment.id].into_iter().collect()

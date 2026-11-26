@@ -685,7 +685,31 @@ impl PreparedReader {
             };
             let count = selected.len();
             let index = index.clone();
-            let prefilter = prefilter.clone();
+            // A segment whose files hold rows another segment answers for admits only its own
+            // fragments, so that those rows take no place in its candidates.
+            let prefilter = match self
+                .indexes
+                .iter()
+                .find(|segment| map.foreign && segment.uuid.to_string() == map.segment())
+                .and_then(|segment| segment.fragment_bitmap.as_ref())
+            {
+                Some(coverage) => {
+                    let mut own = RowAddrTreeMap::new();
+                    for fragment in coverage {
+                        own.insert_fragment(fragment);
+                    }
+                    Arc::new(DatasetPreFilter::new(
+                        self.dataset.clone(),
+                        indexes.as_ref(),
+                        Some(Box::new(RowAdmission(
+                            self.selected_rows()
+                                .clone()
+                                .intersect(RowAddrMask::from_allowed(own)),
+                        ))),
+                    ))
+                }
+                None => prefilter.clone(),
+            };
             Ok(async move {
                 let batches = index
                     .search_partitions(

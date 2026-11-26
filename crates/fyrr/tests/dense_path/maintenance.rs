@@ -1985,6 +1985,72 @@ async fn vector_segment_rows(config: &Path, version: Option<u64>) -> Vec<usize> 
         .collect()
 }
 
+/// Four writes of 100 rows of 32-row partitions have models of 4 partitions.
+/// A run stopped after its first step trains one of 12 into the newest
+/// segment. Rewriting that write's 100 rows deletes the segment's only
+/// fragment, and Lance drops the segment with the model in the same commit:
+/// the rewritten rows follow the model of 4, and the next run trains the model
+/// of 12 again and brings every segment to it.
+#[tokio::test]
+#[ignore = "real executable and local storage; scripts/ci"]
+async fn maintenance_trains_again_a_model_whose_segment_lost_its_rows_on_storage() {
+    let (config, root) = setup_on(Backend::Local);
+    let text = std::fs::read_to_string(&config)
+        .unwrap()
+        .split("[[sources]]")
+        .next()
+        .unwrap()
+        .replace("[namespace]\n", "[namespace]\ndense_partition_rows = 32\n");
+    let sources = root.join("sources");
+    std::fs::remove_dir_all(&sources).unwrap();
+    std::fs::create_dir_all(&sources).unwrap();
+    std::fs::write(
+        &config,
+        format!(
+            "{text}\n[writer]\nthreads = 2\n\n[writer.maintenance]\nstep_max_duration = \"10m\"\n\n[[sources]]\nid = \"docs\"\ntype = \"local-files\"\npermissions = \"fixed\"\nreaders = [\"grp:allow\"]\n[sources.scope]\npaths = [\"{}\"]\n",
+            sources.display()
+        ),
+    )
+    .unwrap();
+    success(&config, &["writer", "namespace", "create"]);
+    let write = |rows: std::ops::Range<usize>, version: &str| {
+        for row in rows {
+            let text = format!("model doc {row} {version}");
+            std::fs::write(sources.join(format!("{row}.txt")), &text).unwrap();
+            root.embedding.insert_both(&text, clustered(row % 64, row));
+        }
+        success(&config, &["writer", "sync"]);
+        success(&config, &["writer", "commit"]);
+    };
+    for first in [0, 100, 200, 300] {
+        write(first..first + 100, "a");
+    }
+    assert_eq!(vector_partitions(&config).await, [Some(4); 4]);
+    let output = run_with(
+        &config,
+        &["writer", "maintain"],
+        &[("FYRR_TEST_VECTOR_STEPS", "1")],
+    );
+    assert!(output.status.success(), "{}", report(&output));
+    assert_eq!(
+        vector_partitions(&config).await,
+        [Some(4), Some(4), Some(4), Some(12)]
+    );
+    write(300..400, "b");
+    assert_eq!(vector_partitions(&config).await, [Some(4); 4]);
+    let output = run(&config, &["writer", "maintain"]);
+    assert!(output.status.success(), "{}", report(&output));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("index_model=trained"), "{stderr}");
+    let partitions = vector_partitions(&config).await;
+    assert_eq!(partitions, vec![Some(12); partitions.len()]);
+    let mut client = tools::Mcp::open(&config);
+    let found = tools::body(client.call("search", json!({"query": "model doc 377 b", "limit": 3})));
+    assert!(found.to_string().contains("model doc 377 b"), "{found}");
+    drop(client);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 /// The partitions of each vector segment, in publication order.
 async fn vector_partitions(config: &Path) -> Vec<Option<u32>> {
     publication(config)
@@ -2130,6 +2196,17 @@ async fn maintenance_grows_the_vector_model_in_bounded_steps_on_storage() {
     // later write of the old model.
     for query in ["seg doc 77", "seg doc 9001", "seg doc 20000"] {
         assert!(found(query), "{query}: {partitions:?}");
+    }
+    // The same rows by their vectors alone: no text matches the query, only the dense lane.
+    for row in [77, 9001, 20000] {
+        let query = format!("zzprobe {row}");
+        root.embedding.insert_both(&query, clustered(row % 64, row));
+        let mut client = tools::Mcp::open(&config);
+        let hits = tools::body(client.call("search", json!({"query": query, "limit": 3})));
+        assert!(
+            hits.to_string().contains(&format!("seg doc {row}\"")),
+            "{row}: {hits}"
+        );
     }
     write(47 * COMMIT_ROWS..48 * COMMIT_ROWS);
     assert_eq!(vector_partitions(&config).await.last(), Some(&Some(42)));

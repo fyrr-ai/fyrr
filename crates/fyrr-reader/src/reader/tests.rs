@@ -888,6 +888,7 @@ fn filtered_index_search_reads_fewer_bytes_than_the_exact_scan() {
         segment: String::new(),
         admitted: vec![admitted; 182],
         indexed_rows: 182 * 550,
+        foreign: false,
     };
     let plan = |maps: &[PartitionMap], selected| {
         FilterPlan::new(
