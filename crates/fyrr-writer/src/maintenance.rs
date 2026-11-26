@@ -479,8 +479,9 @@ async fn merge_tier(dataset: &mut Dataset, options: &OptimizeOptions) -> lance::
 /// 2. `encode`: a segment has another model than the newest. The step encodes the oldest such
 ///    segments again against the newest model, at most `encode_rows`, as one new segment.
 /// 3. `copy`: every segment has the newest model. The step copies neighbors into one segment of
-///    at most `copy_rows`. The largest segment joins only once the others together hold half its
-///    rows; until then they are copied into segments of at most twice their rows.
+///    at most `copy_rows`. Of an index larger than an encode step, the largest segment joins only
+///    once the others together hold half its rows; until then they are copied into segments of at
+///    most twice their rows.
 ///
 /// A step that reaches only part of a segment encodes its first fragments, at least one, and
 /// commits the segment again answering for the others. Each step is one Lance version, so a run
@@ -608,7 +609,7 @@ async fn vector_step(
             .collect();
         let largest = sizes.iter().copied().max().unwrap_or(0);
         let others = sizes.iter().sum::<u64>() - largest;
-        let run = if 2 * others >= largest {
+        let run = if 2 * others >= largest || largest + others <= budget {
             largest + others
         } else {
             2 * others
