@@ -13,6 +13,8 @@ use tokio::sync::Notify;
 struct DelayedStore {
     inner: Arc<dyn ObjectStore>,
     armed: AtomicBool,
+    /// Whether the held PUT is written at once and only its answer waits.
+    written_first: bool,
     entered: Arc<Notify>,
     resume: Arc<Notify>,
 }
@@ -37,8 +39,14 @@ impl ObjectStore for DelayedStore {
         assert!(matches!(options.mode, PutMode::Update(_)));
         let (inner, path) = (self.inner.clone(), path.clone());
         let (entered, resume) = (self.entered.clone(), self.resume.clone());
+        let written_first = self.written_first;
         tokio::spawn(async move {
             entered.notify_one();
+            if written_first {
+                let written = inner.put_opts(&path, payload, options).await;
+                resume.notified().await;
+                return written;
+            }
             resume.notified().await;
             inner.put_opts(&path, payload, options).await
         })
@@ -86,11 +94,19 @@ impl ObjectStore for DelayedStore {
 pub(crate) fn delayed_store(
     inner: Arc<dyn ObjectStore>,
 ) -> (Arc<dyn ObjectStore>, Arc<Notify>, Arc<Notify>) {
+    held_store(inner, false)
+}
+
+fn held_store(
+    inner: Arc<dyn ObjectStore>,
+    written_first: bool,
+) -> (Arc<dyn ObjectStore>, Arc<Notify>, Arc<Notify>) {
     let entered = Arc::new(Notify::new());
     let resume = Arc::new(Notify::new());
     let store = Arc::new(DelayedStore {
         inner,
         armed: AtomicBool::new(true),
+        written_first,
         entered: entered.clone(),
         resume: resume.clone(),
     });
@@ -259,22 +275,30 @@ async fn a_slow_renewal_within_the_ttl_keeps_the_lease_on_local_storage() {
     let (config, root) = local_config("slow-renewal");
     put_head(&config).await;
     let mut lease = LeaseGuard::acquire(&config).await.unwrap();
-    let (store, entered, resume) = delayed_store(lease.store.clone());
+    // The held renewal is written at once; only its answer waits, so a slow
+    // disk adds nothing to the hold unless the write outlasts it.
+    let (store, entered, resume) = held_store(lease.store.clone(), true);
     Arc::get_mut(&mut lease).unwrap().store = store;
-    // TTL 3 s: renewals every 1 s, and the first one's write takes 2.4 s.
+    // TTL 3 s: renewals every 1 s. The first one starts at about 1 s, writes
+    // an expiry of about 4 s and is answered 2.1 s later. The next renewal
+    // starts then; one an interval later would come after the expiry.
     let renewal = lease.keepalive();
     tokio::time::timeout(Duration::from_secs(10), entered.notified())
         .await
         .expect("the first renewal reached its write");
-    tokio::time::sleep(Duration::from_millis(2400)).await;
+    let held = tokio::time::Instant::now();
+    tokio::time::sleep(Duration::from_millis(2100)).await;
     resume.notify_one();
-    // Past the expiry the slow renewal wrote, and past when a renewal one
-    // interval after it would have come.
-    tokio::time::sleep(Duration::from_millis(2500)).await;
-    lease
-        .head()
-        .await
-        .expect("the lease is renewed after the slow write");
+    // Past the expiry the slow renewal wrote, the lease is live again once the
+    // next renewal's write is answered; a lost lease never is.
+    tokio::time::sleep_until(held + Duration::from_millis(3300)).await;
+    let renewed = tokio::time::timeout(Duration::from_secs(10), async {
+        while lease.head().await.is_err() {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    assert!(renewed.is_ok(), "the lease is renewed after the slow write");
     renewal.stop().await.unwrap();
     lease.release().await.unwrap();
     std::fs::remove_dir_all(root).unwrap();
