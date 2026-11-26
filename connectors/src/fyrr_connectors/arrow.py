@@ -20,7 +20,6 @@ from .validate import ContractViolation, check_document_changes_json
 
 CONTRACT_KEY = "fyrr.contract"
 VERSION_KEY = "fyrr.schema_version"
-DOCUMENT_CHANGES_CONTRACT = "connector.document_changes"
 
 
 def published_document_changes_schema() -> pa.Schema:
@@ -60,7 +59,6 @@ def _arrow_type(data_type: Any) -> pa.DataType:
 
 
 DOCUMENT_CHANGES_SCHEMA = published_document_changes_schema()
-SECTION_TYPE = DOCUMENT_CHANGES_SCHEMA.field("sections").type.value_type
 
 _METADATA_FIELDS = ("title", "author", "team", "project", "status")
 

@@ -32,8 +32,6 @@ MAX_WAIT_SECONDS = 60.0
 TIMEOUT_SECONDS = 120
 #: Drive caps an export at 10 MB; a larger body is refused instead of buffered.
 EXPORT_MAX_BYTES = 16 << 20
-MAX_RESPONSE_BYTES = 16 << 20
-MAX_PAGES = 10_000
 
 
 class ApiError(_http.ApiError):
@@ -57,7 +55,7 @@ def authorized_session(key: Mapping[str, Any], subject: str, api: str) -> reques
 
 def _json(response: requests.Response) -> dict[str, Any]:
     body = _http.decode_json(
-        _http.read_body(response, MAX_RESPONSE_BYTES, ApiError(0, "response_limit")),
+        _http.read_body(response, _http.MAX_RESPONSE, ApiError(0, "response_limit")),
         ApiError(0, "response_invalid"),
     )
     if not isinstance(body, dict):
@@ -108,6 +106,10 @@ class Client:
             self._sessions.clear()
             self._local = threading.local()
 
+    @_http.retry(
+        _http.RetryPolicy(ATTEMPTS, float("inf"), MAX_WAIT_SECONDS, jitter="wait", budget=300),
+        lambda: ApiError(0, "transport", transient=True),
+    )
     def _request(
         self,
         subject: str,
@@ -115,37 +117,25 @@ class Client:
         params: Mapping[str, Any],
         read: Callable[[requests.Response], T],
         api: str = DRIVE,
-    ) -> T:
-        status, reason = 0, "transport"
-        retries = _http.Retries(
-            _http.RetryPolicy(ATTEMPTS, float("inf"), MAX_WAIT_SECONDS, jitter="wait", budget=300),
-            ApiError(0, "transport", transient=True),
-        )
-        for _attempt in retries:
-            try:
-                with self._session(subject, api).get(
-                    f"{self._endpoint}/{api}{path}",
-                    params=params,
-                    timeout=TIMEOUT_SECONDS,
-                    stream=True,
-                    allow_redirects=False,
-                ) as response:
-                    status = response.status_code
-                    if status < 300:
-                        return read(response)
-                    reason, location = _error(response)
-                    retry_after = response.headers.get("Retry-After", "")
-            except requests.RequestException:
-                status, reason = 0, "transport"
-                continue
-            retries.error = ApiError(status, reason, transient=True)
-            if retries.policy.retryable(status) or reason in RATE_LIMIT_REASONS:
-                delay = _http.retry_after(retry_after)
-                if delay is not None:
-                    retries.wait = max(delay, retries.wait)
-                continue
-            raise ApiError(status, reason, location)
-        raise ApiError(status, reason, transient=True)
+        *,
+        _retry: _http.Retries,
+    ) -> T | _http.Retry:
+        with self._session(subject, api).get(
+            f"{self._endpoint}/{api}{path}",
+            params=params,
+            timeout=TIMEOUT_SECONDS,
+            stream=True,
+            allow_redirects=False,
+        ) as response:
+            status = response.status_code
+            if status < 300:
+                return read(response)
+            reason, location = _error(response)
+            after = _http.retry_after(response.headers.get("Retry-After", ""))
+        if _retry.policy.retryable(status) or reason in RATE_LIMIT_REASONS:
+            wait = None if after is None else max(after, _retry.wait)
+            return _http.Retry(ApiError(status, reason, transient=True), wait)
+        raise ApiError(status, reason, location)
 
     def get(self, subject: str, path: str, **params: Any) -> dict[str, Any]:
         return self._request(subject, path, params, _json)
@@ -156,7 +146,7 @@ class Client:
         """Every page of a list call, or an error: never a short list. `fields`
         must include `nextPageToken`."""
         seen: set[bytes] = set()
-        for _ in range(MAX_PAGES):
+        for _ in range(_http.MAX_PAGES):
             token = params.get("pageToken")
             if token is not None:
                 if not isinstance(token, str) or not token:

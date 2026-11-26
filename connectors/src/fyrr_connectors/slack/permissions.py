@@ -3,9 +3,10 @@
 import re
 from dataclasses import dataclass
 
+from .._http import MAX_ENTRIES
 from ..connector import EmailVerification, SourceGroup, SourceUser
 from ..validate import MAX_READERS
-from .client import MAX_ENTRIES, ApiError
+from .client import ApiError
 from .feeds import Channel
 
 

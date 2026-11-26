@@ -10,7 +10,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from fake_drive import FakeDrive
 
-from fyrr_connectors import bundled, runtime
+from fyrr_connectors import _http, bundled, runtime
 from fyrr_connectors.google_drive import client
 from fyrr_connectors.google_drive.client import ATTEMPTS, ApiError, Client
 
@@ -156,7 +156,7 @@ def test_json_response_body_is_bounded_and_closed(drive, monkeypatch, status):
 
     session.get = get
     monkeypatch.setattr(client, "authorized_session", lambda *_: session)
-    monkeypatch.setattr(client, "MAX_RESPONSE_BYTES", 8, raising=False)
+    monkeypatch.setattr(_http, "MAX_RESPONSE", 8)
     if status != 200:
         drive.fail(_files, status, "insufficientFilePermissions")
     with pytest.raises(ApiError, match="response_limit"):
@@ -168,7 +168,7 @@ def test_json_response_body_is_bounded_and_closed(drive, monkeypatch, status):
 def test_page_limit_refuses_an_incomplete_listing(drive, monkeypatch):
     for number in range(5):
         drive.put(f"doc-{number}", owner=ALICE)
-    monkeypatch.setattr(client, "MAX_PAGES", 1, raising=False)
+    monkeypatch.setattr(_http, "MAX_PAGES", 1)
     with pytest.raises(ApiError, match="pagination_limit"):
         list(_client().pages(ALICE, "files", corpora="user", fields="nextPageToken,files(id)"))
 
@@ -215,7 +215,7 @@ def test_large_listing_completes_reconciliation(drive, index, monkeypatch):
 def test_sync_paths_propagate_pagination_failure(drive, index, monkeypatch, kind):
     for number in range(5):
         drive.put(f"doc-{number}", owner=ALICE)
-    monkeypatch.setattr(client, "MAX_PAGES", 1)
+    monkeypatch.setattr(_http, "MAX_PAGES", 1)
     batches = []
     with pytest.raises(ApiError, match="pagination_limit"):
         for batch in index.run(kind, "sync", owners=[ALICE]):

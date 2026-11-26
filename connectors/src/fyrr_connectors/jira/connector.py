@@ -5,6 +5,7 @@ import json
 from dataclasses import replace
 from datetime import UTC, datetime
 
+from .._http import MAX_ENTRIES
 from ..arrow import Delete, Metadata, Section, Upsert, document_changes
 from ..connector import (
     Connector,
@@ -16,12 +17,12 @@ from ..connector import (
     PrincipalBatch,
     SyncKind,
 )
-from ..runtime import encode
+from ..runtime import header_bytes
 from ..validate import ContractViolation
 from . import render
 from .adf import ADFError
 from .auth import Identity
-from .client import MAX_ENTRIES, ApiError, Client, number
+from .client import ApiError, Client, number
 from .comments import Comment, visibility_signature
 from .config import Scope, Settings
 from .feeds import Cursor, IssueBinding, fingerprint, rotation, stamp
@@ -36,8 +37,6 @@ class Jira(Connector[Settings, Scope]):
 
     def _open(self, cursor=None):
         self.settings, self.scope = self.context.settings, self.context.scope
-        if self.context.permissions == "fixed" and not self.context.readers:
-            raise ValueError("jira_fixed_readers_required")
         key = hashlib.sha256(
             (
                 fingerprint(self.settings, self.scope)
@@ -621,8 +620,9 @@ class Jira(Connector[Settings, Scope]):
 
     def _preflight(self, kind, cursor, batches):
         for batch in batches:
-            header, _ = encode(self.context.source_id, kind, cursor, batch)
-            if len(json.dumps(header).encode()) > self.context.limits.max_bytes:
+            if header_bytes(self.context.source_id, kind, cursor, batch) > (
+                self.context.limits.max_bytes
+            ):
                 raise ValueError("jira_snapshot_envelope_limit")
             cursor = batch.cursor
 

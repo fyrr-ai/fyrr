@@ -7,6 +7,7 @@ import time
 from bisect import bisect_left, bisect_right
 from dataclasses import replace
 
+from .._http import MAX_ENTRIES
 from ..arrow import Delete, Metadata, Section, Upsert, document_changes
 from ..connector import (
     Connector,
@@ -18,10 +19,10 @@ from ..connector import (
     PrincipalBatch,
     SyncKind,
 )
-from ..runtime import encode
+from ..runtime import header_bytes
 from . import render, threads
 from .auth import Identity
-from .client import MAX_ENTRIES, ApiError, Client
+from .client import ApiError, Client
 from .config import Scope, Settings
 from .feeds import Channel, ChannelCursor, Cursor, catalog, history, rotation
 from .permissions import AccessSnapshot, container
@@ -48,10 +49,6 @@ class Slack(Connector[Settings, Scope]):
     def _open(self, cursor=None):
         self.settings, self.scope = self.context.settings, self.context.scope
         assert isinstance(self.settings, Settings) and isinstance(self.scope, Scope)
-        if self.context.permissions not in ("fixed", "sync") or (
-            self.context.permissions == "fixed" and not self.context.readers
-        ):
-            raise ValueError("slack_fixed_readers_required")
         if self.scope.include_shared and self.context.permissions != "fixed":
             raise ValueError("slack_shared_requires_fixed")
         self.state = Cursor.decode(
@@ -524,8 +521,9 @@ class Slack(Connector[Settings, Scope]):
         # Preflight every frame before yielding, so no later size error leaves
         # part of the read yielded.
         for batch in batches:
-            header, _ = encode(self.context.source_id, kind, cursor, batch)
-            if len(json.dumps(header).encode()) > self.context.limits.max_bytes:
+            if header_bytes(self.context.source_id, kind, cursor, batch) > (
+                self.context.limits.max_bytes
+            ):
                 raise ValueError("slack_snapshot_envelope_limit")
             cursor = batch.cursor
 

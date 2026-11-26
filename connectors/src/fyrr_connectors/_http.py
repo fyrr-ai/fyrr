@@ -14,6 +14,11 @@ from urllib.parse import urlsplit
 
 import requests
 
+#: Bounds of one provider read, shared by every client.
+MAX_RESPONSE = 16 << 20
+MAX_PAGES = 10_000
+MAX_ENTRIES = 100_000
+
 
 class ApiError(Exception):
     """A value-free provider diagnostic with its HTTP status and retry result."""
@@ -59,7 +64,6 @@ class RetryPolicy:
     jitter: str = "none"
     budget: float = math.inf
     retry_statuses: tuple[int, ...] = (429,)
-    retry_header: str = "Retry-After"
     server_error: str = "transient_failure"
     status_errors: tuple[tuple[int, str], ...] = ()
 
@@ -87,8 +91,6 @@ class Retries:
                     raise self.error
                 time.sleep(wait)
             self.wait = min(2**attempt, self.policy.backoff_cap)
-            if self.policy.jitter == "backoff":
-                self.wait += random.uniform(0, 1)
             self.attempt = attempt
             yield attempt
 
@@ -113,6 +115,8 @@ def retry(policy: RetryPolicy, transport_error, budget_error=None):
                     if not isinstance(result, Retry):
                         return result
                     failure = result.error
+                    if budget_error is None:
+                        retries.error = failure
                     if result.wait is not None:
                         retries.wait = result.wait
                 except (requests.RequestException, OSError):
@@ -143,7 +147,7 @@ def json_response(response, retries, error, limit, http_error=None):
     if policy.retryable(status):
         wait = None
         if status == 429:
-            wait = retry_after(response.headers.get(policy.retry_header, ""))
+            wait = retry_after(response.headers.get("Retry-After", ""))
             if wait is None or wait > policy.budget:
                 raise error("rate_header_invalid")
         code = "rate_limited" if status == 429 else policy.server_error

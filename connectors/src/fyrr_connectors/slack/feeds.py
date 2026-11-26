@@ -5,8 +5,9 @@ import json
 import re
 from dataclasses import asdict, dataclass, field
 
+from .._http import MAX_ENTRIES
 from ..validate import MAX_CURSOR_BYTES
-from .client import MAX_ENTRIES, ApiError
+from .client import ApiError
 
 PER_CHANNEL_ANCHORS = 8
 TOTAL_ANCHORS = 64

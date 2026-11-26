@@ -6,6 +6,7 @@ import pytest
 from fake_notion import block, ident
 from notion_kit import text
 
+from fyrr_connectors import _http
 from fyrr_connectors.notion.client import ATTEMPTS, ApiError
 
 
@@ -90,20 +91,16 @@ def test_traversal_limit_never_completes_a_listing(notion, index, monkeypatch):
 
 
 def test_unique_paging_cursors_are_still_bounded(notion, index, monkeypatch):
-    from fyrr_connectors.notion import client
-
     for number in range(4):
         notion.page(f"p-{number}", "root")
-    monkeypatch.setattr(client, "MAX_LIST_PAGES", 1)
+    monkeypatch.setattr(_http, "MAX_PAGES", 1)
     with pytest.raises(ValueError, match="notion_listing_limit"):
         index.listing()
 
 
 def test_transport_response_size_is_bounded(notion, index, monkeypatch):
-    from fyrr_connectors.notion import client
-
     notion.page("plan", "root", blocks=[block("paragraph", "x" * 10_000)])
-    monkeypatch.setattr(client, "MAX_RESPONSE_BYTES", 4096)
+    monkeypatch.setattr(_http, "MAX_RESPONSE", 4096)
     with pytest.raises(ValueError, match="notion_response_limit"):
         index.sync()
     assert index.cursor is None

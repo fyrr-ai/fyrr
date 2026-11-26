@@ -2,7 +2,7 @@
 
 import pytest
 
-from fyrr_connectors.github import client
+from fyrr_connectors import _http
 from fyrr_connectors.github.auth import AppAuth
 from fyrr_connectors.github.client import ATTEMPTS, ApiError, Client
 from fyrr_connectors.github.config import Settings
@@ -107,7 +107,7 @@ def test_hostile_pages_are_refused(github, index, monkeypatch, corruption):
 
 
 def test_response_size_is_bounded(github, index, monkeypatch):
-    monkeypatch.setattr(client, "MAX_RESPONSE_BYTES", 64)
+    monkeypatch.setattr(_http, "MAX_RESPONSE", 64)
     with pytest.raises(ValueError, match="response_limit"):
         index.sync()
 
@@ -115,7 +115,7 @@ def test_response_size_is_bounded(github, index, monkeypatch):
 def test_page_work_is_bounded(github, index, monkeypatch):
     github.repo(2)
     github.repo(3)
-    monkeypatch.setattr(client, "MAX_PAGES", 1)
+    monkeypatch.setattr(_http, "MAX_PAGES", 1)
     with pytest.raises(ValueError, match="listing_limit"):
         index.sync()
 

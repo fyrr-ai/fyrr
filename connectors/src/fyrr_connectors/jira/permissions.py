@@ -7,8 +7,9 @@ from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlsplit
 
+from .._http import MAX_ENTRIES
 from ..connector import SourceGroup
-from .client import MAX_ENTRIES, Client, number
+from .client import Client, number
 from .config import Settings
 from .members import Directory, account_id, user_id
 

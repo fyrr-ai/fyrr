@@ -8,9 +8,6 @@ from .._http import session as session
 from .._http import time as time
 
 ATTEMPTS = 6
-MAX_ENTRIES = 100_000
-MAX_RESPONSE = 16 << 20
-MAX_PAGES = 10_000
 
 
 class ApiError(_http.ApiError):
@@ -62,7 +59,7 @@ class Client:
                 response,
                 _retry,
                 ApiError,
-                MAX_RESPONSE,
+                _http.MAX_RESPONSE,
                 lambda status, code: ApiError(code, status),
             )
             if isinstance(body, _http.Retry):
@@ -90,7 +87,7 @@ class Client:
         seen_ids = set()
         count = 0
         previous = 0
-        for _ in range(MAX_PAGES):
+        for _ in range(_http.MAX_PAGES):
             body = {
                 "jql": jql + " ORDER BY id ASC",
                 "maxResults": 100,
@@ -114,7 +111,7 @@ class Client:
                 previous = identity
                 seen_ids.add(identity)
                 count += 1
-                if count > MAX_ENTRIES:
+                if count > _http.MAX_ENTRIES:
                     raise ApiError("search_limit")
                 yield issue
             if page["isLast"]:
@@ -138,7 +135,7 @@ class Client:
             first_boundary = None
             count = 0
             totals_moved = False
-            for _ in range(MAX_PAGES):
+            for _ in range(_http.MAX_PAGES):
                 page = self.call(path, params={**arguments, "startAt": offset})
                 entries: object
                 if isinstance(page, list):
@@ -164,7 +161,7 @@ class Client:
                 if first is not None and total != first[0]:
                     totals_moved = True
                 count += len(entries)
-                if count > MAX_ENTRIES:
+                if count > _http.MAX_ENTRIES:
                     raise ApiError("snapshot_limit")
                 values.extend(entries)
                 if last:

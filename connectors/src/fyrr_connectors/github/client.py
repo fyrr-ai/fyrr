@@ -17,9 +17,6 @@ import requests
 from .. import _http
 
 ATTEMPTS = 6
-MAX_RESPONSE_BYTES = 16 << 20
-MAX_PAGES = 10_000
-MAX_ENTRIES = 100_000
 WAIT_BUDGET = 300
 API_VERSION = "2026-03-10"
 
@@ -64,14 +61,10 @@ def instant(value: object) -> datetime | None:
 def delay(headers: Mapping[str, str], status: int, attempt: int) -> float:
     retry = headers.get("Retry-After")
     if retry is not None:
-        try:
-            result = float(retry)
-        except ValueError:
-            try:
-                result = parsedate_to_datetime(retry).timestamp() - time.time()
-            except (ValueError, TypeError, OverflowError):
-                raise ValueError("github_rate_header_invalid") from None
-        if not 0 <= result <= WAIT_BUDGET:
+        result = _http.retry_after(retry)
+        if result is None:
+            raise ValueError("github_rate_header_invalid")
+        if result > WAIT_BUDGET:
             raise ValueError("github_rate_wait_budget")
         return result
     if headers.get("X-RateLimit-Remaining") == "0":
@@ -112,7 +105,7 @@ class Client:
         ) as response:
             status = response.status_code
             response_headers = response.headers
-            data = _http.read_body(response, MAX_RESPONSE_BYTES, ResponseLimit())
+            data = _http.read_body(response, _http.MAX_RESPONSE, ResponseLimit())
             date = response_headers.get("Date")
             if date:
                 try:
@@ -171,7 +164,7 @@ class Client:
         arguments = {**params, "per_page": 100, "page": 1}
         boundary = None
         seen = set()
-        for _ in range(MAX_PAGES):
+        for _ in range(_http.MAX_PAGES):
             entries, headers = self.request("GET", path, params=arguments)
             entries = _http.entries(entries, ValueError("github_response_invalid"))
             stamps: list[datetime] = []
@@ -191,7 +184,7 @@ class Client:
                 if key not in seen:
                     seen.add(key)
                     fresh.append(item)
-                if len(seen) > MAX_ENTRIES:
+                if len(seen) > _http.MAX_ENTRIES:
                     raise ValueError("github_listing_limit")
             yield fresh
             if (
@@ -213,12 +206,12 @@ class Client:
         arguments = {**(params or {}), "per_page": 100}
         current = 1
         count = 0
-        for _ in range(MAX_PAGES):
+        for _ in range(_http.MAX_PAGES):
             result, headers = self.request("GET", path, params={**arguments, "page": current})
             entries = result.get(key) if key and isinstance(result, dict) else result
             entries = _http.entries(entries, ValueError("github_response_invalid"))
             count += len(entries)
-            if count > MAX_ENTRIES:
+            if count > _http.MAX_ENTRIES:
                 raise ValueError("github_listing_limit")
             if key == "repositories" and (
                 not isinstance(result.get("total_count"), int) or result["total_count"] < count
