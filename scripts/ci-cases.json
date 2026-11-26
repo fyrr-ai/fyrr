@@ -2748,6 +2748,10 @@
         "tier": "full",
         "seconds": 60
       },
+      "full:fyrr:test:dense_path/incremental::incremental_an_older_cursor_put_back_keeps_its_source_blocked_on_storage": {
+        "tier": "full",
+        "seconds": 60
+      },
       "full:fyrr:test:dense_path/incremental::incremental_members_behind_waiting_permissions_are_applied_on_storage": {
         "tier": "full",
         "seconds": 60

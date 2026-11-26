@@ -57,7 +57,9 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   envelope that ends a read with the largest cursors, about 193 KiB (the
   default is 256 MiB); a configuration with a smaller bound is refused when it
   is loaded. `fyrr writer status` lists the sources whose permission chain is
-  broken in `blocked_sources`.
+  broken in `blocked_sources`; a worker fails a permission read with
+  `permission_cursor_lost` when the cursor of such a source is missing, or
+  older than its log. See [operations](docs/operations.md#blocked-sources).
 - The excerpt of a hit in a namespace with an `[namespace.analyzer]`, or with
   `fts_stem`, `fts_remove_stop_words` or `fts_ascii_folding`, is chosen with the
   tokens of its full-text index, as the lexical lane and `highlights` already

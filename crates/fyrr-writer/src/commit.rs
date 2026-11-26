@@ -156,12 +156,17 @@ pub(crate) async fn chains<L: Link>(
         let cursor =
             crate::sync_lease::CursorLease::peek(config, source, SyncKind::Permissions).await?;
         // A missing cursor of a source whose envelopes a worker chained lost
-        // what confirmed them: the source is blocked until it is put back.
-        if cursor.is_none()
-            && listed
-                .values()
-                .any(|link| link.source_id() == source.as_str() && link.lease_generation() > 0)
-        {
+        // what confirmed them, and one older than the log (put back from a copy
+        // after a later read moved it) would confirm a chain without that
+        // read: the source is blocked until the right cursor is back.
+        let lost = listed
+            .values()
+            .filter(|link| link.source_id() == source.as_str() && link.lease_generation() > 0)
+            .any(|link| match &cursor {
+                None => true,
+                Some(state) => stale(state, link),
+            });
+        if lost {
             crate::telemetry::permissions_blocked(source);
             blocked.insert(source.clone());
             continue;
@@ -189,6 +194,16 @@ pub(crate) async fn chains<L: Link>(
     Ok((unresolved, blocked))
 }
 
+/// Whether `link` was written after `cursor`: by a later lease, or as the end
+/// of a read of the cursor's lease that the cursor does not hold yet.
+pub(crate) fn stale<L: Link>(cursor: &fyrr_core::connector::CursorState, link: &L) -> bool {
+    let epoch = cursor.lease.as_ref().map_or(0, |lease| lease.epoch);
+    link.lease_generation() > epoch
+        || (link.lease_generation() == epoch
+            && link.ends_read()
+            && link.sequence() > cursor.sequence)
+}
+
 /// The links of a chain after `applied`, as one walk finds them.
 pub(crate) struct Walk<L> {
     /// Every link, resolved or not.
@@ -203,6 +218,9 @@ pub(crate) trait Link: Clone + From<PreparedEnvelope> {
     fn source_id(&self) -> &str;
     fn previous(&self) -> Option<&String>;
     fn lease_generation(&self) -> u64;
+    fn sequence(&self) -> u64;
+    /// Whether it ends a read, and so moves the cursor.
+    fn ends_read(&self) -> bool;
 }
 
 impl Link for PreparedEnvelope {
@@ -214,6 +232,12 @@ impl Link for PreparedEnvelope {
     }
     fn lease_generation(&self) -> u64 {
         self.lease_generation
+    }
+    fn sequence(&self) -> u64 {
+        self.sequence
+    }
+    fn ends_read(&self) -> bool {
+        crate::apply::complete_read(self)
     }
 }
 
@@ -306,24 +330,30 @@ pub(crate) async fn permission_log(config: &Config, source: &str) -> Result<(boo
         return Ok((false, 0));
     };
     let (store, root) = namespace_store(config)?;
-    let applied = previous_manifest(store.as_ref(), &root, &head)
+    if previous_manifest(store.as_ref(), &root, &head)
         .await?
-        .is_some_and(|m| m.authorization_applied.contains_key(source));
+        .is_some_and(|m| m.authorization_applied.contains_key(source))
+    {
+        return Ok((true, 0));
+    }
     let (paths, resolved) = envelope_paths(config, &head).await?;
-    let mut left = applied;
     let mut generation = 0;
-    for (path, envelope) in read_envelopes(config, &paths).await? {
+    // One envelope at a time: only what this source's permissions say is kept.
+    for path in paths {
+        let envelope: PreparedEnvelope =
+            fyrr_reader::storage::read_contract(store.as_ref(), &path).await?;
+        if envelope.namespace != config.namespace.name {
+            return Err(WriterError::EnvelopeNamespaceInvalid);
+        }
         if envelope.source_id != source || envelope.kind != SyncKind::Permissions {
             continue;
         }
+        if envelope.lease_generation > 0 && !resolved.contains(&envelope.envelope_id) {
+            return Ok((true, 0));
+        }
         generation = generation.max(envelope.lease_generation);
-        left |= envelope.lease_generation > 0
-            && !path
-                .filename()
-                .and_then(|n| n.strip_suffix(".json"))
-                .is_some_and(|id| resolved.contains(id));
     }
-    Ok((left, generation))
+    Ok((false, generation))
 }
 
 pub async fn envelope_paths(

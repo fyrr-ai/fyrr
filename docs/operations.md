@@ -247,18 +247,21 @@ older copy), the committer blocks the source: none of its permissions, content
 or listings publish, so no revocation is skipped, and the other sources go on.
 `fyrr writer status` lists it in `blocked_sources`, and the committer logs
 `telemetry permissions=blocked source=SOURCE_ID`. Nothing else is published for
-it until the chain is whole.
+it until the chain is whole. Alert on a non-empty `blocked_sources`: a
+revocation the source read waits for an operator.
 
 An envelope in the log that does not parse is not isolated this way: `fyrr
 writer commit` and `fyrr writer status` fail with `publication_invalid` for
 every source until it is removed or put back
 ([#370](https://github.com/fyrr-ai/fyrr/issues/370)).
 
-A worker does not make a new permissions cursor for such a source: it fails
-the read with `permission_cursor_lost`, so that no new chain stands in for the
-lost one.
+A worker does not make a new permissions cursor for such a source, nor read
+from one older than its log (a copy put back after a later read moved it): it
+fails the read with `permission_cursor_lost`, so that no new chain stands in
+for the lost one. A cursor older than the log blocks its source too.
 
-Put back the missing cursor or envelope (`cursors/SOURCE_ID-permissions.json`,
+Put back only the latest cursor, verified as the one the last read wrote: an
+older copy keeps the source blocked. Put back the missing cursor or envelope (`cursors/SOURCE_ID-permissions.json`,
 `envelopes/ID.json` under the namespace) from a backup or an older object
 version if the storage keeps one: the next commit publishes what waited.
 Otherwise purge the source (`fyrr writer source purge SOURCE_ID --confirm`),

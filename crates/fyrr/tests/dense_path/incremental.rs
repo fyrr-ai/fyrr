@@ -2840,8 +2840,9 @@ async fn incremental_a_permission_envelope_of_exactly_the_bound_publishes_on_sto
 /// envelopes it chained wait, before the first publication, is blocked, its
 /// content waits for the permission change, and `writer status` lists it; a
 /// worker that starts meanwhile makes no new cursor; once the cursor is back
-/// the source publishes. After a publication, a
-/// cursor that goes blocks its source in `writer status` with nothing pending.
+/// the source publishes. After a publication, a cursor that goes blocks its
+/// source in `writer status` with nothing pending, a worker refuses it and
+/// writes nothing, and purging the source ends the block.
 #[tokio::test]
 #[ignore = "real CLI and local storage; scripts/ci"]
 async fn incremental_a_missing_cursor_blocks_its_source_on_storage() {
@@ -2905,7 +2906,26 @@ async fn incremental_a_missing_cursor_blocks_its_source_on_storage() {
         json!(["incremental"]),
         "{status}"
     );
-    store.put(&path, kept.into()).await.unwrap();
+    // A worker refuses that cursor too, and writes nothing.
+    let before = permission_envelopes(&worker).await.len();
+    let refused = worker_command(&worker)
+        .args(["writer", "sync", "incremental", "--kind", "permissions"])
+        .output()
+        .unwrap();
+    assert!(!refused.status.success());
+    let said = String::from_utf8_lossy(&refused.stdout).into_owned()
+        + &String::from_utf8_lossy(&refused.stderr);
+    assert!(said.contains("permission_cursor_lost"), "{said}");
+    assert!(store.head(&path).await.is_err(), "no cursor is made");
+    assert_eq!(permission_envelopes(&worker).await.len(), before);
+    // Purging the source ends the block.
+    command(
+        &commit,
+        &["writer", "source", "purge", "incremental", "--confirm"],
+    );
+    let status = command(&commit, &["writer", "status"]);
+    assert_eq!(status["blocked_sources"], json!([]), "{status}");
+    drop(kept);
 }
 
 /// A restore between a confirmed split read and the next commit: the restore
@@ -3017,6 +3037,71 @@ async fn incremental_a_new_cursor_follows_the_lease_generations_of_the_log_on_st
         new.lease.as_ref().unwrap().epoch
     );
     assert_ne!(new.last.unwrap().id, old_last.id);
+}
+
+/// An older copy of a cursor put back is not the cursor: after a later read
+/// confirmed a revocation that no publication carries yet, a copy of the cursor
+/// from before it blocks its source, so new content does not publish with the
+/// old rights, and a worker does not read from it.
+#[tokio::test]
+#[ignore = "real CLI and local storage; scripts/ci"]
+async fn incremental_an_older_cursor_put_back_keeps_its_source_blocked_on_storage() {
+    let (worker, commit, root) = fixture();
+    publish_initial(&worker, &commit, &root);
+    let granted = row_readers(&rows(&worker).await, "a");
+    assert!(!granted.is_empty());
+    let loaded = fyrr_core::config::load(&worker).unwrap();
+    let (store, ns) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
+    let path = ns.join("cursors").join("incremental-permissions.json");
+    let older = store.get(&path).await.unwrap().bytes().await.unwrap();
+    input(
+        &root,
+        json!({"epoch":2,"permissions":[[{"id":"a","revision":"p2","readers":[]}]]}),
+    );
+    worker_sync(&worker, &["incremental", "--kind", "permissions"]);
+    input(
+        &root,
+        json!({"epoch":3,"content":[[doc("a","r2","fixture document 2")]]}),
+    );
+    worker_sync(&worker, &["incremental", "--kind", "content"]);
+    store.put(&path, older.into()).await.unwrap();
+    let revision = |batch: &arrow_array::RecordBatch| {
+        let row = roots(batch).iter().position(|id| id == "a").unwrap();
+        fyrr_writer::apply::strings(batch, "source_revision")
+            .unwrap()
+            .value(row)
+            .to_owned()
+    };
+    let status = command(&commit, &["writer", "status"]);
+    assert_eq!(
+        status["blocked_sources"],
+        json!(["incremental"]),
+        "{status}"
+    );
+    publish(&commit);
+    let batch = rows(&worker).await;
+    assert_eq!(revision(&batch), "r1", "the content waits");
+    assert_eq!(row_readers(&batch, "a"), granted);
+    let refused = worker_command(&worker)
+        .args(["writer", "sync", "incremental", "--kind", "permissions"])
+        .output()
+        .unwrap();
+    assert!(!refused.status.success());
+    let said = String::from_utf8_lossy(&refused.stdout).into_owned()
+        + &String::from_utf8_lossy(&refused.stderr);
+    assert!(said.contains("permission_cursor_lost"), "{said}");
+    let status = command(&commit, &["writer", "status"]);
+    assert_eq!(
+        status["blocked_sources"],
+        json!(["incremental"]),
+        "{status}"
+    );
+    publish(&commit);
+    assert_eq!(
+        revision(&rows(&worker).await),
+        "r1",
+        "the content still waits"
+    );
 }
 
 /// A copy has no chain and nothing applied: its sources read again from the start.

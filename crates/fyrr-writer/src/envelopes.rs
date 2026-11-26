@@ -124,6 +124,8 @@ struct StatusLink {
     source_id: String,
     previous: Option<String>,
     lease_generation: u64,
+    sequence: u64,
+    ends_read: bool,
 }
 
 impl From<&PreparedEnvelope> for StatusLink {
@@ -133,6 +135,8 @@ impl From<&PreparedEnvelope> for StatusLink {
             source_id: envelope.source_id.clone(),
             previous: envelope.previous.clone(),
             lease_generation: envelope.lease_generation,
+            sequence: envelope.sequence,
+            ends_read: crate::apply::complete_read(envelope),
         }
     }
 }
@@ -152,6 +156,12 @@ impl crate::commit::Link for StatusLink {
     }
     fn lease_generation(&self) -> u64 {
         self.lease_generation
+    }
+    fn sequence(&self) -> u64 {
+        self.sequence
+    }
+    fn ends_read(&self) -> bool {
+        self.ends_read
     }
 }
 
