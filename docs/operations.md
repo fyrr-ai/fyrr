@@ -257,18 +257,22 @@ every source until it is removed or put back
 
 A worker does not make a new permissions cursor for such a source, nor read
 from one older than its log (a copy put back after a later read moved it): it
-fails the read with `permission_cursor_lost`, so that no new chain stands in
-for the lost one. A cursor older than the log blocks its source too. A read in
-progress, or one whose worker died before it wrote the cursor, does not: the
-next read reads it again.
+fails the read with `permission_cursor_lost` before it writes anything, so the
+block holds however often it tries. A read in progress, or one whose worker
+died before it wrote the cursor, does not block its source: the next read reads
+it again.
 
-Put back only the latest cursor, verified as the one the last read wrote: an
-older copy keeps the source blocked. Put back the missing cursor or envelope (`cursors/SOURCE_ID-permissions.json`,
-`envelopes/ID.json` under the namespace) from a backup or an older object
-version if the storage keeps one: the next commit publishes what waited.
-Otherwise purge the source (`fyrr writer source purge SOURCE_ID --confirm`),
-which is final, and configure it again under a new source ID: it reads its
-content and rights from the start.
+To end the block, put back the cursor the last read wrote
+(`cursors/SOURCE_ID-permissions.json`) or the missing envelope
+(`envelopes/ID.json`) from a backup or the object versions the storage keeps:
+the next commit publishes what waited. Only a cursor copy taken
+while no read of the source ran is valid. One taken during a read cannot be
+told from a read whose worker died: the next read starts from it, and the read
+in progress when the copy was taken is lost; its source reads that change
+again only if its connector reports it again. When no such copy exists, purge
+the source (`fyrr writer source purge SOURCE_ID --confirm`), which is final,
+and configure it again under a new source ID: it reads its content and rights
+from the start.
 
 ## Upgrades
 
