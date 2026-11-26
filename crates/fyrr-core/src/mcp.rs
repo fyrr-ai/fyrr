@@ -153,14 +153,13 @@ pub struct SearchInput {
     pub deadline_ms: Option<u32>,
     /// The members of the HTTP `query` route that are no tool arguments; set by that route.
     #[serde(skip)]
-    #[schemars(skip)]
     pub members: QueryMembers,
 }
 
 /// The members of the JSON `query` request that are no `search` tool arguments,
 /// declared once: the schema of the route flattens them next to `SearchInput`, and
 /// the route splits them off the body with [`QueryMembers::split`].
-#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, JsonSchema)]
 pub struct QueryMembers {
     /// What a hit returns besides its document fields.
     pub fields: Option<ReturnFields>,

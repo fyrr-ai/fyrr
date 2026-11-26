@@ -4484,6 +4484,21 @@ async fn identity_write_api_fuses_the_sub_queries_of_a_query_as_it_asks_on_stora
     assert_eq!(merged.1["hits"][0]["query_index"], 0);
     assert_eq!(merged.1["hits"][1]["query_index"], 1);
 
+    // A member that is `null` is the default, as the schema says: the same answer.
+    let mut nulls = search(Value::Null);
+    for member in [
+        "fusion",
+        "rerank",
+        "query_match",
+        "contains",
+        "caps",
+        "sub_queries",
+    ] {
+        nulls[member] = Value::Null;
+    }
+    let defaulted = ask(&reader, nulls).await;
+    assert_eq!(defaulted.1["hits"], merged.1["hits"]);
+
     // With it, one ranking of at most `max_documents` documents, though the
     // limit is 4. The first hit is the
     // one the heavier sub-query ranks first, and it scores its weight over the

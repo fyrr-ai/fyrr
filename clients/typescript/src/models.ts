@@ -15,7 +15,7 @@ export interface DeleteNamespaceRequest {
 
 /**
  * The body of `POST /v1/namespaces/{namespace}/query`: the arguments of the
- * `search` tool, `consistency` and the [`QueryMembers`], which are no tool arguments.
+ * `search` tool, `consistency` and eleven members that are no tool arguments.
  */
 export interface QueryRequest {
   /** Query text, 1-4096 UTF-8 bytes. Omit only for a filter-only listing with order=updated_at or order_by. */

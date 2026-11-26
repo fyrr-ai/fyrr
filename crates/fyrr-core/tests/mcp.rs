@@ -73,8 +73,15 @@ fn query_members_split_off_the_arguments_of_the_search_tool() {
     assert!(QueryMembers::split(json!({"group_documents": "no"})).is_none());
     let (members, rest) = QueryMembers::split(json!({"nope": 1})).expect("splits");
     assert_eq!(members, QueryMembers::default());
-    // What is left is refused by the tool's own arguments.
+    // What is left is refused by the tool's own arguments, and so is a member of the
+    // route: the `search` tool takes none of them.
     assert!(serde_json::from_value::<SearchInput>(rest).is_err());
+    for arguments in [
+        json!({"query": "t", "fusion": {"method": "rrf"}}),
+        json!({"query": "t", "members": {}}),
+    ] {
+        assert!(serde_json::from_value::<SearchInput>(arguments).is_err());
+    }
 }
 
 #[test]

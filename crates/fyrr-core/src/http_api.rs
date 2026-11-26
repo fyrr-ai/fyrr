@@ -25,7 +25,7 @@ pub enum Consistency {
 }
 
 /// The body of `POST /v1/namespaces/{namespace}/query`: the arguments of the
-/// `search` tool, `consistency` and the [`QueryMembers`], which are no tool arguments.
+/// `search` tool, `consistency` and eleven members that are no tool arguments.
 #[derive(Debug, Clone, PartialEq, JsonSchema)]
 pub struct QueryRequest {
     #[schemars(flatten)]
