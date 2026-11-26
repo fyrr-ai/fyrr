@@ -161,7 +161,8 @@ durable, not only when its request arrived, so a request that was accepted
 before the switch but had not written its envelope yet is refused too. An
 envelope that was durable before the switch is still committed, also after it.
 The committer holds the namespace lease while it publishes, so a switch made
-then answers `503` (`temporarilyUnavailable`) and is repeated.
+then answers `503 busy` and is repeated. `PATCH` and `DELETE` of a namespace answer
+errors as the [write route](#write-documents) does, `{"error":"<code>"}`.
 
 The check and the write of an envelope are not atomic with the switch: a
 request whose check ran before the switch was published can still write its
@@ -914,7 +915,9 @@ request was accepted does not cancel it.
 | --- | --- | --- |
 | `unauthorized` | `401` | No API key, or a key that is not among the published keys. |
 | `forbidden` | `403` | The key lacks the `write` role or its `namespace_prefix` excludes the namespace, or the request sets `conditions`, `delete_where` or `patch_where` and the key lacks the `admin` role. |
-| `not_found` | `404` | `{namespace}` is not a namespace name, or the process has no `[namespace.write_api]`. |
+| `not_found` | `404` | `{namespace}` is not a namespace name, or the process has no `[namespace.write_api]`; for a `PATCH` of a namespace, also a namespace that does not exist. |
+| `method_not_allowed` | `405` | A method that `/v1/namespaces/{namespace}` of the administration listener does not serve (it serves `PATCH` and `DELETE`), or a write route that is not `POST`. |
+| `request_timeout` | `408` | The body of the request stopped arriving: the idle limit of the write route, 5 seconds for the body of `PATCH` and `DELETE` of a namespace. |
 | `unsupported_media_type` | `415` | Not `application/json`, or a `Content-Encoding`. |
 | `body_too_large`, `too_many_rows`, `row_too_large` (1 MiB), `settings_too_large` (64 KiB), `text_too_large`, `document_too_large`, `request_too_large` | `413` | A limit above. |
 | `schema_change_with_rows`, `body_invalid`, `empty_request`, `id_missing`, `duplicate_id`, `text_missing`, `readers_invalid`, `vector_invalid`, `vector_not_patchable`, `text_not_patchable`, `embedding_not_configured`, `document_invalid`, `condition_invalid`, `filter_invalid`, `settings_invalid`, `attribute_undeclared` (a value that infers no type, or a namespace with no publication yet, [inference](tuning.md#inferred-attributes)) and the value codes of [tuning](tuning.md#namespaceattributes) (`attribute_type_mismatch`, `attribute_value_invalid`, `attribute_value_too_large`) | `400` | The body or a row is invalid, or the settings of a namespace to be created are (a schema that is too large or has a bad name included: `settings_invalid`). |

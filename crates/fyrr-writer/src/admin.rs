@@ -1,5 +1,6 @@
 //! Authenticated bounded writer administration; HTTP diagnostics contain no request values.
 use crate::scim::{Mutation, ScimError};
+use crate::write_api::ApiError;
 use crate::{Result, WriterError};
 use axum::{
     Json, Router,
@@ -103,9 +104,9 @@ fn reply(status: u16, value: Value) -> Response {
 /// Admits an API key of the deployment with the `admin` role in this namespace.
 /// The keys are read from storage at each request, so a key withdrawn by
 /// `writer keys` is refused at once; an unreadable set refuses every key.
-async fn admin_key(config: &Config, secret: &str) -> std::result::Result<(), ScimError> {
+async fn admin_key(config: &Config, secret: &str) -> std::result::Result<(), ApiError> {
     if !is_api_key_secret(secret) {
-        return Err(ScimError::new(401, "unauthorized"));
+        return Err(ApiError(401, "unauthorized"));
     }
     let (store, root) = namespace_store(config)?;
     let keys: ApiKeysArtifact = fyrr_reader::storage::read_contract(
@@ -115,14 +116,27 @@ async fn admin_key(config: &Config, secret: &str) -> std::result::Result<(), Sci
     .await?;
     let grant = keys
         .grant(&api_key_deployment_hash(config, secret)?)
-        .ok_or(ScimError::new(401, "unauthorized"))?;
+        .ok_or(ApiError(401, "unauthorized"))?;
     if grant.roles.contains(&ApiKeyRole::Admin)
         && prefix_allows(grant.namespace_prefix.as_deref(), &config.namespace.name)
     {
         Ok(())
     } else {
-        Err(ScimError::new(403, "forbidden"))
+        Err(ApiError(403, "forbidden"))
     }
+}
+
+/// The configuration of the namespace a route names. A namespace written
+/// through the API is named by its path, as for its documents; any other is
+/// the one this process is configured for.
+fn namespace_config(state: &AdminState, name: &str) -> std::result::Result<Config, ApiError> {
+    if state.write.is_none() {
+        return Ok(state.config.clone());
+    }
+    if !is_namespace_name(name) {
+        return Err(ApiError(404, "not_found"));
+    }
+    Ok(crate::write_api::named(&state.config, name))
 }
 
 /// Admits the request of a namespace route: an API key with the `admin` role
@@ -132,7 +146,7 @@ async fn admitted(
     state: &AdminState,
     request: Request,
     config: &Config,
-) -> std::result::Result<(tokio::sync::OwnedSemaphorePermit, axum::body::Bytes), Response> {
+) -> std::result::Result<(tokio::sync::OwnedSemaphorePermit, axum::body::Bytes), ApiError> {
     let secret = request
         .headers()
         .get(header::AUTHORIZATION)
@@ -141,14 +155,12 @@ async fn admitted(
         .filter(|s| s.len() <= 8192)
         .map(str::to_owned);
     let Some(secret) = secret else {
-        return Err(error(ScimError::new(401, "unauthorized")));
+        return Err(ApiError(401, "unauthorized"));
     };
     let Ok(permit) = state.capacity.clone().try_acquire_owned() else {
-        return Err(error(ScimError::new(503, "temporarilyUnavailable")));
+        return Err(ApiError(503, "busy"));
     };
-    if let Err(denied) = admin_key(config, &secret).await {
-        return Err(error(denied));
-    }
+    admin_key(config, &secret).await?;
     match tokio::time::timeout(
         std::time::Duration::from_secs(5),
         axum::body::to_bytes(request.into_body(), 4096),
@@ -156,86 +168,74 @@ async fn admitted(
     .await
     {
         Ok(Ok(bytes)) => Ok((permit, bytes)),
-        Ok(Err(_)) => Err(error(ScimError::new(413, "tooLarge"))),
-        Err(_) => Err(error(ScimError::new(408, "invalidSyntax"))),
+        Ok(Err(_)) => Err(ApiError(413, "body_too_large")),
+        Err(_) => Err(ApiError(408, "request_timeout")),
     }
 }
 
 /// `DELETE /v1/namespaces/{namespace}`: deletes the namespace and its data. It
 /// needs an API key with the `admin` role and the name repeated in the body.
-async fn delete_namespace(state: Arc<AdminState>, request: Request, name: String) -> Response {
-    let (permit, bytes) = match admitted(&state, request, &state.config).await {
-        Ok(admitted) => admitted,
-        Err(refused) => return refused,
-    };
-    let Ok(body) = serde_json::from_slice::<fyrr_core::http_api::DeleteNamespaceRequest>(&bytes)
-    else {
-        return error(ScimError::new(400, "invalidSyntax"));
-    };
-    if name != state.config.namespace.name {
-        return error(ScimError::new(404, "notFound"));
+async fn delete_namespace(
+    state: Arc<AdminState>,
+    request: Request,
+    name: String,
+) -> std::result::Result<Response, ApiError> {
+    let config = namespace_config(&state, &name)?;
+    let (permit, bytes) = admitted(&state, request, &config).await?;
+    let body = serde_json::from_slice::<fyrr_core::http_api::DeleteNamespaceRequest>(&bytes)
+        .map_err(|_| ApiError(400, "body_invalid"))?;
+    if name != config.namespace.name {
+        return Err(ApiError(404, "not_found"));
     }
     if body.namespace != name {
-        return error(ScimError::new(400, "invalidValue"));
+        return Err(ApiError(400, "body_invalid"));
     }
     // Keep the lease lifecycle, and the request's capacity, alive even if the
     // client closes its connection.
     let result = tokio::spawn(async move {
         let _permit = permit;
-        crate::commit::delete(&state.config, None, Some(&name)).await
+        crate::commit::delete(&config, None, Some(&name)).await
     })
-    .await;
-    match result {
-        Ok(Ok(value)) => (StatusCode::OK, Json(value)).into_response(),
-        Ok(Err(e)) => error(e.into()),
-        Err(_) => error(ScimError::new(503, "temporarilyUnavailable")),
-    }
+    .await
+    .map_err(|_| ApiError(503, "unavailable"))?;
+    Ok((StatusCode::OK, Json(result?)).into_response())
 }
 
 /// `PATCH /v1/namespaces/{namespace}` with `read_only`: freezes the namespace
 /// or thaws it. It needs an API key with the `admin` role. It answers `503`
 /// while the committer holds the namespace lease; the request is then repeated.
-async fn patch_namespace(state: Arc<AdminState>, request: Request, name: String) -> Response {
-    // A namespace written through the API is named by its path, as for its
-    // documents; any other is the one this process is configured for.
-    let config = if state.write.is_some() {
-        if !is_namespace_name(&name) {
-            return error(ScimError::new(404, "notFound"));
-        }
-        crate::write_api::named(&state.config, &name)
-    } else {
-        state.config.clone()
-    };
-    let (permit, bytes) = match admitted(&state, request, &config).await {
-        Ok(admitted) => admitted,
-        Err(refused) => return refused,
-    };
-    let Ok(body) = serde_json::from_slice::<fyrr_core::http_api::PatchNamespaceRequest>(&bytes)
-    else {
-        return error(ScimError::new(400, "invalidSyntax"));
-    };
+async fn patch_namespace(
+    state: Arc<AdminState>,
+    request: Request,
+    name: String,
+) -> std::result::Result<Response, ApiError> {
+    let config = namespace_config(&state, &name)?;
+    let (permit, bytes) = admitted(&state, request, &config).await?;
+    let body = serde_json::from_slice::<fyrr_core::http_api::PatchNamespaceRequest>(&bytes)
+        .map_err(|_| ApiError(400, "body_invalid"))?;
     if name != config.namespace.name {
-        return error(ScimError::new(404, "notFound"));
+        return Err(ApiError(404, "not_found"));
     }
     let result = tokio::spawn(async move {
         let _permit = permit;
         crate::commit::set_read_only(&config, body.read_only).await
     })
-    .await;
-    match result {
-        Ok(Ok(changed)) => (
-            StatusCode::OK,
-            Json(fyrr_core::http_api::PatchNamespaceResponse {
-                namespace: name,
-                read_only: body.read_only,
-                changed,
-            }),
-        )
-            .into_response(),
-        Ok(Err(WriterError::NamespaceUnavailable)) => error(ScimError::new(404, "notFound")),
-        Ok(Err(e)) => error(e.into()),
-        Err(_) => error(ScimError::new(503, "temporarilyUnavailable")),
-    }
+    .await
+    .map_err(|_| ApiError(503, "unavailable"))?;
+    let changed = match result {
+        Ok(changed) => changed,
+        Err(WriterError::NamespaceUnavailable) => return Err(ApiError(404, "not_found")),
+        Err(e) => return Err(e.into()),
+    };
+    Ok((
+        StatusCode::OK,
+        Json(fyrr_core::http_api::PatchNamespaceResponse {
+            namespace: name,
+            read_only: body.read_only,
+            changed,
+        }),
+    )
+        .into_response())
 }
 
 async fn handle(State(state): State<Arc<AdminState>>, request: Request) -> Response {
@@ -245,17 +245,18 @@ async fn handle(State(state): State<Arc<AdminState>>, request: Request) -> Respo
         .strip_prefix("/v1/namespaces/")
         .filter(|name| !name.contains('/'))
     {
-        return match *request.method() {
+        let answer = match *request.method() {
             axum::http::Method::PATCH => patch_namespace(state, request, name.to_owned()).await,
             axum::http::Method::DELETE => delete_namespace(state, request, name.to_owned()).await,
-            _ => error(ScimError::new(405, "invalidSyntax")),
+            _ => Err(ApiError(405, "method_not_allowed")),
         };
+        return answer.unwrap_or_else(ApiError::response);
     }
     if path.starts_with("/v1/") {
         // Its own authentication (an API key with the `write` role) and its own capacity.
         return match &state.write {
             Some(api) => crate::write_api::handle(api, &state.config, request).await,
-            None => error(ScimError::new(404, "notFound")),
+            None => ApiError(404, "not_found").response(),
         };
     }
     let expected = if path.starts_with("/scim/v2/") {

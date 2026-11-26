@@ -2514,6 +2514,10 @@
       "full:fyrr:test:dense_path/write_api::identity_write_api_freezes_a_namespace_and_commits_what_it_accepted_before_on_storage": {
         "tier": "full",
         "seconds": 40
+      },
+      "full:fyrr:test:dense_path/write_api::identity_write_api_deletes_the_namespace_of_the_path_only_on_storage": {
+        "tier": "full",
+        "seconds": 10
       }
     }
   },
@@ -5858,10 +5862,6 @@
         "seconds": null
       },
       "python:clients/python/tests/test_retries.py::test_a_key_is_stripped_checked_and_never_shown": {
-        "tier": "quick",
-        "seconds": null
-      },
-      "python:clients/python/tests/test_retries.py::test_a_scim_error_without_a_type_has_no_code": {
         "tier": "quick",
         "seconds": null
       },

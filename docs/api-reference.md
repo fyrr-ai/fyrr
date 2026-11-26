@@ -12,9 +12,9 @@
 >   listener of `fyrr writer serve` that the section names.
 > - The behavior of a route is in [HTTP JSON API](http-api.md); this page is
 >   the index to it. The reader routes answer errors as
->   `{"error":"<code>"}` ([codes](http-api.md#errors)) and the write route
->   likewise ([codes](http-api.md#write-documents)); `PATCH` and `DELETE` answer a
->   SCIM error (`application/scim+json`).
+>   `{"error":"<code>"}` ([codes](http-api.md#errors)); the write route and the
+>   writer's `PATCH` and `DELETE` of a namespace likewise
+>   ([codes](http-api.md#write-documents)).
 
 Every route but `GET /metrics` takes `Authorization: Bearer <token>`: an
 [API key](identity.md#identityapi_keys), or where a section says so an OIDC

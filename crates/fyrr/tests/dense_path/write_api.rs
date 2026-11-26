@@ -139,6 +139,27 @@ impl Writer {
         panic!("the namespace lease stayed taken");
     }
 
+    /// `DELETE /v1/namespaces/{namespace}` with the name repeated in the body,
+    /// repeated while the committer holds the namespace lease.
+    async fn delete(&self, key: usize, namespace: &str) -> (u16, Value) {
+        for _ in 0..100 {
+            let response = self
+                .client
+                .delete(format!("{}/v1/namespaces/{namespace}", self.base))
+                .bearer_auth(secret(key))
+                .json(&json!({ "namespace": namespace }))
+                .send()
+                .await
+                .unwrap();
+            let status = response.status().as_u16();
+            if status != 503 {
+                return (status, response.json().await.unwrap_or(Value::Null));
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        panic!("the namespace lease stayed taken");
+    }
+
     pub(super) async fn post(&self, key: usize, namespace: &str, body: &Value) -> (u16, Value) {
         let response = self
             .client
@@ -1184,10 +1205,18 @@ async fn identity_write_api_freezes_a_namespace_and_commits_what_it_accepted_bef
         (200, json!({"upserted": 1, "deleted": 0}))
     );
     // Only a key with the `admin` role switches it, and only for a namespace it names.
-    assert_eq!(writer.freeze(WRITE_KEY, namespace, true).await.0, 403);
-    assert_eq!(writer.freeze(READ_KEY, namespace, true).await.0, 403);
-    assert_eq!(writer.freeze(ADMIN_KEY, "Not_a_name", true).await.0, 404);
-    assert_eq!(writer.freeze(ADMIN_KEY, "no-such-one", true).await.0, 404);
+    let forbidden = (403, json!({"error": "forbidden"}));
+    let not_found = (404, json!({"error": "not_found"}));
+    assert_eq!(writer.freeze(WRITE_KEY, namespace, true).await, forbidden);
+    assert_eq!(writer.freeze(READ_KEY, namespace, true).await, forbidden);
+    assert_eq!(
+        writer.freeze(ADMIN_KEY, "Not_a_name", true).await,
+        not_found
+    );
+    assert_eq!(
+        writer.freeze(ADMIN_KEY, "no-such-one", true).await,
+        not_found
+    );
 
     // The committer finds the lease taken and publishes nothing until it is
     // released: the request below is accepted, its envelope durable, and the
@@ -1286,6 +1315,76 @@ async fn identity_write_api_freezes_a_namespace_and_commits_what_it_accepted_bef
         (200, json!({"upserted": 1, "deleted": 0}))
     );
     assert_eq!(stored(&config, "root_id = 'd3'").await.num_rows(), 1);
+}
+
+/// A namespace written through the API is deleted by the name of its path,
+/// and only that one: the others, the configured one included, keep their data.
+#[tokio::test]
+#[ignore = "real writer and reader executables on local storage; scripts/ci"]
+async fn identity_write_api_deletes_the_namespace_of_the_path_only_on_storage() {
+    let (config, root) = setup_on(Backend::Local);
+    let address = free_address();
+    configure(&config, &address, "open = true");
+    embed(&root, &["blue shirt", "red hat"]);
+    let writer = Writer::start(&config, &root, address).await;
+    let (kept, doomed) = ("dense-fixture", "shop-doomed");
+    for (name, text) in [(kept, "blue shirt"), (doomed, "red hat")] {
+        assert_eq!(
+            writer
+                .post(
+                    WRITE_KEY,
+                    name,
+                    &json!({"upserts": [{"id": "d1", "text": text}]})
+                )
+                .await,
+            (200, json!({"upserted": 1, "deleted": 0}))
+        );
+    }
+    let own = root.join(format!("{doomed}.toml"));
+    std::fs::write(
+        &own,
+        std::fs::read_to_string(&config)
+            .unwrap()
+            .replace("name = \"dense-fixture\"", &format!("name = \"{doomed}\"")),
+    )
+    .unwrap();
+    let published = async |config: &Path| {
+        let loaded = fyrr_core::config::load(config).unwrap();
+        fyrr_reader::storage::optional_head(&loaded.config)
+            .await
+            .unwrap()
+            .is_some()
+    };
+    assert!(published(&own).await && published(&config).await);
+
+    let forbidden = (403, json!({"error": "forbidden"}));
+    let not_found = (404, json!({"error": "not_found"}));
+    assert_eq!(writer.delete(WRITE_KEY, doomed).await, forbidden);
+    assert_eq!(writer.delete(ADMIN_KEY, "Not_a_name").await, not_found);
+    assert!(published(&own).await && published(&config).await);
+
+    assert_eq!(
+        writer.delete(ADMIN_KEY, doomed).await,
+        (200, json!({"deleted": true}))
+    );
+    assert!(!published(&own).await, "the named namespace is gone");
+    assert!(published(&config).await, "the other one is not touched");
+    assert_eq!(stored(&config, "root_id = 'd1'").await.num_rows(), 1);
+
+    // The name is free again: a write creates a new namespace, with no trace of the old.
+    assert_eq!(
+        writer
+            .post(
+                WRITE_KEY,
+                doomed,
+                &json!({"upserts": [{"id": "d2", "text": "blue shirt"}]})
+            )
+            .await,
+        (200, json!({"upserted": 1, "deleted": 0}))
+    );
+    assert!(published(&own).await);
+    assert_eq!(stored(&own, "root_id = 'd2'").await.num_rows(), 1);
+    assert_eq!(stored(&own, "root_id = 'd1'").await.num_rows(), 0);
 }
 
 /// A patch that changes the text brings the vector of the new text, and a

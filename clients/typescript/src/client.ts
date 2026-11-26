@@ -43,7 +43,7 @@ const TLS_CODE = /^(ERR_TLS_|CERT_|UNABLE_TO_|DEPTH_ZERO_|SELF_SIGNED_|HOSTNAME_
 // The first character of a namespace name, in name order.
 const FIRST_CHARACTERS = "0123456789abcdefghijklmnopqrstuvwxyz";
 
-/** An error answer: `{"error": "<code>"}` of the API, or a SCIM error. */
+/** An error answer: `{"error": "<code>"}` of the API. */
 export class FyrrError extends Error {
   readonly status: number;
   readonly code: string | undefined;
@@ -361,8 +361,7 @@ function decode(response: TransportResponse): unknown {
   }
   let code: unknown;
   if (typeof body === "object" && body !== null) {
-    const { error, scimType } = body as { error?: unknown; scimType?: unknown };
-    code = error || scimType;
+    code = (body as { error?: unknown }).error;
   }
   throw new FyrrError(response.status, typeof code === "string" ? code : undefined, retryAfterMs(response.retryAfter));
 }

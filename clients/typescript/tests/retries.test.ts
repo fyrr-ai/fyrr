@@ -300,19 +300,6 @@ test("a key is not in the error of a failed request", async () => {
   await assert.rejects(c.query("ns", {}), (error: unknown) => !inspect(error, { depth: 6 }).includes(secret));
 });
 
-test("a SCIM error has its type as the code, or none", async () => {
-  const typed = script(json({ schemas: [], status: "404", scimType: "notFound" }, 404));
-  await assert.rejects(
-    client(typed).deleteNamespace("ns"),
-    (error: unknown) => error instanceof FyrrError && error.code === "notFound",
-  );
-  const untyped = script(json({ schemas: [], status: "403", detail: "no" }, 403));
-  await assert.rejects(
-    client(untyped).deleteNamespace("ns"),
-    (error: unknown) => error instanceof FyrrError && error.code === undefined && error.message === "403",
-  );
-});
-
 test("a missing writer URL refuses the writer routes", async () => {
   const c = new Client({ readerUrl: READER, apiKey: "k", transport: script().transport });
   await assert.rejects(c.write("ns", WRITE), /writerUrl/);
