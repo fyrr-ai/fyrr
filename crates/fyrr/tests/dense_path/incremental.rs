@@ -2838,8 +2838,9 @@ async fn incremental_a_permission_envelope_of_exactly_the_bound_publishes_on_sto
 
 /// A missing cursor is not an empty one: a source whose cursor is gone while
 /// envelopes it chained wait, before the first publication, is blocked, its
-/// content waits for the permission change, and `writer status` lists it;
-/// once the cursor is back the source publishes. After a publication, a
+/// content waits for the permission change, and `writer status` lists it; a
+/// worker that starts meanwhile makes no new cursor; once the cursor is back
+/// the source publishes. After a publication, a
 /// cursor that goes blocks its source in `writer status` with nothing pending.
 #[tokio::test]
 #[ignore = "real CLI and local storage; scripts/ci"]
@@ -2856,6 +2857,26 @@ async fn incremental_a_missing_cursor_blocks_its_source_on_storage() {
     let path = ns.join("cursors").join("incremental-permissions.json");
     let kept = store.get(&path).await.unwrap().bytes().await.unwrap();
     store.delete(&path).await.unwrap();
+    let status = command(&commit, &["writer", "status"]);
+    assert_eq!(
+        status["blocked_sources"],
+        json!(["incremental"]),
+        "{status}"
+    );
+    // A worker that starts meanwhile makes no new cursor: the read fails, and
+    // the source stays blocked.
+    let restarted = worker_command(&worker)
+        .args(["writer", "sync", "incremental", "--kind", "permissions"])
+        .output()
+        .unwrap();
+    assert!(!restarted.status.success());
+    let said = String::from_utf8_lossy(&restarted.stdout).into_owned()
+        + &String::from_utf8_lossy(&restarted.stderr);
+    assert!(said.contains("permission_cursor_lost"), "{said}");
+    assert!(
+        store.head(&path).await.is_err(),
+        "no cursor stands in for the lost one"
+    );
     let status = command(&commit, &["writer", "status"]);
     assert_eq!(
         status["blocked_sources"],
@@ -2885,6 +2906,74 @@ async fn incremental_a_missing_cursor_blocks_its_source_on_storage() {
         "{status}"
     );
     store.put(&path, kept.into()).await.unwrap();
+}
+
+/// A restore between a confirmed split read and the next commit: the restore
+/// keeps the rights of every row, the read's revocation is published whole or
+/// not at all, the chain stays whole (the source is not blocked, nothing waits),
+/// and the next read publishes whole, in one publication.
+#[tokio::test]
+#[ignore = "real CLI and local storage; scripts/ci"]
+async fn incremental_a_restore_after_a_confirmed_split_read_keeps_the_chain_on_storage() {
+    let (worker, commit, root) = fixture();
+    publish_initial(&worker, &commit, &root);
+    let granted = row_readers(&rows(&worker).await, "a");
+    assert!(!granted.is_empty());
+    let target = publication(&commit).await.1.publication_id;
+    input(
+        &root,
+        json!({"epoch":2,"content":[[doc("a","r2","fixture document 2")]]}),
+    );
+    worker_sync(&worker, &["incremental", "--kind", "content"]);
+    publish(&commit);
+    // One root to a part: the revocation of `a` and `b` is a split read.
+    for config in [&worker, &commit] {
+        let text = std::fs::read_to_string(config)
+            .unwrap()
+            .replace("[reader]", "[writer]\nenvelope_max_rows=1\n[reader]");
+        std::fs::write(config, text).unwrap();
+    }
+    let before = permission_envelopes(&worker).await.len();
+    input(
+        &root,
+        json!({"epoch":3,"permissions":[[{"id":"a","revision":"p2","readers":[]}],[{"id":"b","revision":"p2","readers":[]}]]}),
+    );
+    worker_sync(&worker, &["incremental", "--kind", "permissions"]);
+    let parts: Vec<_> = permission_envelopes(&worker).await.split_off(before);
+    assert_eq!(
+        part_shape(&parts),
+        [(1, false, false), (1, false, false), (0, true, true)]
+    );
+    command(&commit, &["writer", "restore", &target]);
+    let rights =
+        |batch: &arrow_array::RecordBatch| (row_readers(batch, "a"), row_readers(batch, "b"));
+    let after = rights(&rows(&worker).await);
+    assert!(
+        after == (granted.clone(), granted.clone()) || after == (Vec::new(), Vec::new()),
+        "never a part of the read: {after:?}"
+    );
+    publish(&commit);
+    assert_eq!(
+        rights(&rows(&worker).await),
+        (Vec::new(), Vec::new()),
+        "the revocation is published whole"
+    );
+    for part in &parts {
+        assert_eq!(resolved(&commit, &part.envelope_id).await, (true, false));
+    }
+    let status = command(&commit, &["writer", "status"]);
+    assert_eq!(status["blocked_sources"], json!([]), "{status}");
+    assert_eq!(status["pending_envelopes"], json!(0), "{status}");
+    // The chain goes on from the restored head: a read after it publishes whole.
+    let before = permission_envelopes(&worker).await.len();
+    input(
+        &root,
+        json!({"epoch":4,"permissions":[[{"id":"a","revision":"p3","readers":["grp:group"]}],[{"id":"b","revision":"p3","readers":["grp:group"]}]]}),
+    );
+    worker_sync(&worker, &["incremental", "--kind", "permissions"]);
+    let parts: Vec<_> = permission_envelopes(&worker).await.split_off(before);
+    published_in_one(&commit, &parts).await;
+    assert_eq!(rights(&rows(&worker).await), (granted.clone(), granted));
 }
 
 /// A copy has no chain and nothing applied: its sources read again from the start.

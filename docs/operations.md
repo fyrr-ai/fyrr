@@ -254,6 +254,10 @@ writer commit` and `fyrr writer status` fail with `publication_invalid` for
 every source until it is removed or put back
 ([#370](https://github.com/fyrr-ai/fyrr/issues/370)).
 
+A worker does not make a new permissions cursor for such a source: it fails
+the read with `permission_cursor_lost`, so that no new chain stands in for the
+lost one.
+
 Put back the missing cursor or envelope (`cursors/SOURCE_ID-permissions.json`,
 `envelopes/ID.json` under the namespace) from a backup or an older object
 version if the storage keeps one: the next commit publishes what waited.

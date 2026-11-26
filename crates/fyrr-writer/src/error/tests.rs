@@ -89,6 +89,7 @@ fn writer_error_wire_strings_and_admission_are_unchanged() {
         ("listing_invalid", false),
         ("membership_expansion_limit", false),
         ("membership_snapshot_invalid", false),
+        ("permission_cursor_lost", false),
         ("permission_root_oversized", false),
         ("permission_snapshot_invalid", false),
         ("policy_generation_overflow", false),

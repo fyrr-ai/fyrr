@@ -2740,6 +2740,10 @@
         "tier": "full",
         "seconds": 60
       },
+      "full:fyrr:test:dense_path/incremental::incremental_a_restore_after_a_confirmed_split_read_keeps_the_chain_on_storage": {
+        "tier": "full",
+        "seconds": 60
+      },
       "full:fyrr:test:dense_path/incremental::incremental_members_behind_waiting_permissions_are_applied_on_storage": {
         "tier": "full",
         "seconds": 60

@@ -294,6 +294,38 @@ pub(crate) async fn walk<L: Link>(
     Ok(Some(found))
 }
 
+/// Whether the permissions of `source` have a chain that its cursor confirms:
+/// a publication applied some, or a chained envelope of it waits. A missing
+/// cursor of such a source is lost, not new, and is not made again.
+pub(crate) async fn chain_left(config: &Config, source: &str) -> Result<bool> {
+    let Some(head) = fyrr_reader::storage::optional_head(config).await? else {
+        return Ok(false);
+    };
+    let (store, root) = namespace_store(config)?;
+    if previous_manifest(store.as_ref(), &root, &head)
+        .await?
+        .is_some_and(|m| m.authorization_applied.contains_key(source))
+    {
+        return Ok(true);
+    }
+    let (paths, resolved) = envelope_paths(config, &head).await?;
+    let paths: Vec<_> = paths
+        .into_iter()
+        .filter(|path| {
+            !path
+                .filename()
+                .and_then(|n| n.strip_suffix(".json"))
+                .is_some_and(|id| resolved.contains(id))
+        })
+        .collect();
+    Ok(read_envelopes(config, &paths)
+        .await?
+        .into_iter()
+        .any(|(_, e)| {
+            e.source_id == source && e.kind == SyncKind::Permissions && e.lease_generation > 0
+        }))
+}
+
 pub async fn envelope_paths(
     config: &Config,
     head: &ServingHead,

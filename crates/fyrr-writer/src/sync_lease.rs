@@ -112,6 +112,14 @@ impl CursorLease {
         let (mut state, mode) =
             match Self::read(config, store.as_ref(), &path, source, kind).await? {
                 Some((state, version)) => (state, PutMode::Update(version)),
+                // A permissions cursor that is gone while its chain is left is
+                // lost: a new one would confirm a chain without it. The source
+                // stays blocked until the cursor is put back or it is purged.
+                None if kind == SyncKind::Permissions
+                    && crate::commit::chain_left(config, source).await? =>
+                {
+                    return Err(WriterError::PermissionCursorLost);
+                }
                 None => (
                     crate::prepare::initial_cursor(config, source, kind),
                     PutMode::Create,
