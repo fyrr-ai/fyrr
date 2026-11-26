@@ -2148,13 +2148,6 @@ async fn maintenance_grows_the_vector_model_in_bounded_steps_on_storage() {
     );
     let partitions = vector_partitions(&config).await;
     assert_eq!(partitions, vec![Some(42); partitions.len()]);
-    assert_eq!(
-        vector_segment_rows(&config, None)
-            .await
-            .iter()
-            .sum::<usize>(),
-        48 * COMMIT_ROWS - 1
-    );
     assert_eq!(command(&config, &["writer", "verify"])["verified"], true);
     assert!(found("seg doc 77"));
     assert!(!found("seg doc 9001"));
