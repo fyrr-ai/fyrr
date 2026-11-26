@@ -148,6 +148,9 @@ impl From<PreparedEnvelope> for StatusLink {
 }
 
 impl crate::commit::Link for StatusLink {
+    fn id(&self) -> &str {
+        &self.id
+    }
     fn source_id(&self) -> &str {
         &self.source_id
     }

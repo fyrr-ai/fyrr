@@ -211,17 +211,6 @@ impl Preparation<'_> {
             .block_on(store.list(Some(&root.join("envelopes"))).try_collect())?;
         let mut content_count = 0;
         let mut content_bytes = 0;
-        // The lease this read holds is the newest of its source: an envelope of
-        // a lease at least as new was written after the cursor it took, which
-        // is then older than the log, put back from a copy.
-        let epoch = if self.kind == SyncKind::Permissions {
-            self.rt
-                .block_on(self.lease.state())?
-                .lease
-                .map_or(0, |lease| lease.epoch)
-        } else {
-            0
-        };
         for object in objects {
             let path = object.location;
             let stamp = serde_json::to_string(&(
@@ -270,14 +259,6 @@ impl Preparation<'_> {
             }
             if envelope.namespace != self.config.namespace.name {
                 return Err(WriterError::EnvelopeNamespaceInvalid);
-            }
-            if self.kind == SyncKind::Permissions
-                && envelope.kind == SyncKind::Permissions
-                && envelope.source_id == self.source.id
-                && envelope.lease_generation > 0
-                && envelope.lease_generation >= epoch
-            {
-                return Err(WriterError::PermissionCursorLost);
             }
             if envelope.source_id == self.source.id
                 && envelope.kind == SyncKind::Content

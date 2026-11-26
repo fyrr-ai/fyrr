@@ -258,7 +258,9 @@ every source until it is removed or put back
 A worker does not make a new permissions cursor for such a source, nor read
 from one older than its log (a copy put back after a later read moved it): it
 fails the read with `permission_cursor_lost`, so that no new chain stands in
-for the lost one. A cursor older than the log blocks its source too.
+for the lost one. A cursor older than the log blocks its source too. A read in
+progress, or one whose worker died before it wrote the cursor, does not: the
+next read reads it again.
 
 Put back only the latest cursor, verified as the one the last read wrote: an
 older copy keeps the source blocked. Put back the missing cursor or envelope (`cursors/SOURCE_ID-permissions.json`,

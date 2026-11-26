@@ -111,13 +111,24 @@ impl CursorLease {
         let path = cursor_path(&root, source, kind);
         let (mut state, mode) =
             match Self::read(config, store.as_ref(), &path, source, kind).await? {
+                // A permissions cursor older than its log (a copy put back after
+                // a later read moved it) is refused before anything is written.
+                Some((state, _))
+                    if kind == SyncKind::Permissions
+                        && crate::commit::permission_log(config, source, Some(&state))
+                            .await?
+                            .0 =>
+                {
+                    return Err(WriterError::PermissionCursorLost);
+                }
                 Some((state, version)) => (state, PutMode::Update(version)),
                 // A permissions cursor that is gone while its chain is left is
                 // lost: a new one would confirm a chain without it. The source
                 // stays blocked until the cursor is put back or it is purged.
                 // A new one follows every lease generation of the log.
                 None if kind == SyncKind::Permissions => {
-                    let (left, generation) = crate::commit::permission_log(config, source).await?;
+                    let (left, generation) =
+                        crate::commit::permission_log(config, source, None).await?;
                     if left {
                         return Err(WriterError::PermissionCursorLost);
                     }

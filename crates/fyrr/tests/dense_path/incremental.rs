@@ -1846,6 +1846,10 @@ async fn incremental_permission_envelope_no_cursor_confirmed_is_inert_on_storage
         &[("b", "p8")],
     )
     .await;
+    // The end of a read its worker did not confirm, as one in progress, is not
+    // a lost cursor: the source is not blocked.
+    let status = command(&commit, &["writer", "status"]);
+    assert_eq!(status["blocked_sources"], json!([]), "{status}");
     input(
         &root,
         json!({"epoch":3,"permissions":[[{"id":"a","revision":"p4","readers":[]}]]}),
@@ -3042,7 +3046,8 @@ async fn incremental_a_new_cursor_follows_the_lease_generations_of_the_log_on_st
 /// An older copy of a cursor put back is not the cursor: after a later read
 /// confirmed a revocation that no publication carries yet, a copy of the cursor
 /// from before it blocks its source, so new content does not publish with the
-/// old rights, and a worker does not read from it.
+/// old rights, and a worker does not read from it, however often it tries: a
+/// refused read writes nothing.
 #[tokio::test]
 #[ignore = "real CLI and local storage; scripts/ci"]
 async fn incremental_an_older_cursor_put_back_keeps_its_source_blocked_on_storage() {
@@ -3082,14 +3087,24 @@ async fn incremental_an_older_cursor_put_back_keeps_its_source_blocked_on_storag
     let batch = rows(&worker).await;
     assert_eq!(revision(&batch), "r1", "the content waits");
     assert_eq!(row_readers(&batch, "a"), granted);
-    let refused = worker_command(&worker)
-        .args(["writer", "sync", "incremental", "--kind", "permissions"])
-        .output()
-        .unwrap();
-    assert!(!refused.status.success());
-    let said = String::from_utf8_lossy(&refused.stdout).into_owned()
-        + &String::from_utf8_lossy(&refused.stderr);
-    assert!(said.contains("permission_cursor_lost"), "{said}");
+    // Refused reads write nothing: the cursor stays as it was put back, however
+    // often a worker tries.
+    let put_back = store.get(&path).await.unwrap().bytes().await.unwrap();
+    for _ in 0..3 {
+        let refused = worker_command(&worker)
+            .args(["writer", "sync", "incremental", "--kind", "permissions"])
+            .output()
+            .unwrap();
+        assert!(!refused.status.success());
+        let said = String::from_utf8_lossy(&refused.stdout).into_owned()
+            + &String::from_utf8_lossy(&refused.stderr);
+        assert!(said.contains("permission_cursor_lost"), "{said}");
+    }
+    assert_eq!(
+        store.get(&path).await.unwrap().bytes().await.unwrap(),
+        put_back,
+        "a refused read writes no cursor"
+    );
     let status = command(&commit, &["writer", "status"]);
     assert_eq!(
         status["blocked_sources"],
