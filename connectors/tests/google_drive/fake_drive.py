@@ -15,7 +15,6 @@ replace; `python fake_drive.py` runs it for the real-S3 tests.
 
 from __future__ import annotations
 
-import io
 import json
 import re
 import secrets
@@ -23,7 +22,7 @@ import sys
 import threading
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
@@ -31,7 +30,10 @@ import requests
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from google.auth import exceptions, jwt
-from requests.adapters import BaseAdapter
+
+# Run as a script, the fake finds `fake_http` next to the test packages.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from fake_http import CONTROL_PATH, Holds, KeepAliveHandler, Serving, WorldAdapter
 
 DOC = "application/vnd.google-apps.document"
 SHEET = "application/vnd.google-apps.spreadsheet"
@@ -42,9 +44,6 @@ ADMIN = "admin@example.com"
 TOKEN_PATH = "/token"
 #: google-auth addresses every grant to Google's token endpoint, whatever the key's token URI.
 TOKEN_AUDIENCE = "https://oauth2.googleapis.com/token"
-CONTROL_PATH = "/fake/"
-#: A parked request is answered after this long even if nobody releases it.
-HOLD_SECONDS = 120.0
 _SCOPE = "https://www.googleapis.com/auth/"
 #: World changes `POST /fake/<name>` passes straight on, arguments by name.
 _WORLD_CALLS = frozenset({"user", "drive", "join", "leave", "share", "unshare", "touch", "remove"})
@@ -252,7 +251,7 @@ class FakeDrive:
 
     def session(self, subject: str) -> requests.Session:
         session = requests.Session()
-        adapter = _Adapter(self, subject)
+        adapter = WorldAdapter(lambda request: self.answer_request(subject, request))
         session.mount("https://", adapter)
         session.mount("http://", adapter)
         return session
@@ -311,6 +310,14 @@ class FakeDrive:
         size = min(self.page_size, int(params.get("pageSize", self.page_size)))
         following = str(start + size) if start + size < len(items) else None
         return items[start : start + size], following
+
+    def answer_request(
+        self, subject: str, request: requests.PreparedRequest
+    ) -> tuple[int, Any, dict[str, str]]:
+        url = urlsplit(request.url)
+        params = {key: values[0] for key, values in parse_qs(url.query).items()}
+        status, body, retry_after = self.handle(subject, url.path, params)
+        return status, body, {} if retry_after is None else {"Retry-After": retry_after}
 
     def handle(
         self, subject: str, path: str, params: dict[str, str]
@@ -418,29 +425,6 @@ def _error(reason: str, location: str = "") -> dict[str, Any]:
     return {"error": {"errors": [{"reason": reason, "location": location}]}}
 
 
-class _Adapter(BaseAdapter):
-    def __init__(self, world: FakeDrive, subject: str) -> None:
-        super().__init__()
-        self._world = world
-        self._subject = subject
-
-    def send(self, request: requests.PreparedRequest, **_: Any) -> requests.Response:
-        url = urlsplit(request.url)
-        params = {key: values[0] for key, values in parse_qs(url.query).items()}
-        status, body, retry_after = self._world.handle(self._subject, url.path, params)
-        response = requests.Response()
-        response.status_code = status
-        if retry_after is not None:
-            response.headers["Retry-After"] = retry_after
-        response.url = request.url
-        response.request = request
-        response.raw = io.BytesIO(body if isinstance(body, bytes) else json.dumps(body).encode())
-        return response
-
-    def close(self) -> None:
-        pass
-
-
 def matcher(spec: Mapping[str, Any]) -> Callable[[str, dict[str, str]], bool]:
     """A request predicate from JSON: a `path` pattern and `params` patterns,
     each searched in the request; a parameter the request lacks never matches."""
@@ -455,7 +439,7 @@ def matcher(spec: Mapping[str, Any]) -> Callable[[str, dict[str, str]], bool]:
     return match
 
 
-class FakeServer:
+class FakeServer(Serving):
     """`world` over HTTP, for a connector in another process.
 
     `settings.api_endpoint` is `endpoint` and the service-account key is
@@ -475,59 +459,34 @@ class FakeServer:
 
     def __init__(self, world: FakeDrive) -> None:
         self.world = world
-        self._http = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
-        self._http.daemon_threads = True
-        self._http.fake = self  # type: ignore[attr-defined]
-        self.endpoint = f"http://127.0.0.1:{self._http.server_address[1]}"
+        self.holds = Holds()
         key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
         self._public_key = key.public_key().public_bytes(
             serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
         )
-        self.service_account = json.dumps(
+        self._private_key = key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        ).decode()
+        self._tokens: dict[str, tuple[str, frozenset[str]]] = {}
+        super().__init__(_Handler, fake=self)
+
+    @property
+    def service_account(self) -> str:
+        return json.dumps(
             {
                 "type": "service_account",
                 "client_email": "fyrr-test@fake.iam.gserviceaccount.com",
                 "private_key_id": "fake",
-                "private_key": key.private_bytes(
-                    serialization.Encoding.PEM,
-                    serialization.PrivateFormat.PKCS8,
-                    serialization.NoEncryption(),
-                ).decode(),
+                "private_key": self._private_key,
                 "token_uri": self.endpoint + TOKEN_PATH,
             }
         )
-        self._tokens: dict[str, tuple[str, frozenset[str]]] = {}
-        self._holds: list[dict[str, Any]] = []
-        self._guard = threading.Lock()
-        self._thread = threading.Thread(target=self._http.serve_forever, args=(0.02,), daemon=True)
-        self._thread.start()
-
-    def __enter__(self) -> FakeServer:
-        return self
-
-    def __exit__(self, *_: object) -> None:
-        self.close()
 
     def close(self) -> None:
-        self.release()
-        self._http.shutdown()
-        self._http.server_close()
-        self._thread.join()
-
-    def hold(self, match: Callable[[str, dict[str, str]], bool]) -> None:
-        with self._guard:
-            self._holds.append({"match": match, "released": threading.Event(), "parked": False})
-
-    def release(self) -> None:
-        with self._guard:
-            holds, self._holds = self._holds, []
-        for hold in holds:
-            hold["released"].set()
-
-    def parked(self) -> int:
-        """Requests waiting for `release` right now."""
-        with self._guard:
-            return sum(hold["parked"] for hold in self._holds)
+        self.holds.release()
+        super().close()
 
     def token(self, form: dict[str, str]) -> tuple[int, Any]:
         """The OAuth JWT-bearer grant: an access token for the `sub` of a
@@ -561,24 +520,17 @@ class FakeServer:
             scope = "drive.readonly"
         if _SCOPE + scope not in scopes:
             return 403, _error("insufficientPermissions"), None
-        with self._guard:
-            hold = next(
-                (h for h in self._holds if not h["parked"] and h["match"](path, params)), None
-            )
-            if hold is not None:
-                hold["parked"] = True
-        if hold is not None:
-            hold["released"].wait(HOLD_SECONDS)
+        self.holds.wait(path, params)
         return self.world.handle(subject, path, params)
 
     def control(self, name: str, arguments: dict[str, Any]) -> Any:
         world = self.world
         if name == "hold":
-            return self.hold(matcher(arguments["match"]))
+            return self.holds.hold(matcher(arguments["match"]))
         if name == "release":
-            return self.release()
+            return self.holds.release()
         if name == "parked":
-            return self.parked()
+            return self.holds.parked()
         # The lock of `handle`: a change never lands in the middle of an answer.
         with world._lock:
             if name == "requests":
@@ -601,28 +553,9 @@ class FakeServer:
         raise KeyError(name)
 
 
-class _Handler(BaseHTTPRequestHandler):
-    protocol_version = "HTTP/1.1"
-    # Headers and body are two writes; Nagle would hold the second for 40 ms.
-    disable_nagle_algorithm = True
-
-    def log_message(self, *_: Any) -> None:
-        pass
-
+class _Handler(KeepAliveHandler):
     def _reply(self, status: int, body: Any, retry_after: str | None = None) -> None:
-        data = body if isinstance(body, bytes) else json.dumps(body).encode()
-        kind = "application/octet-stream" if isinstance(body, bytes) else "application/json"
-        try:
-            self.send_response(status)
-            self.send_header("Content-Type", kind)
-            self.send_header("Content-Length", str(len(data)))
-            if retry_after is not None:
-                self.send_header("Retry-After", retry_after)
-            self.end_headers()
-            self.wfile.write(data)
-        except OSError:
-            # The client is gone: a worker killed while its request was parked.
-            self.close_connection = True
+        self.send_json(status, body, None if retry_after is None else {"Retry-After": retry_after})
 
     def do_GET(self) -> None:
         url = urlsplit(self.path)
@@ -632,7 +565,7 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         fake: FakeServer = self.server.fake  # type: ignore[attr-defined]
-        body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        body = self.read_body()
         if self.path == TOKEN_PATH:
             form = {key: values[0] for key, values in parse_qs(body.decode()).items()}
             return self._reply(*fake.token(form))
