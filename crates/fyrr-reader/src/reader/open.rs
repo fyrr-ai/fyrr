@@ -425,14 +425,9 @@ impl PreparedReader {
                 .map_err(|_| StorageUnavailable)?;
             // The generation's one opened version, with this worker's I/O counters.
             let dataset = Arc::new(
-                crate::storage::read_through(
-                    &generation,
-                    &dataset_uri(&config),
-                    options,
-                    mirror.clone(),
-                )
-                .await
-                .map_err(|_| StorageUnavailable)?,
+                crate::storage::read_through(&generation, options, mirror.clone())
+                    .await
+                    .map_err(|_| StorageUnavailable)?,
             );
             let control_store = mirror.wrap("control", control_backend.clone());
             let mut worker = Self {

@@ -786,10 +786,11 @@ pub async fn open_version(
 }
 
 /// `dataset` read through `mirror`: the same opened version, metadata and
-/// session, with the reads of this handle counted in `mirror` alone.
+/// session, with the reads of this handle counted in `mirror` alone. Its
+/// `refs` still read through the generation's store; the reader reads no
+/// tags or branches.
 pub(crate) async fn read_through(
     dataset: &Dataset,
-    uri: &str,
     options: StorageOptions,
     mirror: Arc<crate::mirror::MirrorStore>,
 ) -> lance::Result<Dataset> {
@@ -805,7 +806,7 @@ pub(crate) async fn read_through(
     };
     let (store, _) = lance_io::object_store::ObjectStore::from_uri_and_params(
         dataset.session().store_registry(),
-        uri,
+        dataset.uri(),
         &params,
     )
     .await?;

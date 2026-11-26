@@ -215,6 +215,22 @@ async fn authorization_cache_budget_on_storage() {
     let config_path = std::path::PathBuf::from(std::env::var_os("FYRR_TEST_CACHE_CONFIG").unwrap());
     let config = fyrr_core::config::load(&config_path).unwrap().config;
     let mut reader = PreparedReader::open(&config).await.unwrap();
+    // Workers clone the generation's opened version: creating one reads
+    // nothing, and a read on the empty mirror counts for its worker alone.
+    {
+        let before = reader.mirror.totals();
+        let (first, second) = (
+            reader.worker().await.unwrap(),
+            reader.worker().await.unwrap(),
+        );
+        assert_eq!(reader.mirror.totals(), before, "a worker opens no version");
+        assert_eq!(first.mirror.counters(), Default::default());
+        let mut scan = first.dataset.scan();
+        scan.project(&["root_id"]).unwrap();
+        assert!(scan.try_into_batch().await.unwrap().num_rows() > 0);
+        assert!(first.mirror.counters().requests > 0, "a cold read");
+        assert_eq!(second.mirror.counters(), Default::default());
+    }
     reader.prewarm().await.unwrap();
     let cache = reader.admission_cache.clone();
     let hooks = reader.test_hooks.clone();
