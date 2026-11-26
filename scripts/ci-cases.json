@@ -15,6 +15,10 @@
         "tier": "quick",
         "seconds": 0.5
       },
+      "full:fyrr-writer:lib:fyrr_writer/commit::chain_tests::a_chain_a_concurrent_first_read_confirmed_is_busy_not_lost_on_local_storage": {
+        "tier": "quick",
+        "seconds": 0.5
+      },
       "full:fyrr-writer:lib:fyrr_writer/commit::chain_tests::a_chain_is_read_by_id_whatever_a_listing_shows_on_local_storage": {
         "tier": "quick",
         "seconds": 0.5

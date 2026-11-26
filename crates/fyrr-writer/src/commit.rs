@@ -1643,6 +1643,40 @@ mod chain_tests {
         links
     }
 
+    /// Two first reads of a source at once: the one that found no cursor finds
+    /// the other's chain in the log once that read confirmed it. The cursor is
+    /// there then, so the read is busy, not lost; without it, it is lost.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_chain_a_concurrent_first_read_confirmed_is_busy_not_lost_on_local_storage() {
+        let (config, root) = crate::lease::tests::local_config("cursor-race");
+        confirmed_chain(&config).await;
+        let (store, ns) = namespace_store(&config).unwrap();
+        // No publication yet, as on a first read.
+        let head_path = ns.clone().join("head.json");
+        let mut head: ServingHead = fyrr_reader::storage::read_contract(store.as_ref(), &head_path)
+            .await
+            .unwrap();
+        head.content = None;
+        head.rejected_envelope_ids.clear();
+        store
+            .put(&head_path, write_contract(&head).into())
+            .await
+            .unwrap();
+        let path = ns.join("cursors").join("source-permissions.json");
+        let new = || {
+            crate::sync_lease::CursorLease::new_permissions_cursor(
+                &config,
+                store.as_ref(),
+                &path,
+                "source",
+            )
+        };
+        assert_eq!(new().await.err(), Some(WriterError::SyncBusy));
+        store.delete(&path).await.unwrap();
+        assert_eq!(new().await.err(), Some(WriterError::PermissionCursorLost));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     async fn walk(
         config: &Config,
         applied: Option<&String>,

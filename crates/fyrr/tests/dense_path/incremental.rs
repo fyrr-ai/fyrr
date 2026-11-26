@@ -2839,10 +2839,11 @@ async fn incremental_a_permission_envelope_of_exactly_the_bound_publishes_on_sto
 /// A missing cursor is not an empty one: a source whose cursor is gone while
 /// envelopes it chained wait, before the first publication, is blocked, its
 /// content waits for the permission change, and `writer status` lists it; a
-/// worker that starts meanwhile makes no new cursor; once the cursor is back
-/// the source publishes. After a publication, a cursor that goes blocks its
-/// source in `writer status` with nothing pending, a worker refuses it and
-/// writes nothing, and purging the source ends the block.
+/// worker that starts meanwhile makes no new cursor. The supported recovery,
+/// a purge and a fresh sync under a new source ID, publishes. After a
+/// publication, a cursor that goes blocks its source in `writer status` with
+/// nothing pending, a worker refuses it and writes nothing, and purging the
+/// source ends the block.
 #[tokio::test]
 #[ignore = "real CLI and local storage; scripts/ci"]
 async fn incremental_a_missing_cursor_blocks_its_source_on_storage() {
@@ -2855,35 +2856,47 @@ async fn incremental_a_missing_cursor_blocks_its_source_on_storage() {
     );
     let loaded = fyrr_core::config::load(&worker).unwrap();
     let (store, ns) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
-    let path = ns.join("cursors").join("incremental-permissions.json");
-    let kept = store.get(&path).await.unwrap().bytes().await.unwrap();
-    store.delete(&path).await.unwrap();
-    let status = command(&commit, &["writer", "status"]);
-    assert_eq!(
-        status["blocked_sources"],
-        json!(["incremental"]),
-        "{status}"
-    );
-    // A worker that starts meanwhile makes no new cursor: the read fails, and
-    // the source stays blocked.
-    let restarted = worker_command(&worker)
-        .args(["writer", "sync", "incremental", "--kind", "permissions"])
-        .output()
-        .unwrap();
-    assert!(!restarted.status.success());
-    let said = String::from_utf8_lossy(&restarted.stdout).into_owned()
-        + &String::from_utf8_lossy(&restarted.stderr);
-    assert!(said.contains("permission_cursor_lost"), "{said}");
+    let cursor = |source: &str| {
+        ns.clone()
+            .join("cursors")
+            .join(format!("{source}-permissions.json"))
+    };
+    store.delete(&cursor("incremental")).await.unwrap();
+    // The envelopes in the log, before any publication too.
+    let logged = async || {
+        use futures::TryStreamExt;
+        let listed: Vec<_> = store
+            .list(Some(&ns.clone().join("envelopes")))
+            .try_collect()
+            .await
+            .unwrap();
+        listed.len()
+    };
+    let blocked = |source: &str| {
+        let status = command(&commit, &["writer", "status"]);
+        assert_eq!(status["blocked_sources"], json!([source]), "{status}");
+    };
+    blocked("incremental");
+    // A worker refuses the source: it makes no new cursor and writes nothing,
+    // and the source stays blocked.
+    let refused = |source: &str| {
+        let output = worker_command(&worker)
+            .args(["writer", "sync", source, "--kind", "permissions"])
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        let said = String::from_utf8_lossy(&output.stdout).into_owned()
+            + &String::from_utf8_lossy(&output.stderr);
+        assert!(said.contains("permission_cursor_lost"), "{said}");
+    };
+    let before = logged().await;
+    refused("incremental");
     assert!(
-        store.head(&path).await.is_err(),
+        store.head(&cursor("incremental")).await.is_err(),
         "no cursor stands in for the lost one"
     );
-    let status = command(&commit, &["writer", "status"]);
-    assert_eq!(
-        status["blocked_sources"],
-        json!(["incremental"]),
-        "{status}"
-    );
+    assert_eq!(logged().await, before);
+    blocked("incremental");
     publish(&commit);
     let head = fyrr_reader::storage::optional_head(&loaded.config)
         .await
@@ -2893,39 +2906,43 @@ async fn incremental_a_missing_cursor_blocks_its_source_on_storage() {
         head.content.is_none(),
         "the content waits for its permissions"
     );
-    store.put(&path, kept.clone().into()).await.unwrap();
-    publish(&commit);
-    assert!(!row_readers(&rows(&worker).await, "a").is_empty());
-    let status = command(&commit, &["writer", "status"]);
-    assert_eq!(status["blocked_sources"], json!([]), "{status}");
-    // After a publication, with nothing pending.
-    store.delete(&path).await.unwrap();
-    let status = command(&commit, &["writer", "status"]);
-    assert_eq!(
-        status["blocked_sources"],
-        json!(["incremental"]),
-        "{status}"
-    );
-    // A worker refuses that cursor too, and writes nothing.
-    let before = permission_envelopes(&worker).await.len();
-    let refused = worker_command(&worker)
-        .args(["writer", "sync", "incremental", "--kind", "permissions"])
-        .output()
-        .unwrap();
-    assert!(!refused.status.success());
-    let said = String::from_utf8_lossy(&refused.stdout).into_owned()
-        + &String::from_utf8_lossy(&refused.stderr);
-    assert!(said.contains("permission_cursor_lost"), "{said}");
-    assert!(store.head(&path).await.is_err(), "no cursor is made");
-    assert_eq!(permission_envelopes(&worker).await.len(), before);
-    // Purging the source ends the block.
+    // The recovery: purge the source and sync it afresh under a new ID.
     command(
         &commit,
         &["writer", "source", "purge", "incremental", "--confirm"],
     );
     let status = command(&commit, &["writer", "status"]);
     assert_eq!(status["blocked_sources"], json!([]), "{status}");
-    drop(kept);
+    for config in [&worker, &commit] {
+        let text = std::fs::read_to_string(config).unwrap();
+        assert!(text.contains("id='incremental'"));
+        std::fs::write(config, text.replace("id='incremental'", "id='fresh'")).unwrap();
+    }
+    worker_sync(
+        &worker,
+        &["fresh", "--kind", "content", "--kind", "permissions"],
+    );
+    publish(&commit);
+    assert!(!row_readers(&source_rows(&worker, "fresh").await, "a").is_empty());
+    let status = command(&commit, &["writer", "status"]);
+    assert_eq!(status["blocked_sources"], json!([]), "{status}");
+    // After a publication, with nothing pending.
+    store.delete(&cursor("fresh")).await.unwrap();
+    blocked("fresh");
+    let before = logged().await;
+    refused("fresh");
+    assert!(
+        store.head(&cursor("fresh")).await.is_err(),
+        "no cursor is made"
+    );
+    assert_eq!(logged().await, before);
+    // Purging the source ends the block.
+    command(
+        &commit,
+        &["writer", "source", "purge", "fresh", "--confirm"],
+    );
+    let status = command(&commit, &["writer", "status"]);
+    assert_eq!(status["blocked_sources"], json!([]), "{status}");
 }
 
 /// A restore between a confirmed split read and the next commit: the restore
