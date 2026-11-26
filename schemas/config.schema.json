@@ -143,44 +143,22 @@
           "description": "Namespace ID: lowercase letters, digits and `-`, at most 63 bytes.",
           "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"
         },
-        "fts_max_token_length": {
-          "type": "integer",
-          "format": "uint32",
-          "minimum": 1,
-          "description": "Native FTS `max_token_length`.",
-          "maximum": 1024,
-          "default": 40
-        },
-        "fts_stem": {
-          "type": "boolean",
-          "description": "English stemming.",
-          "default": false
-        },
-        "fts_remove_stop_words": {
-          "type": "boolean",
-          "description": "Stop-word removal.",
-          "default": false
-        },
-        "fts_ascii_folding": {
-          "type": "boolean",
-          "description": "ASCII folding.",
-          "default": false
-        },
         "fts_positions": {
           "type": "boolean",
           "description": "Token positions in the `searchable_text` index; a `phrase` condition needs them.",
           "default": false
         },
         "analyzer": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Analyzer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "How the full-text index of `searchable_text` cuts a text into terms: the\ntokenizer, the language, the stop words and the other settings of an\nattribute's analyzer. Absent: the `simple` tokenizer with the `fts_*`\nkeys above. Present, `fts_stem`, `fts_remove_stop_words`,\n`fts_ascii_folding` and `fts_max_token_length` stay at their defaults.\nFixed when the namespace is created."
+          "$ref": "#/$defs/Analyzer",
+          "description": "How the full-text index of `searchable_text` cuts a text into terms: the\ntokenizer, the language, the stop words and the other settings of an\nattribute's analyzer. The index, the highlights and the excerpts of a hit\nall use it. Absent: the `simple` tokenizer, lowercase, tokens up to 40 bytes,\nno stemming, stop words or folding. Fixed when the namespace is created.",
+          "default": {
+            "tokenizer": "simple",
+            "ascii_folding": false,
+            "max_token_length": 40,
+            "ngram_min_length": 3,
+            "ngram_max_length": 3,
+            "prefix_only": false
+          }
         },
         "dense_rq_bits": {
           "type": "integer",

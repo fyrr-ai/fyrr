@@ -84,10 +84,6 @@ impl NamespaceSettings {
             retrieval: (&self.retrieval).into(),
             composition: (&self.composition).into(),
             name: String::new(),
-            fts_max_token_length: self.fts.max_token_length,
-            fts_stem: self.fts.stem,
-            fts_remove_stop_words: self.fts.remove_stop_words,
-            fts_ascii_folding: self.fts.ascii_folding,
             fts_positions: self.fts.with_position,
             analyzer: self.fts.analyzer.clone(),
             dense_rq_bits: self.dense_rq_bits,
@@ -376,18 +372,11 @@ pub struct LineageTransaction {
 /// FTS analyzer settings, part of the publication identity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct FtsSettings {
-    pub tokenizer: String,
-    pub max_token_length: u32,
-    pub lowercase: bool,
-    pub stem: bool,
-    pub remove_stop_words: bool,
-    pub ascii_folding: bool,
+    /// How the index of `searchable_text` cuts a text into terms; the highlights
+    /// and the excerpts of a hit cut it the same way.
+    pub analyzer: crate::attributes::analyzer::Analyzer,
     /// Positional postings, which a phrase condition needs.
     pub with_position: bool,
-    /// The analyzer of `searchable_text`; present, the keys above are the
-    /// defaults and do not apply. Absent: the keys above.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub analyzer: Option<crate::attributes::analyzer::Analyzer>,
 }
 
 /// One index of the published version.

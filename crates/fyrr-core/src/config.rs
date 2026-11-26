@@ -157,30 +157,16 @@ pub struct NamespaceConfig {
     /// Namespace ID: lowercase letters, digits and `-`, at most 63 bytes.
     #[schemars(regex(pattern = NAMESPACE_PATTERN))]
     pub name: String,
-    /// Native FTS `max_token_length`.
-    #[serde(default = "default_fts_max_token_length")]
-    #[schemars(range(min = 1, max = FTS_MAX_TOKEN_LENGTH_MAX))]
-    pub fts_max_token_length: u32,
-    /// English stemming.
-    #[serde(default)]
-    pub fts_stem: bool,
-    /// Stop-word removal.
-    #[serde(default)]
-    pub fts_remove_stop_words: bool,
-    /// ASCII folding.
-    #[serde(default)]
-    pub fts_ascii_folding: bool,
     /// Token positions in the `searchable_text` index; a `phrase` condition needs them.
     #[serde(default)]
     pub fts_positions: bool,
     /// How the full-text index of `searchable_text` cuts a text into terms: the
     /// tokenizer, the language, the stop words and the other settings of an
-    /// attribute's analyzer. Absent: the `simple` tokenizer with the `fts_*`
-    /// keys above. Present, `fts_stem`, `fts_remove_stop_words`,
-    /// `fts_ascii_folding` and `fts_max_token_length` stay at their defaults.
-    /// Fixed when the namespace is created.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub analyzer: Option<crate::attributes::analyzer::Analyzer>,
+    /// attribute's analyzer. The index, the highlights and the excerpts of a hit
+    /// all use it. Absent: the `simple` tokenizer, lowercase, tokens up to 40 bytes,
+    /// no stemming, stop words or folding. Fixed when the namespace is created.
+    #[serde(default)]
+    pub analyzer: crate::attributes::analyzer::Analyzer,
     /// RaBitQ bits per dimension of the dense vector index.
     #[serde(default = "default_dense_rq_bits")]
     #[schemars(range(min = 1, max = DENSE_RQ_BITS_MAX))]
@@ -546,14 +532,8 @@ impl NamespaceConfig {
     /// Canonical analyzer settings shared by publication and admission.
     pub fn fts_settings(&self) -> crate::publication::FtsSettings {
         crate::publication::FtsSettings {
-            tokenizer: "simple".into(),
-            max_token_length: self.fts_max_token_length,
-            lowercase: true,
-            stem: self.fts_stem,
-            remove_stop_words: self.fts_remove_stop_words,
-            ascii_folding: self.fts_ascii_folding,
-            with_position: self.fts_positions,
             analyzer: self.analyzer.clone(),
+            with_position: self.fts_positions,
         }
     }
     /// Includes fixed lane weights, candidate bounds, source cap, P1 and composition.
@@ -1660,10 +1640,6 @@ impl Config {
             query: role(&embedding.settings.roles.query),
         };
         let namespace = &mut config.namespace;
-        namespace.fts_max_token_length = settings.fts.max_token_length;
-        namespace.fts_stem = settings.fts.stem;
-        namespace.fts_remove_stop_words = settings.fts.remove_stop_words;
-        namespace.fts_ascii_folding = settings.fts.ascii_folding;
         namespace.fts_positions = settings.fts.with_position;
         namespace.analyzer.clone_from(&settings.fts.analyzer);
         namespace.dense_rq_bits = settings.dense_rq_bits;

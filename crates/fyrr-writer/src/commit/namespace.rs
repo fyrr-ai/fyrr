@@ -654,7 +654,7 @@ mod tests {
     #[test]
     fn settings_round_trip_through_a_configuration() {
         let created = parse(
-            "fts_stem = true\ndense_rq_bits = 3\ndense_partition_rows = 64\n\
+            "analyzer = { language = \"english\" }\ndense_rq_bits = 3\ndense_partition_rows = 64\n\
              retrieval = { dense_weight = 0.3, lexical_candidates = 20, rescore_depth = { mode = \"fixed\", candidates = 100 } }\n\
              composition = { fusion = 40, dense = 5, lexical = 5 }\n\
              [namespace.rerank]\nendpoint = 'http://127.0.0.1:9/created'\nmodel = 'm'\n\

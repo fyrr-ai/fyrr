@@ -103,11 +103,7 @@
         "tier": "quick",
         "seconds": 0.001
       },
-      "full:fyrr-reader:lib:fyrr_reader/excerpt::tests::only_a_namespace_with_an_analyzer_selects_with_tokens": {
-        "tier": "quick",
-        "seconds": 0.001
-      },
-      "full:fyrr-reader:lib:fyrr_reader/excerpt::tests::a_default_namespace_keeps_its_literal_excerpts": {
+      "full:fyrr-reader:lib:fyrr_reader/excerpt::tests::a_default_namespace_selects_with_the_tokens_of_the_index": {
         "tier": "quick",
         "seconds": 0.001
       },
@@ -1294,11 +1290,7 @@
         "tier": "quick",
         "seconds": 0.0
       },
-      "full:fyrr-core:test:config/analyzer_flags_are_publication_settings_with_legacy_defaults": {
-        "tier": "quick",
-        "seconds": 0.002
-      },
-      "full:fyrr-core:test:config/the_text_analyzer_is_a_publication_setting_that_keeps_a_namespace_without_one_as_it_was": {
+      "full:fyrr-core:test:config/the_text_analyzer_is_one_effective_setting_of_the_publication": {
         "tier": "quick",
         "seconds": 0.002
       },

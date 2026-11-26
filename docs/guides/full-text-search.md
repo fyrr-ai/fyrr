@@ -6,7 +6,7 @@
 >   lexical lane scores the rows that hold the query's words; a hit's
 >   `lexical_score` is that score.
 > - `highlights` returns the ranges of the excerpt that matched, and
->   `fts_stem` makes `restore` match `restores` and `restoring`.
+>   an English analyzer makes `restore` match `restores` and `restoring`.
 > - `query_match: "all"` ranks only rows that hold every word, and `contains`
 >   requires words in a string attribute with a `full_text` index.
 
@@ -26,10 +26,10 @@ source examples/guides/start
 
 Every row's `text` is full-text indexed. The first write also declares a `title`
 attribute with a full-text index of its own. Stemming is a setting of the
-namespace, `fts_stem` in `[namespace]` of the
-[configuration](../tuning.md#namespace), and the guides' configuration turns it
-on; the namespace takes it from the file when its first write creates it and
-keeps it for life:
+namespace, the `language` of `[namespace.analyzer]` in the
+[configuration](../tuning.md#the-analyzer-of-the-text), and the guides'
+configuration sets it to English; the namespace takes it from the file when its
+first write creates it and keeps it for life:
 
 ```sh
 curl -fsS "$WRITER/v1/namespaces/articles/documents" \
@@ -117,9 +117,8 @@ and the stop words of an index are its
 ## 4. Show what matched
 
 The excerpt of a hit is the passage with the most distinct terms of the query.
-With an analyzer, `fts_stem`, `fts_remove_stop_words` or `fts_ascii_folding`
-the terms are the tokens the index cuts, so a passage that holds a stemmed or
-folded match is the one returned; otherwise they are the words of the query.
+The terms are the tokens the index cuts, so a passage that holds a stemmed or
+folded match is the one returned.
 
 `highlights` adds the ranges of each excerpt that match the query, in the
 codepoints of the record, as the excerpt's `start` and `end` are. A matched

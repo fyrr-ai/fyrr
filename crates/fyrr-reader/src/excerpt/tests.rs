@@ -16,8 +16,8 @@ fn namespace(extra: serde_json::Value) -> NamespaceConfig {
 }
 /// The terms of `query` as the reader builds them for `namespace`.
 fn terms(namespace: &NamespaceConfig, query: &str) -> Terms {
-    let tokenizer = analyzes(namespace).then(|| fts_params(namespace).unwrap().build().unwrap());
-    Terms::new(tokenizer.as_deref(), query).unwrap()
+    let tokenizer = fts_params(namespace).unwrap().build().unwrap();
+    Terms::new(tokenizer.as_ref(), query).unwrap()
 }
 fn select_in(extra: serde_json::Value, text: &str, query: &str, cap: u32) -> Excerpt {
     terms(&namespace(extra), query).select(text, cap).unwrap()
@@ -123,10 +123,10 @@ fn selection_follows_the_analyzer() {
     let stemmed = select_in(german(), text, "haus", cap);
     assert_eq!(stemmed.text, "Wir sahen viele Häuser dort.");
     assert_eq!(stemmed.start, 25);
-    // The default namespace has no stemmer: the word is not found, the prefix is taken.
-    let literal = select(text, "haus", cap);
+    // The default analyzer has no stemmer: the word is not found, the prefix is taken.
+    let plain = select(text, "haus", cap);
     assert_eq!(
-        (literal.start, literal.text.as_str()),
+        (plain.start, plain.text.as_str()),
         (0, "Die Katze schläft lange. Wir s")
     );
     // Stop words match nothing: the query is empty and the excerpt is the prefix.
@@ -135,10 +135,10 @@ fn selection_follows_the_analyzer() {
         (stop.start, stop.text.as_str()),
         (0, "Die Katze schläft lange. Wir s")
     );
-    // English stemming of the `fts_stem` key.
+    // English stemming of the analyzer's language.
     let text = "Cats sleep. Dogs ran home. Birds fly.";
     let stemmed = select_in(
-        serde_json::json!({"fts_stem": true}),
+        serde_json::json!({"analyzer": {"language": "english"}}),
         text,
         "running dog",
         14,
@@ -147,7 +147,7 @@ fn selection_follows_the_analyzer() {
     // Folding: the accent of the text meets the plain letter of the query.
     let text = "Prague is old. The café is closed. Bye.";
     let folded = select_in(
-        serde_json::json!({"fts_ascii_folding": true}),
+        serde_json::json!({"analyzer": {"ascii_folding": true}}),
         text,
         "cafe",
         20,
@@ -165,41 +165,18 @@ fn selection_follows_the_analyzer() {
 }
 
 #[test]
-fn only_a_namespace_with_an_analyzer_selects_with_tokens() {
-    for (extra, expected) in [
-        (serde_json::json!({}), false),
-        (serde_json::json!({"fts_positions": true}), false),
-        (serde_json::json!({"fts_max_token_length": 8}), false),
-        (serde_json::json!({"fts_stem": true}), true),
-        (serde_json::json!({"fts_remove_stop_words": true}), true),
-        (serde_json::json!({"fts_ascii_folding": true}), true),
-        (serde_json::json!({"analyzer": {}}), true),
-    ] {
-        assert_eq!(analyzes(&namespace(extra.clone())), expected, "{extra}");
-    }
-}
-
-#[test]
-fn a_default_namespace_keeps_its_literal_excerpts() {
+fn a_default_namespace_selects_with_the_tokens_of_the_index() {
     // The index drops a token over 40 bytes, so the analyzer finds no term in
-    // this query and would return the start of the record.
+    // this query and the excerpt is the start of the record.
     let word = "a".repeat(50);
     let text = format!("First sentence. {word}. Last.");
     let default = select(&text, &word, 52);
-    assert_eq!(
-        (default.start, default.text.as_str()),
-        (16, format!("{word}.").as_str())
-    );
-    // The index cuts `foo_bar` into `foo` and `bar`, and the shorter first
-    // sentence holds both of them.
+    assert_eq!(default.start, 0);
+    // The index cuts `foo_bar` into `foo` and `bar`, and the first sentence
+    // holds both of them: the excerpt is it, not the later `foo_bar`.
     let text = "foo bar now. Then foo_bar.";
     let default = select(text, "foo_bar", 14);
-    assert_eq!(
-        (default.start, default.text.as_str()),
-        (13, "Then foo_bar.")
-    );
-    let analyzed = select_in(serde_json::json!({"fts_stem": true}), text, "foo_bar", 14);
-    assert_eq!(analyzed.start, 0);
+    assert_eq!((default.start, default.text.as_str()), (0, "foo bar now."));
 }
 
 /// The analyzer a test names in full: Lance's defaults stem, fold and drop stop words.
@@ -281,9 +258,10 @@ fn highlights_skip_a_token_the_passage_cuts() {
         highlights(plain(), record, (3, 6), "cat"),
         Vec::<[u32; 2]>::new()
     );
-    // Selection and highlight together: the first window of the record.
+    // Selection and highlight together: the window of the whole token, not the
+    // `cat` that starts `catapult`, which is no token of the index.
     let mut excerpt = select("catapult cat", "cat", 3);
-    assert_eq!((excerpt.start, excerpt.text.as_str()), (0, "cat"));
+    assert_eq!((excerpt.start, excerpt.text.as_str()), (9, "cat"));
     highlight(
         plain().build().unwrap().as_mut(),
         "cat",
@@ -291,7 +269,7 @@ fn highlights_skip_a_token_the_passage_cuts() {
         &mut excerpt,
     )
     .unwrap();
-    assert_eq!(excerpt.highlights, Some(Vec::new()));
+    assert_eq!(excerpt.highlights, Some(vec![[9, 12]]));
     // A token set off by punctuation or a space is whole.
     let record = "a cat, b";
     assert_eq!(highlights(plain(), record, (2, 5), "cat"), [[2, 5]]);

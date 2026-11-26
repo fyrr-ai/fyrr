@@ -9,6 +9,22 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Changed
 
+- One analyzer cuts the text of a namespace for its index, its highlights and
+  its excerpts. The keys `fts_stem`, `fts_remove_stop_words`,
+  `fts_ascii_folding` and `fts_max_token_length` are gone (a file that sets one
+  is refused): use `[namespace.analyzer]` with `language`, `stop_words`,
+  `ascii_folding` and `max_token_length`. Its default, the `simple` tokenizer
+  with tokens up to 40 bytes, is recorded in the policy and the manifest
+  (`fts.analyzer`, replacing `tokenizer`, `max_token_length`, `lowercase`,
+  `stem`, `remove_stop_words` and `ascii_folding`), so the manifest tells what
+  its index does. `fts_positions` stays. A `language` stems and removes stop
+  words together; there is no stemming alone. The excerpt of a hit in a namespace
+  with the default analyzer is now chosen with the tokens of the index, not the
+  literal words of the query: a word the index drops (over 40 bytes) or cuts (at
+  `_`) no longer counts. On a default namespace the selection takes about 0.8 to
+  1.0 times the time it took (0.5 times on text with non-ASCII letters), in a
+  debug build. The retrieval digest of every namespace changes: a namespace of
+  an unreleased build is refused; recreate it.
 - An explicit `null` for a member of a JSON `query` request that is no tool
   argument (`fields`, `fusion`, `rerank`, `sub_queries`, `query_match`,
   `query_attributes`, `phrase`, `contains`, `boosts`, `group_documents`,

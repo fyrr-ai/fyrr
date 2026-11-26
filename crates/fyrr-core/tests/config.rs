@@ -1239,59 +1239,58 @@ fn retrieval_config_bounds_and_digest() {
     }
 }
 #[test]
-fn analyzer_flags_are_publication_settings_with_legacy_defaults() {
-    let legacy = parse(MINIMAL).unwrap().config.namespace;
-    let explicit = parse(&MINIMAL.replace(
-        "[namespace]",
-        "[namespace]\nfts_stem=false\nfts_remove_stop_words=false\nfts_ascii_folding=false\nfts_positions=false",
+fn the_text_analyzer_is_one_effective_setting_of_the_publication() {
+    use fyrr_core::attributes::analyzer::{Analyzer, Tokenizer};
+    let default = parse(MINIMAL).unwrap().config.namespace;
+    // The default is an analyzer like any other: materialized, in the publication.
+    assert_eq!(default.fts_settings().analyzer, Analyzer::default());
+    assert!(!default.fts_settings().with_position);
+    assert!(
+        serde_json::to_string(&default.fts_settings())
+            .unwrap()
+            .contains("\"tokenizer\":\"simple\"")
+    );
+    let spelled = parse(&format!(
+        "{MINIMAL}\n[namespace.analyzer]\ntokenizer = \"simple\"\n"
     ))
     .unwrap()
     .config
     .namespace;
-    assert_eq!(legacy.retrieval_digest(), explicit.retrieval_digest());
-    assert!(!legacy.fts_settings().stem && !legacy.fts_settings().remove_stop_words);
-    assert!(!legacy.fts_settings().with_position);
-    for flag in [
+    assert_eq!(default.retrieval_digest(), spelled.retrieval_digest());
+    // Token positions are a setting of their own.
+    let positional = parse(&MINIMAL.replace("[namespace]", "[namespace]\nfts_positions=true"))
+        .unwrap()
+        .config
+        .namespace;
+    assert_ne!(default.retrieval_digest(), positional.retrieval_digest());
+    assert!(positional.fts_settings().with_position);
+    // The flat keys are gone: the analyzer is the one way to say it.
+    for key in [
         "fts_stem",
         "fts_remove_stop_words",
         "fts_ascii_folding",
-        "fts_positions",
+        "fts_max_token_length",
     ] {
-        let configured =
-            parse(&MINIMAL.replace("[namespace]", &format!("[namespace]\n{flag}=true")))
-                .unwrap()
-                .config
-                .namespace;
-        assert_ne!(legacy.retrieval_digest(), configured.retrieval_digest());
-        let fts = configured.fts_settings();
-        assert_eq!(fts.stem, flag == "fts_stem");
-        assert_eq!(fts.remove_stop_words, flag == "fts_remove_stop_words");
-        assert_eq!(fts.ascii_folding, flag == "fts_ascii_folding");
-        assert_eq!(fts.with_position, flag == "fts_positions");
+        let value = if key == "fts_max_token_length" {
+            "40"
+        } else {
+            "true"
+        };
+        assert!(
+            parse(&MINIMAL.replace("[namespace]", &format!("[namespace]\n{key}={value}"))).is_err(),
+            "{key}"
+        );
     }
-}
-#[test]
-fn the_text_analyzer_is_a_publication_setting_that_keeps_a_namespace_without_one_as_it_was() {
-    let legacy = parse(MINIMAL).unwrap().config.namespace;
-    assert!(legacy.fts_settings().analyzer.is_none());
-    // An absent analyzer is not in the policy, so the digest of a namespace
-    // that has none is what it was.
-    assert!(
-        !serde_json::to_string(&legacy.fts_settings())
-            .unwrap()
-            .contains("analyzer")
-    );
     let table = "[namespace.analyzer]\ntokenizer = \"unicode\"\nlanguage = \"german\"\n";
     let analyzed = parse(&format!("{MINIMAL}\n{table}")).unwrap();
     assert!(errors(&analyzed).is_empty(), "{:?}", errors(&analyzed));
     let namespace = analyzed.config.namespace;
-    assert_ne!(legacy.retrieval_digest(), namespace.retrieval_digest());
-    let analyzer = namespace.fts_settings().analyzer.unwrap();
+    assert_ne!(default.retrieval_digest(), namespace.retrieval_digest());
+    // The publication says what the index does: the analyzer, not a tokenizer name apart.
     assert_eq!(
-        analyzer.tokenizer,
-        fyrr_core::attributes::analyzer::Tokenizer::Unicode
+        namespace.fts_settings().analyzer.tokenizer,
+        Tokenizer::Unicode
     );
-    // The analyzer replaces the `fts_*` keys and keeps the analyzer's bounds.
     assert_error(
         "[namespace.analyzer]\nlanguage = \"german\"\nmax_token_length = 0\n",
         "namespace.analyzer",
@@ -1303,13 +1302,6 @@ fn the_text_analyzer_is_a_publication_setting_that_keeps_a_namespace_without_one
     assert_error(
         "[namespace.analyzer]\ntokenizer = \"ngram\"\n",
         "namespace.analyzer",
-    );
-    let mixed = MINIMAL.replace("[namespace]", "[namespace]\nfts_stem = true");
-    let mixed = parse(&format!("{mixed}\n{table}")).unwrap();
-    assert!(
-        errors(&mixed)
-            .iter()
-            .any(|error| error.contains("namespace.analyzer"))
     );
 }
 #[test]
@@ -1592,11 +1584,12 @@ fn namespace_attributes_are_declared_by_name_and_type() {
 fn rescore_depth_defaults_to_the_pool_rule_and_expands_only_at_small_gaps() {
     use fyrr_core::config::RescoreDepth;
     let namespace = parse(MINIMAL).unwrap().config.namespace;
-    // Computed on main 7c1626c4, before `Legacy` was deleted: a namespace that
-    // sets nothing must keep the identity its publications already carry.
+    // Pinned: a namespace that sets nothing keeps the identity its publications carry.
+    // It was sha256:8a1c2558… (computed on main 7c1626c4) until the effective analyzer
+    // of the text, the default included, became part of the digest.
     assert_eq!(
         namespace.retrieval_digest(),
-        "sha256:8a1c25581678e85afb0fbad2d57d6ae486df8944d69dc28c98aa771b4bce098c"
+        "sha256:1c55c2e89c3747c21d7120d347ce856ac078ee4e8cbc57c11ee0ee5733d69546"
     );
     let retrieval = namespace.retrieval;
     assert_eq!(retrieval.rescore_depth, None);

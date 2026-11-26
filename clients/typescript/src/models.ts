@@ -606,19 +606,13 @@ export interface EmbeddingRole {
 
 /** FTS analyzer settings, part of the publication identity. */
 export interface FtsSettings {
-  tokenizer: string;
-  max_token_length: number;
-  lowercase: boolean;
-  stem: boolean;
-  remove_stop_words: boolean;
-  ascii_folding: boolean;
+  /**
+   * How the index of `searchable_text` cuts a text into terms; the highlights
+   * and the excerpts of a hit cut it the same way.
+   */
+  analyzer: Analyzer;
   /** Positional postings, which a phrase condition needs. */
   with_position: boolean;
-  /**
-   * The analyzer of `searchable_text`; present, the keys above are the
-   * defaults and do not apply. Absent: the keys above.
-   */
-  analyzer?: Analyzer | null;
 }
 
 /**

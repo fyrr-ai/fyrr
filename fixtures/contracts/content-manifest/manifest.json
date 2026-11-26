@@ -27,12 +27,15 @@
     "digest": "sha256:daf02912c6aa996b6aaf1d74e9d62b7714dd2291e379f1d826341c090a3271a9"
   },
   "fts": {
-    "tokenizer": "simple",
-    "max_token_length": 40,
-    "lowercase": true,
-    "stem": true,
-    "remove_stop_words": false,
-    "ascii_folding": true,
+    "analyzer": {
+      "tokenizer": "simple",
+      "language": "english",
+      "ascii_folding": true,
+      "max_token_length": 40,
+      "ngram_min_length": 3,
+      "ngram_max_length": 3,
+      "prefix_only": false
+    },
     "with_position": false
   },
   "dense_rq_bits": 1,
