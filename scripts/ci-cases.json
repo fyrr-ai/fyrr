@@ -2798,6 +2798,14 @@
         "tier": "full",
         "seconds": 60
       },
+      "full:fyrr:test:dense_path/incremental::incremental_a_commit_with_waiting_permissions_and_members_writes_nothing_on_storage": {
+        "tier": "full",
+        "seconds": 60
+      },
+      "full:fyrr:test:dense_path/incremental::incremental_a_commit_with_only_waiting_deletes_writes_nothing_on_storage": {
+        "tier": "full",
+        "seconds": 60
+      },
       "full:fyrr:test:dense_path/incremental::incremental_copy_clears_the_chain_of_the_cursors_on_storage": {
         "tier": "full",
         "seconds": 60
