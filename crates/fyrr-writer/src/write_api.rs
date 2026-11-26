@@ -85,6 +85,7 @@ impl Commits {
     /// Commits what waits for the namespace of `config`, under the lease `lease` that a
     /// maintenance run holds: the requests that wait, and the envelopes its sources left.
     /// The requests are woken to look at what was published.
+    #[allow(clippy::print_stderr)]
     pub(crate) async fn commit_pending(
         &self,
         config: &Config,
@@ -94,7 +95,15 @@ impl Commits {
         if crate::commit::pending(config, &head).await?.is_empty() {
             return Ok(());
         }
+        let began = std::time::Instant::now();
         crate::commit::drain(config, false, lease, None).await?;
+        eprintln!("writer_service event=published");
+        fyrr_reader::metrics::observe(&crate::telemetry::COMMIT_DURATION, &[], began.elapsed());
+        fyrr_reader::metrics::add(
+            &crate::telemetry::COMMIT_ROUNDS,
+            &[("outcome", "published")],
+            1,
+        );
         self.done.send_modify(|rounds| *rounds += 1);
         Ok(())
     }
