@@ -251,6 +251,35 @@ async fn namespace_renewal_finishes_before_release_on_local_storage() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
+/// A renewal whose write takes longer than the renewal interval, but less than
+/// the TTL, as on a busy disk, keeps the lease: the next renewal starts as soon
+/// as it ends, not an interval later, past the expiry it wrote.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_slow_renewal_within_the_ttl_keeps_the_lease_on_local_storage() {
+    let (config, root) = local_config("slow-renewal");
+    put_head(&config).await;
+    let mut lease = LeaseGuard::acquire(&config).await.unwrap();
+    let (store, entered, resume) = delayed_store(lease.store.clone());
+    Arc::get_mut(&mut lease).unwrap().store = store;
+    // TTL 3 s: renewals every 1 s, and the first one's write takes 2.4 s.
+    let renewal = lease.keepalive();
+    tokio::time::timeout(Duration::from_secs(10), entered.notified())
+        .await
+        .expect("the first renewal reached its write");
+    tokio::time::sleep(Duration::from_millis(2400)).await;
+    resume.notify_one();
+    // Past the expiry the slow renewal wrote, and past when a renewal one
+    // interval after it would have come.
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    lease
+        .head()
+        .await
+        .expect("the lease is renewed after the slow write");
+    renewal.stop().await.unwrap();
+    lease.release().await.unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "real S3 conditional writes; scripts/ci"]
 async fn renewals_finish_before_release_on_real_s3() {
