@@ -11,6 +11,10 @@
         "tier": "quick",
         "seconds": 0.0
       },
+      "full:fyrr-writer:lib:fyrr_writer/commit::classify_tests::every_state_of_every_kind": {
+        "tier": "quick",
+        "seconds": 0.01
+      },
       "full:fyrr-writer:lib:fyrr_writer/commit::chain_tests::a_cursor_without_a_confirmed_envelope_blocks_a_source_with_a_chain_on_local_storage": {
         "tier": "quick",
         "seconds": 0.5
