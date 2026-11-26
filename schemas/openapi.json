@@ -2236,49 +2236,17 @@
       "FtsSettings": {
         "type": "object",
         "properties": {
-          "tokenizer": {
-            "type": "string"
-          },
-          "max_token_length": {
-            "type": "integer",
-            "format": "uint32",
-            "minimum": 0
-          },
-          "lowercase": {
-            "type": "boolean"
-          },
-          "stem": {
-            "type": "boolean"
-          },
-          "remove_stop_words": {
-            "type": "boolean"
-          },
-          "ascii_folding": {
-            "type": "boolean"
+          "analyzer": {
+            "$ref": "#/components/schemas/Analyzer",
+            "description": "How the index of `searchable_text` cuts a text into terms; the highlights\nand the excerpts of a hit cut it the same way."
           },
           "with_position": {
             "type": "boolean",
             "description": "Positional postings, which a phrase condition needs."
-          },
-          "analyzer": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/Analyzer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "The analyzer of `searchable_text`; present, the keys above are the\ndefaults and do not apply. Absent: the keys above."
           }
         },
         "required": [
-          "tokenizer",
-          "max_token_length",
-          "lowercase",
-          "stem",
-          "remove_stop_words",
-          "ascii_folding",
+          "analyzer",
           "with_position"
         ],
         "description": "FTS analyzer settings, part of the publication identity."
@@ -2320,7 +2288,7 @@
             "type": "integer",
             "format": "uint32",
             "minimum": 1,
-            "description": "Tokens longer than this, in UTF-8 bytes, are dropped.",
+            "description": "Tokens of this many UTF-8 bytes or more are dropped: a token is kept when it is\nshorter than this.",
             "maximum": 1024,
             "default": 40
           },

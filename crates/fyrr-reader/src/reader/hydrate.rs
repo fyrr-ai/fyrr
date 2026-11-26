@@ -449,10 +449,8 @@ impl PreparedReader {
             .filter(|hit| hit.output == OutputMode::Excerpt)
             .count();
         let parallel_excerpts = excerpts > 8;
-        // A namespace with an analyzer, stemming, stop words or folding selects
-        // excerpts with the tokens of its index, as highlights match; any other
-        // keeps the literal words of the query.
-        let tokenizer = (excerpts > 0 && crate::excerpt::analyzes(&self.config.namespace))
+        // Excerpts are selected with the tokens of the index analyzer, as highlights match.
+        let tokenizer = (excerpts > 0)
             .then(|| {
                 crate::fts_params(&self.config.namespace)
                     .and_then(|params| params.build())
@@ -498,8 +496,11 @@ impl PreparedReader {
                 let terms = match excerpt_terms.entry(hit.query) {
                     std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
                     std::collections::btree_map::Entry::Vacant(entry) => entry.insert(Arc::new(
-                        crate::excerpt::Terms::new(tokenizer.as_deref(), hit.query)
-                            .map_err(|_| ConfigurationInvalid)?,
+                        crate::excerpt::Terms::new(
+                            tokenizer.as_deref().ok_or(ConfigurationInvalid)?,
+                            hit.query,
+                        )
+                        .map_err(|_| ConfigurationInvalid)?,
                     )),
                 };
                 if parallel_excerpts {

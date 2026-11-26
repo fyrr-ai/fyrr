@@ -358,7 +358,8 @@ fn with_version(value: &Value, version: &str) -> Value {
 
 /// Adds an unknown field to every struct-shaped object, as a newer minor
 /// version would; opaque maps (connector maps, fragments, provider config
-/// schemas) keep their content.
+/// schemas) keep their content. An analyzer too: a setting this build does not
+/// know would change how a text is cut, so it is refused, not ignored.
 fn add_future_fields(value: &mut Value) {
     if let Value::Object(object) = value {
         for (key, inner) in object.iter_mut() {
@@ -369,6 +370,7 @@ fn add_future_fields(value: &mut Value) {
                 "config_schema",
                 "fixed_grants",
                 "attributes",
+                "analyzer",
             ]
             .contains(&key.as_str())
             {

@@ -238,7 +238,7 @@ returns what it returned before.
 | `include` | The typed [attributes](tuning.md#namespaceattributes) to return: one or more names. `vector` names the row's vector, returned as an array of numbers. A name the namespace does not declare is `400 invalid_argument`. |
 | `exclude` | Returns every typed attribute except these; `[]` returns all of them. A name the namespace does not declare is ignored. The vector is never returned by `exclude`. |
 | `scores` | `true` adds `lexical_score`, the raw lexical score, and `distance`, the raw vector distance, next to the final `score`. A hit the lexical lane did not find has no `lexical_score`; one the dense lane did not find has no `distance`. |
-| `highlights` | `true` adds `highlights` to the excerpt of each hit: the `[start, end)` ranges of its tokens that match the query, in the same Unicode codepoints of the record as the excerpt's `start` and `end`. A token matches when the namespace's full-text analyzer (`[namespace.analyzer]`, or `fts_stem`, `fts_ascii_folding` and the other `fts_*` settings) reduces it to a token of the query, so a stemmed match is marked. An excerpt marks at most 100 ranges; one with no match has `[]`. Only the excerpt output has them. In a namespace with an analyzer, `fts_stem`, `fts_remove_stop_words` or `fts_ascii_folding` the excerpt itself is chosen with the same tokens, so a passage with a stemmed or folded match can be the one returned; any other namespace chooses it by the literal words of the query. |
+| `highlights` | `true` adds `highlights` to the excerpt of each hit: the `[start, end)` ranges of its tokens that match the query, in the same Unicode codepoints of the record as the excerpt's `start` and `end`. A token matches when the namespace's full-text analyzer (`[namespace.analyzer]`) reduces it to a token of the query, so a stemmed match is marked. An excerpt marks at most 100 ranges; one with no match has `[]`. Only the excerpt output has them. The excerpt itself is chosen with the same tokens, so a passage with a stemmed or folded match can be the one returned. |
 
 `include` and `exclude` are exclusive. The attributes of a hit are the
 object `attributes`, with the JSON type of each attribute (`datetime` as an
@@ -441,8 +441,8 @@ order: `{"text":"restore a backup"}` finds the documents that hold those tokens
 next to one another. A hit meets the phrase and also the `filter`, `contains`
 and the caller's permissions, as with `filter`; it works with a text ranking
 and with a `vector`, and it narrows the lexical and the dense lane alike. The
-text is cut as the index of `searchable_text` cuts it, so with `fts_stem` (or a
-`[namespace.analyzer]` with a language) `restoring` and `restore` are one token. It is `invalid_argument` for a
+text is cut as the index of `searchable_text` cuts it, so with a
+`[namespace.analyzer]` with a language `restoring` and `restore` are one token. It is `invalid_argument` for a
 listing, which has no ranking to narrow, and with `sub_queries`.
 
 | Member | Meaning |

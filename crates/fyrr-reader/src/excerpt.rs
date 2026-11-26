@@ -1,7 +1,6 @@
 //! Anchored excerpt passages: sentence windows over byte spans, scored by the
-//! query's terms they hold, either its literal words or, for a namespace with
-//! an analyzer, stemming, stop words or folding, its tokens as the index cuts
-//! them; offsets and the cap count codepoints.
+//! query's terms they hold, its tokens as the index analyzer of the namespace
+//! cuts them; offsets and the cap count codepoints.
 use fyrr_core::attributes::analyzer::{Analyzer, Tokenizer};
 use fyrr_core::config::NamespaceConfig;
 use fyrr_core::limits::mcp::MAX_HIGHLIGHTS;
@@ -10,20 +9,10 @@ use lance_index::scalar::InvertedIndexParams;
 use lance_index::scalar::inverted::tokenizer::document_tokenizer::LanceTokenizer;
 
 /// The analyzer of the full-text index of `searchable_text`, which the writer
-/// builds the index with and a highlight matches with: the `analyzer` of the
-/// namespace, else its `fts_*` keys.
+/// builds the index with and highlights and excerpts match with: the `analyzer`
+/// of the namespace.
 pub fn fts_params(namespace: &NamespaceConfig) -> lance_core::Result<InvertedIndexParams> {
-    let params = match &namespace.analyzer {
-        Some(analyzer) => analyzer_params(analyzer)?,
-        None => InvertedIndexParams::default()
-            .base_tokenizer("simple".into())
-            .max_token_length(Some(namespace.fts_max_token_length as usize))
-            .lower_case(true)
-            .stem(namespace.fts_stem)
-            .remove_stop_words(namespace.fts_remove_stop_words)
-            .ascii_folding(namespace.fts_ascii_folding),
-    };
-    Ok(params.with_position(namespace.fts_positions))
+    Ok(analyzer_params(&namespace.analyzer)?.with_position(namespace.fts_positions))
 }
 
 /// The parameters of a full-text index with an analyzer, without positions. A
@@ -125,79 +114,39 @@ pub(crate) fn highlight(
     Ok(())
 }
 
-/// What selection asks of a query: its terms, which of them a text holds, and
-/// the best hard window of a text with no sentence window that holds one.
-trait Matcher {
-    fn terms(&self) -> usize;
-    /// Sets the bit of every term that a token of `text` equals.
-    fn fill(&mut self, text: &str, bits: &mut [u64]) -> Result<(), String>;
-    /// The window of `cap` codepoints with the most distinct terms.
-    fn fallback(&mut self, text: &str, cap: usize, covered: &mut [u64]) -> Result<Excerpt, String>;
-}
-
-/// Whether a namespace cuts its text with more than the literal words of
-/// `simple` and lowercase: an analyzer, stemming, stop words or folding. Then
-/// an excerpt is selected with the tokens of the index; any other namespace
-/// keeps the literal words.
-///
-/// `fyrr_core` refuses the `ngram` tokenizer for the text at `namespace.analyzer`,
-/// in a configuration file, and in the stored settings of a namespace
-/// (`NamespaceSettings::validate`, run when the policy artifact is read), and
-/// an excerpt is only ever of `searchable_text`: no n-gram tokenizer reaches
-/// `Terms`. N-gram tokens would match every sentence and cost a window per
-/// n-gram, so selection must not be given one.
-pub(crate) fn analyzes(namespace: &NamespaceConfig) -> bool {
-    debug_assert!(
-        namespace
-            .analyzer
-            .as_ref()
-            .is_none_or(|analyzer| analyzer.tokenizer != Tokenizer::Ngram),
-        "the ngram tokenizer is refused for the text"
-    );
-    namespace.analyzer.is_some()
-        || namespace.fts_stem
-        || namespace.fts_remove_stop_words
-        || namespace.fts_ascii_folding
-}
-
-/// The query of an excerpt.
-pub(crate) enum Terms {
-    /// The literal words of the query, lowercased.
-    Literal(LiteralTerms),
-    /// The tokens of the index analyzer, sorted and without duplicates; the bit
-    /// of a term in a window is its position here.
-    Analyzed {
-        terms: Vec<String>,
-        tokenizer: Box<dyn LanceTokenizer>,
-    },
+/// The query of an excerpt: the tokens of the index analyzer, sorted and without
+/// duplicates; the bit of a term in a window is its position here.
+pub(crate) struct Terms {
+    terms: Vec<String>,
+    tokenizer: Box<dyn LanceTokenizer>,
 }
 impl Terms {
-    /// With the tokenizer of the index when the namespace `analyzes`, else
-    /// without one.
-    pub(crate) fn new(tokenizer: Option<&dyn LanceTokenizer>, query: &str) -> Result<Self, String> {
-        let Some(tokenizer) = tokenizer else {
-            return Ok(Self::Literal(LiteralTerms::new(query)));
-        };
+    /// The terms of `query` as `tokenizer`, the tokenizer of the index, cuts them.
+    ///
+    /// `fyrr_core` refuses the `ngram` tokenizer for the text at `namespace.analyzer`,
+    /// in a configuration file, and in the stored settings of a namespace
+    /// (`NamespaceSettings::validate`, run when the policy artifact is read), and
+    /// an excerpt is only ever of `searchable_text`: no n-gram tokenizer reaches
+    /// `Terms`. N-gram tokens would match every sentence and cost a window per
+    /// n-gram, so selection must not be given one.
+    pub(crate) fn new(tokenizer: &dyn LanceTokenizer, query: &str) -> Result<Self, String> {
         let mut tokenizer = tokenizer.box_clone();
         let terms = query_terms(tokenizer.as_mut(), query)?;
-        Ok(Self::Analyzed { terms, tokenizer })
+        Ok(Self { terms, tokenizer })
     }
     pub(crate) fn select(&self, text: &str, cap: u32) -> Result<Excerpt, String> {
-        match self {
-            Self::Literal(terms) => select(&mut { terms }, text, cap),
-            Self::Analyzed { terms, tokenizer } => select(
-                &mut AnalyzedMatcher {
-                    terms,
-                    tokenizer: tokenizer.box_clone(),
-                },
-                text,
-                cap,
-            ),
-        }
+        select(
+            &mut AnalyzedMatcher {
+                terms: &self.terms,
+                tokenizer: self.tokenizer.box_clone(),
+            },
+            text,
+            cap,
+        )
     }
 }
 
-fn select(matcher: &mut dyn Matcher, text: &str, cap: u32) -> Result<Excerpt, String> {
+fn select(matcher: &mut AnalyzedMatcher<'_>, text: &str, cap: u32) -> Result<Excerpt, String> {
     let cap = cap as usize;
     let spans = sentence_spans(text);
     let words = matcher.terms().div_ceil(64);
@@ -279,10 +228,11 @@ struct AnalyzedMatcher<'a> {
     terms: &'a [String],
     tokenizer: Box<dyn LanceTokenizer>,
 }
-impl Matcher for AnalyzedMatcher<'_> {
+impl AnalyzedMatcher<'_> {
     fn terms(&self) -> usize {
         self.terms.len()
     }
+    /// Sets the bit of every term that a token of `text` equals.
     fn fill(&mut self, text: &str, bits: &mut [u64]) -> Result<(), String> {
         let mut stream = self.tokenizer.token_stream_for_doc(text);
         while let Some(token) = stream.try_next()? {
@@ -292,6 +242,7 @@ impl Matcher for AnalyzedMatcher<'_> {
         }
         Ok(())
     }
+    /// The window of `cap` codepoints with the most distinct terms.
     fn fallback(&mut self, text: &str, cap: usize, covered: &mut [u64]) -> Result<Excerpt, String> {
         // No sentence window within the cap holds a term: score windows around
         // the tokens of the whole text. Offsets are needed only on this
@@ -346,111 +297,6 @@ impl Matcher for AnalyzedMatcher<'_> {
                     covered[term / 64] |= 1u64 << (term % 64);
                 }
             }
-            let score = covered
-                .iter()
-                .map(|w| w.count_ones() as usize)
-                .sum::<usize>();
-            best = best.max((score, std::cmp::Reverse(start)));
-        }
-        let start = best.1.0;
-        let end = (start + cap).min(length);
-        Ok(passage(text, byte(start), byte(end), start, end))
-    }
-}
-
-fn word(c: char) -> bool {
-    c.is_alphanumeric() || c == '_'
-}
-
-pub(crate) struct LiteralTerms {
-    terms: Vec<String>,
-}
-impl LiteralTerms {
-    fn new(query: &str) -> Self {
-        let mut terms = query
-            .split(|c| !word(c))
-            .filter(|s| !s.is_empty())
-            .map(|s| s.chars().flat_map(char::to_lowercase).collect::<String>())
-            .collect::<Vec<_>>();
-        terms.sort_unstable();
-        terms.dedup();
-        Self { terms }
-    }
-    fn matches(&self, token: &str) -> Option<usize> {
-        let ascii = token.is_ascii();
-        self.terms.iter().position(|term| {
-            if ascii && term.is_ascii() {
-                term.len() == token.len() && term.eq_ignore_ascii_case(token)
-            } else {
-                term.chars().eq(token.chars().flat_map(char::to_lowercase))
-            }
-        })
-    }
-    fn fill_text(&self, text: &str, bits: &mut [u64]) {
-        if text.is_ascii() {
-            for token in text
-                .as_bytes()
-                .split(|b| !b.is_ascii_alphanumeric() && *b != b'_')
-                .filter(|s| !s.is_empty())
-            {
-                if let Some(term) = self.terms.iter().position(|term| {
-                    term.len() == token.len() && term.as_bytes().eq_ignore_ascii_case(token)
-                }) {
-                    bits[term / 64] |= 1u64 << (term % 64);
-                }
-            }
-            return;
-        }
-        for token in text.split(|c| !word(c)).filter(|s| !s.is_empty()) {
-            if let Some(term) = self.matches(token) {
-                bits[term / 64] |= 1u64 << (term % 64);
-            }
-        }
-    }
-}
-impl Matcher for &LiteralTerms {
-    fn terms(&self) -> usize {
-        self.terms.len()
-    }
-    fn fill(&mut self, text: &str, bits: &mut [u64]) -> Result<(), String> {
-        self.fill_text(text, bits);
-        Ok(())
-    }
-    fn fallback(&mut self, text: &str, cap: usize, covered: &mut [u64]) -> Result<Excerpt, String> {
-        // Hard windows only tokenize their candidate bytes. Offsets are needed
-        // only on this fallback, and ASCII text needs no codepoint-to-byte map.
-        let ascii = text.is_ascii();
-        let offsets = if ascii {
-            Vec::new()
-        } else {
-            text.char_indices()
-                .map(|(byte, _)| byte)
-                .chain([text.len()])
-                .collect::<Vec<_>>()
-        };
-        let length = if ascii { text.len() } else { offsets.len() - 1 };
-        let byte = |cp: usize| if ascii { cp } else { offsets[cp] };
-        let mut starts = vec![0];
-        let mut iter = text.char_indices().enumerate().peekable();
-        while let Some((cp, (start, c))) = iter.next() {
-            if !word(c) {
-                continue;
-            }
-            let mut end = start + c.len_utf8();
-            while let Some((_, (at, c))) = iter.next_if(|(_, (_, c))| word(*c)) {
-                end = at + c.len_utf8();
-            }
-            if self.matches(&text[start..end]).is_some() {
-                starts.push(cp.saturating_sub(cap / 3).min(length.saturating_sub(cap)));
-                starts.push(cp);
-            }
-        }
-        starts.sort_unstable();
-        starts.dedup();
-        let mut best = (0usize, std::cmp::Reverse(0usize));
-        for start in starts {
-            covered.fill(0);
-            self.fill_text(&text[byte(start)..byte((start + cap).min(length))], covered);
             let score = covered
                 .iter()
                 .map(|w| w.count_ones() as usize)

@@ -403,12 +403,7 @@ fn published_files(arrow: &Value) -> Vec<GeneratedFile> {
                         }
                     },
                     "fts": {
-                        "tokenizer": "simple",
-                        "max_token_length": 40,
-                        "lowercase": true,
-                        "stem": true,
-                        "remove_stop_words": false,
-                        "ascii_folding": true,
+                        "analyzer": {"language": "english", "ascii_folding": true},
                         "with_position": false
                     },
                     "dense_rq_bits": 1,

@@ -3122,7 +3122,7 @@ async fn identity_write_api_highlights_the_tokens_an_excerpt_matches_on_storage(
     configure(&config, &address, "");
     let text = std::fs::read_to_string(&config).unwrap().replacen(
         "[namespace]\n",
-        "[namespace]\nfts_stem = true\nfts_ascii_folding = true\n",
+        "[namespace]\nanalyzer = { language = \"english\", ascii_folding = true }\n",
         1,
     );
     std::fs::write(&config, text).unwrap();
@@ -3892,7 +3892,7 @@ async fn identity_write_api_rebuilds_a_full_text_index_for_a_changed_analyzer_on
     // The maintenance of this test is the one it runs (`configure` builds on 2 threads).
     let text = std::fs::read_to_string(&config).unwrap().replacen(
         "[namespace]\n",
-        "[namespace]\nfts_ascii_folding = true\n",
+        "[namespace]\nanalyzer = { ascii_folding = true }\n",
         1,
     );
     std::fs::write(

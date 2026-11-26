@@ -505,18 +505,12 @@ class EmbeddingRole(TypedDict):
 
 class FtsSettings(TypedDict):
     """FTS analyzer settings, part of the publication identity."""
-    tokenizer: str
-    max_token_length: int
-    lowercase: bool
-    stem: bool
-    remove_stop_words: bool
-    ascii_folding: bool
+    analyzer: Analyzer
+    """How the index of `searchable_text` cuts a text into terms; the highlights
+    and the excerpts of a hit cut it the same way.
+    """
     with_position: bool
     """Positional postings, which a phrase condition needs."""
-    analyzer: NotRequired[Analyzer | None]
-    """The analyzer of `searchable_text`; present, the keys above are the
-    defaults and do not apply. Absent: the keys above.
-    """
 
 
 class Analyzer(TypedDict):
@@ -536,7 +530,9 @@ class Analyzer(TypedDict):
     """
     ascii_folding: bool
     max_token_length: int
-    """Tokens longer than this, in UTF-8 bytes, are dropped."""
+    """Tokens of this many UTF-8 bytes or more are dropped: a token is kept when it is
+    shorter than this.
+    """
     ngram_min_length: int
     """Only with the `ngram` tokenizer."""
     ngram_max_length: int

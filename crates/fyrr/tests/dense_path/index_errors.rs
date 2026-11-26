@@ -7,7 +7,7 @@ use super::*;
 async fn a_namespace_keeps_its_own_settings_on_storage() {
     let (config, root, _) = super::tools::fixture();
     let original = fyrr_core::config::load(&config).unwrap().config;
-    assert!(!original.namespace.fts_stem);
+    assert_eq!(original.namespace.analyzer.language, None);
     let (head, published) = super::coordination::publication(&config).await;
     assert_eq!(
         published.retrieval_policy_digest,
@@ -20,14 +20,14 @@ async fn a_namespace_keeps_its_own_settings_on_storage() {
         &other,
         text.replacen(
             "[namespace]",
-            "[namespace]\nfts_stem = true\ndense_rq_bits = 2\n\
+            "[namespace]\nanalyzer = { language = \"english\" }\ndense_rq_bits = 2\n\
              retrieval = { dense_weight = 0.25, lexical_candidates = 50 }",
             1,
         ),
     )
     .unwrap();
     let parsed = fyrr_core::config::load(&other).unwrap().config;
-    assert!(parsed.namespace.fts_stem);
+    assert!(parsed.namespace.analyzer.language.is_some());
     assert_ne!(
         parsed.namespace.retrieval_digest(),
         original.namespace.retrieval_digest()
@@ -78,7 +78,7 @@ async fn a_namespace_keeps_its_own_settings_on_storage() {
         if embedding {
             tampered.embedding = fyrr_reader::embedding::identity(&other_embedding);
         } else {
-            tampered.fts.stem = !tampered.fts.stem;
+            tampered.fts.analyzer.ascii_folding = !tampered.fts.analyzer.ascii_folding;
         }
         object_store::ObjectStoreExt::put(
             store.as_ref(),

@@ -23,12 +23,8 @@ and the other `[reader]` and `[writer]` keys in
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `name` | required | Namespace ID: lowercase letters, digits and `-`, at most 63 bytes. All objects live under it in the bucket. |
-| `fts_max_token_length` | `40` | 1–1024: native full-text `max_token_length` in UTF-8 bytes; part of the publication identity. |
-| `fts_stem` | `false` | English stemming at publication level. |
-| `fts_remove_stop_words` | `false` | Stop-word removal. |
-| `fts_ascii_folding` | `false` | ASCII folding. |
-| `fts_positions` | `false` | Stores token positions in the full-text index of `searchable_text`, which a [`phrase`](http-api.md#matching-tokens) condition needs; the index grows, see [the size of the positions](#the-size-of-the-positions). A namespace without them answers a phrase with `400 invalid_argument`. Like the other `fts_*` settings it is fixed when the namespace is created. |
-| `analyzer` | absent | How the full-text index of `searchable_text` cuts a text into terms: the tokenizer, the language and the other settings of an [analyzer](#analyzer-of-a-full-text-index), set as `[namespace.analyzer]` with the keys `tokenizer`, `language`, `stop_words`, `ascii_folding`, `max_token_length`, `ngram_min_length`, `ngram_max_length` and `prefix_only`. Absent: the `simple` tokenizer with the `fts_*` keys above. It replaces `fts_stem`, `fts_remove_stop_words`, `fts_ascii_folding` and `fts_max_token_length`, which then stay at their defaults, and takes `fts_positions` as they do. Fixed when the namespace is created; see [the analyzer of the text](#the-analyzer-of-the-text). |
+| `fts_positions` | `false` | Stores token positions in the full-text index of `searchable_text`, which a [`phrase`](http-api.md#matching-tokens) condition needs; the index grows, see [the size of the positions](#the-size-of-the-positions). A namespace without them answers a phrase with `400 invalid_argument`. Like the analyzer it is fixed when the namespace is created. |
+| `analyzer` | `{ tokenizer = "simple", ascii_folding = false, max_token_length = 40, ngram_min_length = 3, ngram_max_length = 3, prefix_only = false }` | How the full-text index of `searchable_text` cuts a text into terms: the tokenizer, the language and the other settings of an [analyzer](#analyzer-of-a-full-text-index), set as `[namespace.analyzer]` with the keys `tokenizer`, `language`, `stop_words`, `ascii_folding`, `max_token_length`, `ngram_min_length`, `ngram_max_length` and `prefix_only`. Left out, it is the default of this row: the `simple` tokenizer, lowercase, tokens under 40 bytes, no stemming, stop words or folding, which is the analyzer of the namespace and is recorded in its policy. `fts_positions` is the one setting of the index that is not in it. Fixed when the namespace is created; see [the analyzer of the text](#the-analyzer-of-the-text). |
 | `composition` | see below | Document slots of a search response. |
 | `retrieval` | see below | Candidate depths, fusion weight and output bounds. |
 | `rerank` | absent | Optional hosted reranker; absent makes no reranker calls. |
@@ -48,13 +44,14 @@ language = "german"
 `[namespace.analyzer]` gives `searchable_text` the settings of an
 [attribute's analyzer](#analyzer-of-a-full-text-index): the same keys, defaults
 and limits. Every use of the text index follows it: the lexical lane, a
-[`phrase`](http-api.md#matching-tokens) (with `fts_positions`), and the
-`highlights` of an excerpt; so does the choice of the excerpt, see below. A namespace that has no analyzer keeps the
-`simple` tokenizer and its `fts_*` keys, its index and its policy digest as
-they were, and `fts_stem` stems in English only; the analyzer's `language`
-stems in any of the 18 languages. Setting `fts_stem`, `fts_remove_stop_words`,
-`fts_ascii_folding` or a `fts_max_token_length` other than `40` together with
-the analyzer is a configuration error at `namespace.analyzer`.
+[`phrase`](http-api.md#matching-tokens) (with `fts_positions`), the
+`highlights` of an excerpt and the choice of the excerpt, see below. A namespace
+that sets none has the default analyzer: the `simple` tokenizer, lowercase,
+tokens under 40 bytes. The analyzer's `language` stems and removes the stop
+words of any of 18 languages; with `stop_words = []` as well it stems and removes
+none. The four keys `fts_stem`, `fts_remove_stop_words`, `fts_ascii_folding`
+and `fts_max_token_length`, which the analyzer replaces, are not accepted any
+more: use `language`, `stop_words`, `ascii_folding` and `max_token_length`.
 
 The `ngram` tokenizer is not offered for the text: attribute indexes inherit
 the analyzer, and a `phrase` or an `all` match on n-grams would find rows with
@@ -62,21 +59,19 @@ any one of them. It is a configuration error at `namespace.analyzer`.
 
 Unlike the analyzer of an attribute, the analyzer of the text cannot change
 once the namespace exists: it is part of the policy artifact the namespace
-was created with, as the `fts_*` keys are, and a changed `[namespace.analyzer]`
+was created with, as `fts_positions` is, and a changed `[namespace.analyzer]`
 in the file is ignored for an existing namespace. To change it, create a new
 namespace.
 
-The `highlights` of an excerpt are marked with the tokens of the analyzer. The
-excerpt itself is chosen with them in a namespace that has an analyzer,
-`fts_stem`, `fts_remove_stop_words` or `fts_ascii_folding`: the passage holds
-the most distinct tokens of the query, so with a language a passage with
-`Häuser` is found by `haus`. Any other namespace chooses it by the literal
-words of the query, as it always has, so a word the index drops (over
-`fts_max_token_length`) or cuts (at `_`) still counts there. The tokenizer is
-not used for one thing: whether a passage cuts a token at its edge is judged as
-the `simple` tokenizer would, by alphanumeric characters, so with the
-`whitespace` or `unicode` tokenizer a token cut by the edge of the excerpt may
-be marked, or one left out.
+The `highlights` of an excerpt are marked with the tokens of the analyzer, and
+the excerpt itself is chosen with them: the passage holds the most distinct
+tokens of the query, so with a language a passage with `Häuser` is found by
+`haus`. A word the index drops (`max_token_length` bytes or more) or cuts (at `_`) is not
+a token of the query, as it is not a token of the index. The tokenizer is not
+used for one thing: whether a passage cuts a token at its edge is judged as the
+`simple` tokenizer would, by alphanumeric characters, so with the `whitespace`
+or `unicode` tokenizer a token cut by the edge of the excerpt may be marked, or
+one left out.
 
 ### The size of the positions
 
@@ -257,7 +252,7 @@ and no filter operator reads it yet.
 
 A full-text index takes the analyzer of the namespace's text, as the text index
 of the documents does (its [`[namespace.analyzer]`](#the-analyzer-of-the-text),
-else its `fts_*` keys), unless it sets an
+), unless it sets an
 [analyzer](#analyzer-of-a-full-text-index) of its own.
 
 A new namespace's first publication builds every index its schema asks for.
@@ -321,7 +316,7 @@ ascii_folding = true
 ```
 
 `analyzer` sets how the full-text index of an attribute cuts a text into terms,
-instead of the namespace's `fts_*` keys. It is an option of a `full_text` entry
+instead of the analyzer of the namespace. It is an option of a `full_text` entry
 and is refused without it; the keys it does not set have the defaults below, not
 the namespace's. A text is always lowercased. Every key is optional.
 
@@ -329,9 +324,9 @@ the namespace's. A text is always lowercased. Every key is optional.
 | --- | --- | --- |
 | `tokenizer` | `simple` | `simple`: runs of letters and digits, so a run of Chinese, Japanese or Korean characters is one token. `whitespace`: runs of characters that are not white space. `unicode`: Unicode word segmentation, which finds the words of Chinese and Japanese text by a dictionary and cuts what it does not know into what it does. `ngram`: substrings of the whole value, which cross spaces. |
 | `language` | absent | One of the languages below: stems the terms and removes the stop words of that language. Absent: no stemming and no stop words. |
-| `stop_words` | absent | A list of at most 1024 words of 1–64 bytes that is removed instead of the language's. A word is compared with a term after it is lowercased and stemmed. |
+| `stop_words` | absent | A list of at most 1024 words of 1–64 bytes that is removed instead of the language's. A word is compared with a term after it is lowercased and stemmed. With a `language`, `[]` removes none: stemming alone. |
 | `ascii_folding` | `false` | Folds accented letters to ASCII, `é` to `e`. |
-| `max_token_length` | `40` | 1–1024: a longer token, in UTF-8 bytes, is dropped; an n-gram is a token too. |
+| `max_token_length` | `40` | 1–1024: a token of that many UTF-8 bytes or more is dropped, so the default keeps tokens of up to 39; an n-gram is a token too. |
 | `ngram_min_length` | `3` | 1–16: shortest n-gram; only with `tokenizer = "ngram"`. |
 | `ngram_max_length` | `3` | `ngram_min_length`–16: longest n-gram; only with `tokenizer = "ngram"`. |
 | `prefix_only` | `false` | Only the n-grams that start the value; only with `tokenizer = "ngram"`. A [`contains` condition](http-api.md#matching-tokens) refuses an attribute with this tokenizer. |
