@@ -583,14 +583,14 @@ async fn incremental_idle_member_reread_publishes_nothing_on_storage() {
 async fn incremental_idle_permission_reread_publishes_nothing_on_storage() {
     let (worker, commit, root) = fixture();
     publish_initial(&worker, &commit, &root);
-    let read = |epoch: u64| {
+    let read = |epoch: u64, readers: Value| {
         json!({"epoch":epoch,
             "permissions":[[{"id":"a","revision":"p1","readers":["grp:group"]},{"id":"b","revision":"p1","readers":["grp:group"]}]],
-            "container_grants":[[{"container_id":"folder","container_kind":"folder","permission_revision":"c1","readers":["grp:group"]}]]})
+            "container_grants":[[{"container_id":"folder","container_kind":"folder","permission_revision":"c1","readers":readers}]]})
     };
     // The documents repeat what is published, the grant is new.
     let staged = envelopes(&worker).await.len();
-    input(&root, read(2));
+    input(&root, read(2, json!(["grp:group", "grp:child"])));
     worker_sync(&worker, &["incremental", "--kind", "permissions"]);
     let written: Vec<_> = envelopes(&worker)
         .await
@@ -617,8 +617,11 @@ async fn incremental_idle_permission_reread_publishes_nothing_on_storage() {
     let before = publication(&commit).await;
     let staged = envelopes(&worker).await.len();
     let cursor = cursor_of(&worker, SyncKind::Permissions).await;
-    // The same read again changes nothing.
-    input(&root, read(3));
+    // The same read again, its grant readers in another order, changes nothing.
+    input(
+        &root,
+        read(3, json!(["grp:child", "grp:group", "grp:child"])),
+    );
     worker_sync(&worker, &["incremental", "--kind", "permissions"]);
     assert_eq!(envelopes(&worker).await.len(), staged, "no envelope");
     let moved = cursor_of(&worker, SyncKind::Permissions).await;

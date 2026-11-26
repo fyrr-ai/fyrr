@@ -670,6 +670,9 @@ impl PermissionRepeats {
                 .iter()
                 .map(|t| crate::apply::reader_token(config, source, t))
                 .collect::<Result<_>>()?;
+            // Readers are a set: their order and repeats change no right.
+            tokens.readers.sort();
+            tokens.readers.dedup();
             if self.grants.get(&grant.container_id) != Some(&tokens) {
                 self.grants.insert(grant.container_id.clone(), tokens);
                 kept.push(grant);

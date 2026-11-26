@@ -624,12 +624,19 @@ pub(crate) async fn published_container_grants(
         &object_store::path::Path::from(format!("{root}/{}", input.object)),
     )
     .await?;
+    if digest(&write_contract(&snapshot)) != input.digest {
+        return Err(WriterError::PermissionSnapshotInvalid);
+    }
     let EnvelopePayload::Permissions(payload) = snapshot.payload else {
         return Err(WriterError::PermissionSnapshotInvalid);
     };
     Ok(payload
         .container_grants
         .into_iter()
-        .map(|grant| (grant.container_id.clone(), grant))
+        .map(|mut grant| {
+            grant.readers.sort();
+            grant.readers.dedup();
+            (grant.container_id.clone(), grant)
+        })
         .collect())
 }
