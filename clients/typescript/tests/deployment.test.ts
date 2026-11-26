@@ -98,11 +98,10 @@ test("a conditional write applies or skips", async () => {
   assert.equal((await client.write(namespace, stale)).skipped, 1);
 });
 
-test("deleting a namespace the writer does not serve is a 404", async () => {
-  // `fyrr writer serve` deletes the namespace it is configured for, `main` here, and only after
-  // the lease of its writer has expired, which takes a minute: that deletion is not tested.
-  await assert.rejects(
-    admin().deleteNamespace(freshNamespace()),
-    (error: unknown) => error instanceof FyrrError && error.status === 404,
-  );
+test("deleting a namespace the writer holds nothing of is a no-op", async () => {
+  // A namespace is named by its path, and a deletion that finds nothing to remove is done: it is
+  // what lets an interrupted deletion be run again. `fyrr writer serve` deletes the namespace it
+  // is configured for, `main` here, only after the lease of its writer has expired, which takes a
+  // minute: that deletion is not tested.
+  assert.deepEqual(await admin().deleteNamespace(freshNamespace()), { deleted: true });
 });
