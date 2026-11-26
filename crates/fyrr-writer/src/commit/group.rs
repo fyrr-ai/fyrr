@@ -598,12 +598,12 @@ pub(crate) async fn idle(
 }
 
 /// Whether `pending` changes nothing a commit would publish: it is empty, or,
-/// before the first content, it is permissions and members envelopes and the
-/// content of sources whose permissions were rejected, none of them to be
-/// rejected. Permissions wait for rows to be checked against; a members
-/// snapshot has no manifest to be recorded as applied in, so it stays pending
-/// once its identity `inputs` are published; blocked content waits for a
-/// replacement of the rejected read.
+/// before the first content, it is permissions, members and listing envelopes
+/// and the content of sources whose permissions were rejected, none of them to
+/// be rejected. Permissions and listings wait for rows to be checked against; a
+/// members snapshot has no manifest to be recorded as applied in, so it stays
+/// pending once its identity `inputs` are published; blocked content waits for
+/// a replacement of the rejected read.
 async fn waits(
     config: &Config,
     head: &ServingHead,
@@ -623,7 +623,7 @@ async fn waits(
         BTreeSet::new()
     };
     if pending.iter().any(|e| match e.kind {
-        SyncKind::Permissions | SyncKind::Members => false,
+        SyncKind::Permissions | SyncKind::Members | SyncKind::Reconcile => false,
         kind => kind != SyncKind::Content || !blocked.contains(&e.source_id),
     }) {
         return Ok(false);
@@ -650,7 +650,9 @@ async fn waits(
     for marker in rejection_markers(config, head).await? {
         fences.observe(&marker)?;
     }
-    for envelope in pending {
+    // Content that is blocked here is none of the judgments below: a commit
+    // leaves it as it is.
+    for envelope in pending.iter().filter(|e| e.kind != SyncKind::Content) {
         if crate::apply::rejected(config, &envelope.envelope_id).await?
             || refusal(config, head, policy, &fences, envelope)
                 .await?

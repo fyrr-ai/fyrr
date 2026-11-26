@@ -2849,6 +2849,48 @@ async fn incremental_a_commit_with_only_waiting_deletes_writes_nothing_on_storag
     );
     let writes = observed_writes(&commit, 3);
     assert!(writes.is_empty(), "an idle commit wrote {writes:?}");
+
+    // Older than an envelope may be, the deletes still wait for the read that
+    // replaces the rejected one: nothing in a commit changes.
+    let loaded = fyrr_core::config::load(&commit).unwrap();
+    let (store, ns) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
+    let listed: Vec<_> = futures::TryStreamExt::try_collect::<Vec<_>>(
+        object_store::ObjectStore::list(store.as_ref(), Some(&ns.join("envelopes"))),
+    )
+    .await
+    .unwrap();
+    for object in listed {
+        let mut envelope: PreparedEnvelope =
+            fyrr_reader::storage::read_contract(store.as_ref(), &object.location)
+                .await
+                .unwrap();
+        if envelope.kind == SyncKind::Content {
+            envelope.created_at = fyrr_core::clock::now() - chrono::Duration::days(4);
+            store
+                .put(&object.location, write_contract(&envelope).into())
+                .await
+                .unwrap();
+        }
+    }
+    let writes = observed_writes(&commit, 3);
+    assert!(writes.is_empty(), "a commit past the age wrote {writes:?}");
+}
+
+/// A complete listing waits for the first content, which it reconciles
+/// against: commits write nothing after the first.
+#[tokio::test]
+#[ignore = "real CLI and local storage; scripts/ci"]
+async fn incremental_a_commit_with_only_a_waiting_listing_writes_nothing_on_storage() {
+    let (worker, commit, root) = fixture_host(768, false);
+    drop_other_sources(&worker).await;
+    input(
+        &root,
+        json!({"epoch":1,"listing":[{"last":true,"complete":true,"roots":[]}]}),
+    );
+    worker_sync(&worker, &["incremental", "--kind", "reconcile", "--full"]);
+    publish(&commit);
+    let writes = observed_writes(&commit, 3);
+    assert!(writes.is_empty(), "an idle commit wrote {writes:?}");
 }
 
 /// A content envelope that only deletes, beside waiting permissions and one
