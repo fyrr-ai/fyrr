@@ -252,13 +252,15 @@ async fn maintain_held(
     let head = boundary(config, lease, history, writes).await?;
     if head.content.is_some() {
         let dataset = pinned(config, &head).await?;
-        let names: BTreeSet<_> = dataset
-            .load_indices()
-            .await?
-            .iter()
-            .map(|i| i.name.clone())
-            .collect();
-        for name in names {
+        let mut segments = BTreeMap::<_, usize>::new();
+        for index in dataset.load_indices().await?.iter() {
+            *segments.entry(index.name.clone()).or_default() += 1;
+        }
+        // The most crowded index first: writes go on during the run, and the indexes it
+        // reaches last would otherwise keep the segments they gain meanwhile.
+        let mut names: Vec<_> = segments.into_iter().collect();
+        names.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
+        for (name, _) in names {
             // An index that ran out of time on this version waits for a new publication.
             if merge_skipped(&config.namespace.name, &name, version(&head)) {
                 continue;
@@ -1292,16 +1294,30 @@ async fn compact_one(
         fragments.iter().find(|f| f.deletion_file.is_some())
     {
         [fragment.id].into_iter().collect()
-    } else if let Some(pair) = fragments.windows(2).find(|pair| {
+    } else if let Some(start) = fragments.windows(2).position(|pair| {
         pair.iter()
             .all(|f| (f.physical_rows.unwrap_or(0) as u64) < config.writer.commit.group_max_rows)
     }) {
-        pair.iter().map(|f| f.id).collect()
+        // The run of small neighbors that follows, as long as one commit group's rows hold: a
+        // step per pair appends a segment to every index for each fragment a write adds, and
+        // maintenance would never catch up with steady small writes.
+        let rows = |f: &lance::table::format::Fragment| f.physical_rows.unwrap_or(0) as u64;
+        let max = config.writer.commit.group_max_rows;
+        let mut total = rows(&fragments[start]) + rows(&fragments[start + 1]);
+        let mut run = vec![fragments[start].id, fragments[start + 1].id];
+        for fragment in &fragments[start + 2..] {
+            if rows(fragment) >= max || total + rows(fragment) > max {
+                break;
+            }
+            total += rows(fragment);
+            run.push(fragment.id);
+        }
+        run.into_iter().collect()
     } else {
         return Ok(false);
     };
     let options = CompactionOptions {
-        max_source_fragments: Some(2),
+        max_source_fragments: Some(selected.len()),
         materialize_deletions: true,
         defer_index_remap: true,
         materialize_deletions_threshold: 0.0,
