@@ -174,11 +174,18 @@ impl PreparedReader {
             if args.queries.is_some() && self.selected_rows().max_len().unwrap_or(0) != 0 {
                 // The depth each query searches: the request limit when it is
                 // larger, as in the dense lane below.
-                Some(self.batch_claim(
-                    queries.len(),
-                    self.config.namespace.retrieval.dense_candidates.max(k),
-                    queries.len() * k,
-                )?)
+                Some(
+                    self.batch_claim(
+                        queries.len(),
+                        self.config
+                            .namespace
+                            .settings
+                            .retrieval
+                            .dense_candidates
+                            .max(k),
+                        queries.len() * k,
+                    )?,
+                )
             } else {
                 None
             };
@@ -196,7 +203,7 @@ impl PreparedReader {
             && self.selected_rows().max_len().unwrap_or(0) != 0
             && vectors.vectors.iter().any(Result::is_err);
         let max_documents = if args.queries.is_some() {
-            self.config.namespace.retrieval.max_documents
+            self.config.namespace.settings.retrieval.max_documents
         } else {
             k
         };
@@ -205,7 +212,7 @@ impl PreparedReader {
         let _fallback_claim = if fallback_needed {
             let bytes = (max_documents.min(queries.len() * k)) as u64 * 1024 * 1024
                 + queries.len() as u64
-                    * self.config.namespace.retrieval.lexical_candidates as u64
+                    * self.config.namespace.settings.retrieval.lexical_candidates as u64
                     * (std::mem::size_of::<Candidate>() + 3 * fyrr_core::limits::MAX_ID_BYTES)
                         as u64;
             Some(self.preparation_budget.try_claim(bytes).ok_or(Busy)?)
@@ -295,7 +302,7 @@ impl PreparedReader {
         dense_candidates: usize,
         documents: usize,
     ) -> Result<Arc<tokio::sync::OwnedSemaphorePermit>> {
-        let cfg = &self.config.namespace.retrieval;
+        let cfg = &self.config.namespace.settings.retrieval;
         let candidate_bytes =
             (std::mem::size_of::<Candidate>() + 3 * fyrr_core::limits::MAX_ID_BYTES) as u64;
         // Expanded tie sets, decoded vectors and distance-kernel scratch.
@@ -329,10 +336,10 @@ impl PreparedReader {
         // An unknown field or a mistyped value is refused even when nothing matches.
         for sub in subs {
             if let Some(tree) = args.sub_query_filter(sub) {
-                Self::filter_sql(&tree, &self.manifest.attributes)?;
+                Self::filter_sql(&tree, &self.manifest.settings.namespace.attributes)?;
             }
         }
-        let cfg = &self.config.namespace.retrieval;
+        let cfg = &self.config.namespace.settings.retrieval;
         let (dense_candidates, lexical_candidates, max_documents) = (
             cfg.dense_candidates,
             cfg.lexical_candidates,
@@ -380,7 +387,7 @@ impl PreparedReader {
                 &texts,
                 true,
                 embedding_deadline,
-                self.config.namespace.dense_element,
+                self.config.namespace.settings.dense_element,
             )
             .await;
         telemetry
@@ -446,14 +453,14 @@ impl PreparedReader {
             }
             let stage = Instant::now();
             let depth = crate::rerank::configured(self, args.members.rerank.as_ref())
-                .map_or(limit, |rerank| limit.max(rerank.candidates));
+                .map_or(limit, |rerank| limit.max(rerank.settings.candidates));
             ranked.push(if sub.query.is_some() {
                 compose(
                     dense,
                     lexical,
-                    &self.config.namespace.composition,
+                    &self.config.namespace.settings.composition,
                     depth,
-                    &self.config.namespace.retrieval,
+                    &self.config.namespace.settings.retrieval,
                     &Bonus::new(),
                     &Selection::default(),
                 )?
@@ -537,7 +544,7 @@ impl PreparedReader {
         let k = args.effective_limit() as usize;
         let output = args.output.unwrap_or(OutputMode::Excerpt);
         let max_documents = if args.queries.is_some() {
-            self.config.namespace.retrieval.max_documents
+            self.config.namespace.settings.retrieval.max_documents
         } else {
             k
         };
@@ -555,7 +562,7 @@ impl PreparedReader {
                     lexical_predicate,
                     query,
                     text,
-                    self.config.namespace.retrieval.lexical_candidates,
+                    self.config.namespace.settings.retrieval.lexical_candidates,
                 )
                 .await
             };
@@ -578,9 +585,9 @@ impl PreparedReader {
                         ranked.push(compose(
                             Vec::new(),
                             rows.clone(),
-                            &self.config.namespace.composition,
+                            &self.config.namespace.settings.composition,
                             k,
-                            &self.config.namespace.retrieval,
+                            &self.config.namespace.settings.retrieval,
                             &bonus,
                             &selection,
                         )?);
@@ -642,6 +649,7 @@ impl PreparedReader {
                 if self
                     .config
                     .namespace
+                    .settings
                     .vectors
                     .get(name)
                     .is_none_or(|spec| spec.from.is_none()) =>
@@ -676,7 +684,7 @@ impl PreparedReader {
                 queries,
                 self.selected_rows().max_len().unwrap_or(0) != 0,
                 embedding_deadline,
-                self.config.namespace.dense_element,
+                self.config.namespace.settings.dense_element,
             )
             .await;
         let mut failed = vectors.vectors.iter().any(Result::is_err);
@@ -719,6 +727,7 @@ impl PreparedReader {
                         // The request limit is the least depth that can fill it.
                         self.config
                             .namespace
+                            .settings
                             .retrieval
                             .dense_candidates
                             .max(args.effective_limit() as usize),
@@ -783,7 +792,7 @@ impl PreparedReader {
                 ));
             }
             let depth = crate::rerank::configured(self, args.members.rerank.as_ref())
-                .map_or(k, |rerank| k.max(rerank.candidates));
+                .map_or(k, |rerank| k.max(rerank.settings.candidates));
             let bonus =
                 crate::boost::bonuses(self, args.members.boosts.as_deref(), [&dense, &lexical])
                     .await?;
@@ -792,9 +801,9 @@ impl PreparedReader {
                 compose(
                     dense,
                     lexical,
-                    &self.config.namespace.composition,
+                    &self.config.namespace.settings.composition,
                     depth,
-                    &self.config.namespace.retrieval,
+                    &self.config.namespace.settings.retrieval,
                     &bonus,
                     &selection,
                 )?
@@ -829,7 +838,7 @@ impl PreparedReader {
         let k = args.effective_limit() as usize;
         let output = args.output.unwrap_or(OutputMode::Excerpt);
         let max_documents = if args.queries.is_some() {
-            self.config.namespace.retrieval.max_documents
+            self.config.namespace.settings.retrieval.max_documents
         } else {
             k
         };

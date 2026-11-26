@@ -12,7 +12,8 @@ use lance_index::scalar::inverted::tokenizer::document_tokenizer::LanceTokenizer
 /// builds the index with and highlights and excerpts match with: the `analyzer`
 /// of the namespace.
 pub fn fts_params(namespace: &NamespaceConfig) -> lance_core::Result<InvertedIndexParams> {
-    Ok(analyzer_params(&namespace.analyzer)?.with_position(namespace.fts_positions))
+    Ok(analyzer_params(&namespace.settings.analyzer)?
+        .with_position(namespace.settings.fts_positions))
 }
 
 /// The parameters of a full-text index with an analyzer, without positions. A

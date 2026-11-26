@@ -457,6 +457,7 @@ impl PreparedReader {
         // the API's source; the principal and its checks above stay.
         if policy
             .settings
+            .namespace
             .write_api
             .as_ref()
             .is_some_and(|api| api.open)

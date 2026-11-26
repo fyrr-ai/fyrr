@@ -91,12 +91,13 @@ pub(crate) async fn write_manifest(
         {
             (column, kind)
         } else if let Some((column, kind, option, _)) =
-            possible_indexes(&config.namespace.attributes)
+            possible_indexes(&config.namespace.settings.attributes)
                 .find(|(_, _, _, name)| *name == index.name)
         {
             (column, attribute_index_kind(kind, option))
         } else if let Some(name) = config
             .namespace
+            .settings
             .vectors
             .keys()
             .find(|name| fyrr_core::attributes::vector_index_name(name) == index.name)
@@ -158,18 +159,22 @@ pub(crate) async fn write_manifest(
     // switched on waits for maintenance, and a reader expects what is built.
     // A full-text index that stands has the analyzer it was built with, which
     // the settings may have left since.
-    let carry = carry.or(previous_manifest.as_ref().map(|m| &m.attribute_indexes));
+    let carry = carry.or(previous_manifest
+        .as_ref()
+        .map(|m| &m.settings.namespace.attribute_indexes));
     let attribute_indexes = indexes_present(
-        &config.namespace.attributes,
+        &config.namespace.settings.attributes,
         |name| indexes.iter().any(|index| index.name == name),
         |attribute| {
             carry
                 .and_then(|indexes| indexes.get(attribute))
                 .filter(|options| options.full_text)
-                .or_else(|| config.namespace.attribute_indexes.get(attribute))
+                .or_else(|| config.namespace.settings.attribute_indexes.get(attribute))
                 .and_then(|options| options.analyzer.clone())
         },
     );
+    let mut settings = namespace_settings(config);
+    settings.namespace.attribute_indexes = attribute_indexes;
     let reader_coverage = fyrr_reader::storage::coverage(&actual, "readers_idx");
     if dataset
         .manifest()
@@ -285,14 +290,8 @@ pub(crate) async fn write_manifest(
                 .as_ref()
                 .and_then(|m| m.maintenance_completed_at)
         },
-        embedding: identity(&config.embedding),
+        settings,
         chunk_profile: chunk_identity(),
-        fts: config.namespace.fts_settings(),
-        dense_rq_bits: config.namespace.dense_rq_bits,
-        dense_partition_rows: config.namespace.dense_partition_rows,
-        dense_metric: config.namespace.dense_metric,
-        dense_element: config.namespace.dense_element,
-        retrieval_policy_digest: config.namespace.retrieval_digest(),
         indexes,
         merge_pair_rows: vector_segments
             .into_iter()
@@ -300,9 +299,6 @@ pub(crate) async fn write_manifest(
                 crate::maintenance::crowded_pair_rows(segments).map(|rows| (name, rows))
             })
             .collect(),
-        attributes: config.namespace.attributes.clone(),
-        attribute_indexes,
-        vectors: config.namespace.vectors.clone(),
         files,
         envelope_ids: receipts,
         lineage: lineage.clone(),

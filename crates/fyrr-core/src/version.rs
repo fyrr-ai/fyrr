@@ -5,6 +5,9 @@
 //!   readers never receive) bumps the minor version. Readers accept any minor
 //!   of their major and ignore fields they do not know, so contract structs never
 //!   use `deny_unknown_fields`. Fields added in a minor version need a default.
+//!   The settings a namespace shares with its configuration file (`analyzer`,
+//!   `retrieval`, `composition`) do deny them there; a minor adds a setting
+//!   beside them, never inside.
 //! - Any other change bumps the major version. Readers reject an unknown major
 //!   before looking at the rest of the document, and data is republished
 //!   instead of migrated.
@@ -95,6 +98,12 @@ pub trait Contract: Serialize + DeserializeOwned {
     /// The version this build writes. Its major is the only major it reads.
     const VERSION: SchemaVersion;
 
+    /// Checks on the raw document before it is read as `Self`: what the typed
+    /// form cannot tell, such as a field that is absent and defaulted.
+    fn check_document(_document: &serde_json::Value) -> Result<(), String> {
+        Ok(())
+    }
+
     /// Semantic checks beyond the JSON shape. Messages must not contain
     /// document values (identities, tokens, text).
     fn validate(&self) -> Result<(), String> {
@@ -166,6 +175,10 @@ pub fn parse_contract<T: Contract>(bytes: &[u8]) -> Result<T, ContractError> {
         Some(_) => return Err(ContractError::MalformedVersion { contract: T::NAME }),
     };
     check_compatible(T::NAME, T::VERSION, version)?;
+    T::check_document(&value).map_err(|message| ContractError::Invalid {
+        contract: T::NAME,
+        message,
+    })?;
     let document: T = serde_json::from_value(value).map_err(|error| malformed::<T>(&error))?;
     document
         .validate()

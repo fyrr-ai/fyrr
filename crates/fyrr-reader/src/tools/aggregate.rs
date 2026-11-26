@@ -221,7 +221,7 @@ impl PreparedReader {
     /// `MAX_AGGREGATE_GROUPS` groups is `invalid_argument`.
     pub async fn aggregate(&mut self, args: &AggregateInput) -> Result<AggregateOutput> {
         args.validate().map_err(|_| InvalidArgument)?;
-        let attributes = &self.manifest.attributes;
+        let attributes = &self.manifest.settings.namespace.attributes;
         let group_by = args
             .group_by
             .iter()

@@ -294,7 +294,7 @@ pub fn quarantine_reason(
                         || fyrr_reader::embedding::validate(
                             vector,
                             config.embedding.dimensions,
-                            config.namespace.dense_element,
+                            config.namespace.settings.dense_element,
                         )
                             .is_err()
                 })
@@ -393,12 +393,13 @@ fn record_estimate(config: &Config) -> u64 {
     let dimensions = u64::from(config.embedding.dimensions)
         + config
             .namespace
+            .settings
             .vectors
             .values()
             .filter(|vector| !vector.multi)
             .map(|vector| u64::from(vector.dimensions))
             .sum::<u64>();
-    2048 + dimensions * config.namespace.dense_element.bytes()
+    2048 + dimensions * config.namespace.settings.dense_element.bytes()
 }
 
 /// What the lists of the multi-vector attributes in `attributes` hold: the
@@ -406,6 +407,7 @@ fn record_estimate(config: &Config) -> u64 {
 fn listed_bytes(config: &Config, attributes: &[(String, ArrayRef)]) -> u64 {
     config
         .namespace
+        .settings
         .vectors
         .iter()
         .filter(|(_, spec)| spec.multi)
@@ -415,7 +417,7 @@ fn listed_bytes(config: &Config, attributes: &[(String, ArrayRef)]) -> u64 {
             Some(lists.values().len() as u64 * u64::from(spec.dimensions))
         })
         .sum::<u64>()
-        .saturating_mul(config.namespace.dense_element.bytes())
+        .saturating_mul(config.namespace.settings.dense_element.bytes())
 }
 
 /// What an envelope weighs before its first change.
@@ -427,7 +429,10 @@ const BASE_BYTES: u64 = 16384;
 /// bound for all but a record with very many readers, which the committer
 /// refuses when it is written.
 pub(crate) fn patch_bound(config: &Config) -> u64 {
-    patch_bytes(&config.namespace.attributes, record_estimate(config))
+    patch_bytes(
+        &config.namespace.settings.attributes,
+        record_estimate(config),
+    )
 }
 /// The part of `bound` that an envelope of `taken` bytes may weigh within
 /// `max`. The estimate only groups envelopes: a patch is never refused for it
@@ -1456,10 +1461,10 @@ mod tests {
         // A record with no list takes no more room than one without the attributes.
         assert_eq!(record_estimate(&multi), record_estimate(&plain));
         // Two rows carry vectors, two carry none, one of them an empty list.
-        let spec = &multi.namespace.vectors["m0"];
+        let spec = &multi.namespace.settings.vectors["m0"];
         let flat = vec![0.5_f32; 2 * 8192];
         let column = named_vector_column(
-            multi.namespace.dense_element,
+            multi.namespace.settings.dense_element,
             spec,
             [
                 None,
@@ -1472,7 +1477,7 @@ mod tests {
         let attributes = [("m0".to_owned(), column)];
         assert_eq!(
             listed_bytes(&multi, &attributes),
-            3 * 8192 * multi.namespace.dense_element.bytes()
+            3 * 8192 * multi.namespace.settings.dense_element.bytes()
         );
         assert_eq!(listed_bytes(&multi, &[]), 0);
         assert_eq!(listed_bytes(&plain, &attributes), 0);

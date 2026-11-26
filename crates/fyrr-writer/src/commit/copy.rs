@@ -156,7 +156,7 @@ pub async fn copy(from: &Config, to: &Config) -> Result<serde_json::Value> {
         false,
         Vec::new(),
         false,
-        Some(&manifest.attribute_indexes),
+        Some(&manifest.settings.namespace.attribute_indexes),
     )
     .await?;
 

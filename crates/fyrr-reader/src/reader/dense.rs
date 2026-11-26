@@ -97,6 +97,7 @@ impl PreparedReader {
             Some(name) => self
                 .config
                 .namespace
+                .settings
                 .vectors
                 .get(name)
                 .map(|vector| vector.dimensions)
@@ -108,7 +109,7 @@ impl PreparedReader {
     /// the built-in `vector`, does not.
     pub(super) fn is_multi(&self, attribute: Option<&str>) -> bool {
         attribute
-            .and_then(|name| self.config.namespace.vectors.get(name))
+            .and_then(|name| self.config.namespace.settings.vectors.get(name))
             .is_some_and(|vector| vector.multi)
     }
 
@@ -116,7 +117,7 @@ impl PreparedReader {
     /// dimensions, or, for a multi-vector attribute, one or more.
     pub(super) fn validate_query(&self, attribute: Option<&str>, key: &[f32]) -> Result<()> {
         let dimensions = self.vector_dimensions(attribute)?;
-        let element = self.config.namespace.dense_element;
+        let element = self.config.namespace.settings.dense_element;
         if !self.is_multi(attribute) {
             return Ok(embedding::validate(key, dimensions, element)?);
         }
@@ -139,7 +140,9 @@ impl PreparedReader {
         text: bool,
     ) -> Result<Option<&'a str>> {
         match attribute {
-            Some(name) if !self.config.namespace.vectors.contains_key(name) => Err(InvalidArgument),
+            Some(name) if !self.config.namespace.settings.vectors.contains_key(name) => {
+                Err(InvalidArgument)
+            }
             Some(name) if text => Ok(Some(name)),
             _ => Ok(None),
         }
@@ -234,7 +237,7 @@ impl PreparedReader {
         embedding::validate(
             vector,
             self.config.embedding.dimensions,
-            self.config.namespace.dense_element,
+            self.config.namespace.settings.dense_element,
         )?;
         if !(1..=75).contains(&k) {
             return Err(InvalidArgument);
@@ -247,9 +250,9 @@ impl PreparedReader {
         if wanted == 0 {
             return Ok((Vec::new(), false));
         }
-        let retrieval = &self.config.namespace.retrieval;
+        let retrieval = &self.config.namespace.settings.retrieval;
         let mut shortlist = retrieval.rescore_initial(k);
-        if retrieval.rescore_depth.is_none() && self.config.namespace.dense_rq_bits == 1 {
+        if retrieval.rescore_depth.is_none() && self.config.namespace.settings.dense_rq_bits == 1 {
             // One-bit distances rank a growing pool less precisely. Grow the exact
             // rescore pool sublinearly with the rows the probes inspect, up to the
             // depth that the tie expansion could already reach. An index whose partitions follow its
@@ -278,8 +281,8 @@ impl PreparedReader {
                 self.config.reader.nprobes,
                 shortlist,
                 self.config.embedding.dimensions,
-                self.config.namespace.dense_element,
-                self.config.namespace.dense_rq_bits,
+                self.config.namespace.settings.dense_element,
+                self.config.namespace.settings.dense_rq_bits,
             ),
         };
         let indexed = self.maps_enabled && plan.indexed && !exact;
@@ -386,7 +389,7 @@ impl PreparedReader {
         shortlist: usize,
         telemetry: &mut Telemetry,
     ) -> Result<DenseRefinement> {
-        let retrieval = &self.config.namespace.retrieval;
+        let retrieval = &self.config.namespace.settings.retrieval;
         let tie_bound = k * 16;
 
         let sparse_start = Instant::now();
@@ -424,10 +427,10 @@ impl PreparedReader {
         );
         let rescore_start = Instant::now();
         let rescore_counters = self.mirror.counters();
-        let key = embedding::query_array(vector, self.config.namespace.dense_element);
+        let key = embedding::query_array(vector, self.config.namespace.settings.dense_element);
         let batch = lance_index::vector::flat::compute_distance(
             key,
-            embedding::distance_type(self.config.namespace.dense_metric),
+            embedding::distance_type(self.config.namespace.settings.dense_metric),
             "vector",
             batch,
         )
@@ -503,7 +506,7 @@ impl PreparedReader {
         telemetry: &mut Telemetry,
     ) -> Result<(Vec<Candidate>, bool)> {
         let bound = k * 16;
-        let retrieval = &self.config.namespace.retrieval;
+        let retrieval = &self.config.namespace.settings.retrieval;
         let mut pool = retrieval.rescore_initial(k);
         let eligible = usize::try_from(self.selected_rows().max_len().unwrap_or(0))
             .map_err(|_| StorageUnavailable)?;
@@ -537,7 +540,9 @@ impl PreparedReader {
             scan.nearest(column, query, requested)
                 .map_err(|_| EmbeddingInvalid)?
                 .use_index(use_index);
-            scan.distance_metric(embedding::distance_type(self.config.namespace.dense_metric));
+            scan.distance_metric(embedding::distance_type(
+                self.config.namespace.settings.dense_metric,
+            ));
             scan.nprobes(nprobes)
                 .refine(u32::try_from((pool / requested).max(1)).map_err(|_| InvalidArgument)?);
             let batch = scan
@@ -597,7 +602,7 @@ impl PreparedReader {
             Some(Box::new(RowAdmission(self.selected_rows().clone()))),
         ));
         let mut candidates = BTreeMap::<u64, f32>::new();
-        let metric = self.config.namespace.dense_metric;
+        let metric = self.config.namespace.settings.dense_metric;
         let maps = self
             .admission
             .maps
@@ -608,7 +613,7 @@ impl PreparedReader {
         if roots.len() != maps.len() {
             return Err(PartitionMapUnavailable);
         }
-        let key = embedding::query_array(vector, self.config.namespace.dense_element);
+        let key = embedding::query_array(vector, self.config.namespace.settings.dense_element);
         // Cosine partitions are those of the normalized query; the other
         // metrics keep the length that they measure.
         let key = if metric == fyrr_core::config::DenseMetric::Cosine {

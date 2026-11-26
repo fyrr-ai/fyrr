@@ -83,7 +83,7 @@ impl PreparedReader {
         if attributes.len() > 1
             && attributes.iter().any(|(attribute, _)| {
                 matches!(
-                    self.manifest.attributes.get(attribute),
+                    self.manifest.settings.namespace.attributes.get(attribute),
                     Some(AttributeType::Array(_))
                 )
             })

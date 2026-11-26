@@ -60,7 +60,13 @@ pub(super) async fn content_page(
         .collect::<Vec<_>>();
     let mut embedded = cache.embed(&embedding_texts).await?.into_iter();
     let filled;
-    let attributes = if config.namespace.vectors.values().any(|v| v.from.is_some()) {
+    let attributes = if config
+        .namespace
+        .settings
+        .vectors
+        .values()
+        .any(|v| v.from.is_some())
+    {
         filled = embed_sources(config, cache, attributes).await?;
         &filled[..]
     } else {
@@ -178,7 +184,7 @@ async fn embed_sources(
 ) -> Result<Vec<(String, ArrayRef)>> {
     use arrow_array::Array as _;
     let mut filled = attributes.to_vec();
-    for (name, spec) in &config.namespace.vectors {
+    for (name, spec) in &config.namespace.settings.vectors {
         let Some(source) = &spec.from else {
             continue;
         };
@@ -216,7 +222,7 @@ async fn embed_sources(
             rows[row] = Some(vector);
         }
         let column = nullable_vector_column(
-            config.namespace.dense_element,
+            config.namespace.settings.dense_element,
             spec.dimensions,
             rows.iter().map(Option::as_deref),
         );
@@ -291,7 +297,7 @@ impl<'a> DocumentRows<'a> {
         let mut common = change.metadata.clone();
         let map = common.as_mut().and_then(|m| m.connector_map.take());
         let mut typed = serde_json::Map::new();
-        if page.config.namespace.write_api.is_none()
+        if page.config.namespace.settings.write_api.is_none()
             && let Some(metadata) = &mut common
         {
             typed.insert("title".into(), metadata.title.take().into());
@@ -488,12 +494,12 @@ impl RowColumns {
                 self.updated
                     .push(common.updated_at.map(|t| t.timestamp_micros()));
                 self.attributes.push(change.attributes.clone());
-                if config.namespace.write_api.is_none() {
+                if config.namespace.settings.write_api.is_none() {
                     // Connector namespaces never change their schema: the table's
                     // columns are in name order.
                     self.typed
                         .get_or_insert_with(|| {
-                            let schema = &config.namespace.attributes;
+                            let schema = &config.namespace.settings.attributes;
                             AttributeColumns::new(schema, schema.keys().cloned().collect())
                         })
                         .push(&rows.typed)
@@ -512,7 +518,7 @@ impl RowColumns {
         if !self.records.is_empty() {
             let reader_array = string_lists(self.readers.iter().map(Vec::as_slice));
             let vector_array = vector_column(
-                config.namespace.dense_element,
+                config.namespace.settings.dense_element,
                 config.embedding.dimensions,
                 self.vectors.iter().map(Vec::as_slice),
             );
@@ -543,7 +549,7 @@ impl RowColumns {
             columns.extend(typed.iter().map(|(_, column)| column.clone()));
             let schema = schema_with(
                 config.embedding.dimensions,
-                config.namespace.dense_element,
+                config.namespace.settings.dense_element,
                 typed
                     .iter()
                     .map(|(name, column)| Field::new(name, column.data_type().clone(), true))

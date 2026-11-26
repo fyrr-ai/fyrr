@@ -107,6 +107,11 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "name": {
+          "type": "string",
+          "description": "Namespace ID: lowercase letters, digits and `-`, at most 63 bytes.",
+          "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"
+        },
         "rerank": {
           "anyOf": [
             {
@@ -137,11 +142,6 @@
             "dense": 0,
             "lexical": 0
           }
-        },
-        "name": {
-          "type": "string",
-          "description": "Namespace ID: lowercase letters, digits and `-`, at most 63 bytes.",
-          "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"
         },
         "fts_positions": {
           "type": "boolean",
@@ -191,16 +191,14 @@
           "additionalProperties": {
             "$ref": "#/$defs/AttributeType"
           },
-          "description": "Typed attributes declared for a new namespace: name to `string`, `int`,\n`float`, `bool` or `datetime`. Each is a nullable column with its own\nindex.",
-          "default": {}
+          "description": "Typed attributes declared for a new namespace: name to `string`, `int`,\n`float`, `bool` or `datetime`. Each is a nullable column with its own\nindex. A request that changes the schema adds attributes and never\nchanges or removes one."
         },
         "attribute_indexes": {
           "type": "object",
           "additionalProperties": {
             "$ref": "#/$defs/AttributeIndex"
           },
-          "description": "The attributes whose indexes differ from the default (the scalar index\nof the attribute's type): `index = false` leaves the attribute to a scan\nof the table, `full_text` and `ngram` add a text index to a `string`\n(`full_text` also to an array of strings, one document per element),\nand `analyzer` sets how the full-text index cuts a text into terms.",
-          "default": {}
+          "description": "The attributes whose indexes differ from the default (the scalar index\nof the attribute's type): `index = false` leaves the attribute to a scan\nof the table, `full_text` and `ngram` add a text index to a `string`\n(`full_text` also to an array of strings, one document per element),\nand `analyzer` sets how the full-text index cuts a text into terms. An\nindex switched on is built by the next maintenance."
         },
         "vectors": {
           "type": "object",
@@ -230,22 +228,8 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "endpoint": {
-          "type": "string",
-          "description": "Complete HTTPS endpoint (loopback HTTP is allowed for a local provider)."
-        },
         "model": {
           "type": "string"
-        },
-        "api_key": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/SecretRef"
-            },
-            {
-              "type": "null"
-            }
-          ]
         },
         "candidates": {
           "type": "integer",
@@ -260,6 +244,30 @@
           "description": "Logistic population-z score blend; 1 uses raw reranker order, 0 fusion order.",
           "minimum": 0,
           "maximum": 1
+        },
+        "text_chars": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 200,
+          "description": "Optional per-candidate text bound in characters: send the window with the\nmost distinct query terms instead of the whole record. Absent sends the\nwhole record.",
+          "maximum": 32768
+        },
+        "endpoint": {
+          "type": "string",
+          "description": "Complete HTTPS endpoint (loopback HTTP is allowed for a local provider)."
+        },
+        "api_key": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SecretRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "deadline": {
           "$ref": "#/$defs/Duration",
@@ -276,23 +284,13 @@
           "format": "uint64",
           "minimum": 1,
           "description": "Operator-attested upper cost bound for any request up to 1 MiB of text.\nMust cover the chosen model's billing, including repeated query tokens.\nThis amount is reserved before each dispatch; no provider invoice is trusted."
-        },
-        "text_chars": {
-          "type": [
-            "integer",
-            "null"
-          ],
-          "format": "uint",
-          "minimum": 200,
-          "description": "Optional per-candidate text bound in characters: send the window with the\nmost distinct query terms instead of the whole record. Absent sends the\nwhole record (and keeps the policy digest unchanged).",
-          "maximum": 32768
         }
       },
       "required": [
-        "endpoint",
         "model",
         "candidates",
         "weight",
+        "endpoint",
         "deadline",
         "spend_limit_microusd",
         "max_call_cost_microusd"

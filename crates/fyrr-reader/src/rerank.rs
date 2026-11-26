@@ -74,7 +74,7 @@ impl Reranker {
                 return Err(RerankPayloadLimit);
             }
             let payload = serde_json::to_vec(
-                &serde_json::json!({"model":config.model,"query":query,"documents":documents}),
+                &serde_json::json!({"model":config.settings.model,"query":query,"documents":documents}),
             )
             .map_err(|_| RerankPayloadLimit)?;
             // HTTP/1 polls the stream only after connecting (including TLS).
@@ -291,13 +291,17 @@ pub(crate) fn scored_column(
             if reader
                 .config
                 .namespace
+                .settings
                 .write_api
                 .as_ref()
                 .is_some_and(|api| api.text_attribute == name) =>
         {
             Ok(TEXT.into())
         }
-        Some(name) if reader.manifest.attributes.get(name) == Some(&AttributeType::String) => {
+        Some(name)
+            if reader.manifest.settings.namespace.attributes.get(name)
+                == Some(&AttributeType::String) =>
+        {
             Ok(name.into())
         }
         Some(_) => Err(InvalidArgument),
@@ -447,7 +451,7 @@ async fn rerank_inner(
         match scores {
             Ok(scores) if !scores.is_empty() => {
                 let count = scores.len();
-                blend(&mut ranked[index][..count], &scores, config.weight);
+                blend(&mut ranked[index][..count], &scores, config.settings.weight);
             }
             Ok(_) => {}
             Err(code) => {
@@ -469,7 +473,7 @@ async fn prepare_rerank_documents(
 ) -> Result<Vec<Result<Vec<String>>>> {
     let mut documents = Vec::with_capacity(ranked.len());
     for rows in ranked.iter() {
-        let head = &rows[..rows.len().min(config.candidates)];
+        let head = &rows[..rows.len().min(config.settings.candidates)];
         if head.is_empty() {
             documents.push(Ok(Vec::new()));
             continue;
@@ -513,7 +517,7 @@ async fn prepare_rerank_documents(
                     text.value(index)
                 },
                 queries[documents.len()],
-                config.text_chars,
+                config.settings.text_chars,
             );
             bytes += body.len();
             if bytes > MAX_TEXT_BYTES {

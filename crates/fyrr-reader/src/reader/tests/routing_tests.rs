@@ -138,7 +138,7 @@ async fn filtered_dense(
     nprobes: usize,
 ) -> (Vec<Candidate>, Telemetry) {
     reader.config.reader.nprobes = nprobes;
-    reader.config.namespace.retrieval.dense_candidates = k;
+    reader.config.namespace.settings.retrieval.dense_candidates = k;
     let args: SearchInput = serde_json::from_value(serde_json::json!({
         "query":"routing-only query", "sources":sources, "limit":10
     }))

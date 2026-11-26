@@ -1,5 +1,5 @@
 {
-  "schema_version": "4.0",
+  "schema_version": "5.0",
   "namespace": "acme",
   "generation": 1,
   "settings": {
@@ -17,20 +17,6 @@
         "send_dimensions": false
       }
     },
-    "fts": {
-      "analyzer": {
-        "tokenizer": "simple",
-        "language": "english",
-        "ascii_folding": true,
-        "max_token_length": 40,
-        "ngram_min_length": 3,
-        "ngram_max_length": 3,
-        "prefix_only": false
-      },
-      "with_position": false
-    },
-    "dense_rq_bits": 1,
-    "dense_partition_rows": 550,
     "retrieval": {
       "dense_weight": 0.5,
       "dense_candidates": 75,
@@ -43,6 +29,20 @@
       "dense": 0,
       "lexical": 0
     },
+    "fts_positions": false,
+    "analyzer": {
+      "tokenizer": "simple",
+      "language": "english",
+      "ascii_folding": true,
+      "max_token_length": 40,
+      "ngram_min_length": 3,
+      "ngram_max_length": 3,
+      "prefix_only": false
+    },
+    "dense_rq_bits": 1,
+    "dense_partition_rows": 550,
+    "dense_metric": "cosine",
+    "dense_element": "f16",
     "attributes": {
       "created": "datetime",
       "priority": "int"

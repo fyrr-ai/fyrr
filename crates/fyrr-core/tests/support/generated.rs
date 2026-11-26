@@ -386,10 +386,8 @@ fn published_files(arrow: &Value) -> Vec<GeneratedFile> {
                             "send_dimensions": false
                         }
                     },
-                    "fts": {
-                        "analyzer": {"language": "english", "ascii_folding": true},
-                        "with_position": false
-                    },
+                    "fts_positions": false,
+                    "analyzer": {"language": "english", "ascii_folding": true},
                     "dense_rq_bits": 1,
                     "dense_partition_rows": 550,
                     "retrieval": {

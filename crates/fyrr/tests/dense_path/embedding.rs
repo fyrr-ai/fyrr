@@ -199,7 +199,7 @@ async fn tools_writer_embedding_512_batches_restart_mcp_recall_and_routing_on_st
     );
     success(&config, &["writer", "commit"]);
     let (_, manifest) = super::coordination::publication(&config).await;
-    assert_eq!(manifest.embedding.dimensions, 512);
+    assert_eq!(manifest.settings.embedding.dimensions, 512);
     let loaded = fyrr_core::config::load(&config).unwrap();
     let head = fyrr_reader::storage::optional_head(&loaded.config)
         .await
