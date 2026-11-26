@@ -235,7 +235,7 @@ cases_start() {
       else
         not_evaluated "$name" "not selected by --step"
       fi
-    done < <("$ROOT/scripts/ci-cases" rows pool)
+    done < <("$ROOT/scripts/ci-cases" rows)
   fi
   ((${#selected_rows[@]})) || return 0
   if ! ensure_build; then

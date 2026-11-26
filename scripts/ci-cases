@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Enumerate executable cases and run the committed, disjoint CI ownership rows."""
+"""Enumerate executable cases and run the committed, disjoint CI ownership rows.
+
+A row owns the cases under its module prefixes in `scripts/ci-cases.json`; only
+exceptions are listed one by one.
+"""
 
 import asyncio
 import collections
@@ -37,13 +41,13 @@ PYTHON_PROJECTS = {
 }
 
 
-def selected_cases(spec):
+def selected_cases(cases):
     tier = os.environ.get("FYRR_CI_TIER", "full")
     if tier not in {"quick", "full"}:
         raise ValueError(f"unknown CI tier: {tier}")
     return {
         case: details
-        for case, details in spec["cases"].items()
+        for case, details in cases.items()
         if tier == "full" or details["tier"] == "quick"
     }
 
@@ -132,9 +136,10 @@ def rust_inventory(compiled):
     return cases
 
 
-def inventory():
-    cases = rust_inventory(artifacts())
-    for directory, (_, args) in PYTHON_PROJECTS.items():
+def python_inventory(directories):
+    cases = {}
+    for directory in directories:
+        args = PYTHON_PROJECTS[directory][1]
         output(["uv", "sync", "--locked", *args], ROOT / directory)
         listing = output(
             ["uv", "run", "--locked", *args, "pytest", "--collect-only", "-q"],
@@ -146,8 +151,74 @@ def inventory():
     return cases
 
 
+def inventory():
+    return {**rust_inventory(artifacts()), **python_inventory(PYTHON_PROJECTS)}
+
+
+def python_directories(spec):
+    """The Python projects holding tests a row owns, as its prefixes and exceptions name them."""
+    keys = [*spec.get("owns", {}), *spec.get("cases", {})]
+    return [
+        directory
+        for directory in PYTHON_PROJECTS
+        if any(
+            key.startswith(f"python:{directory}/") or f"python:{directory}/".startswith(key)
+            for key in keys
+        )
+    ]
+
+
+def resolver(manifest):
+    """Return `owner(case)`: (row, key, details) of an exact listing, else the longest prefix."""
+    exact = {
+        case: (row, case, details)
+        for row, spec in manifest.items()
+        for case, details in {**spec.get("cases", {}), **spec.get("children", {})}.items()
+    }
+    prefixes = sorted(
+        (
+            (prefix, row, details)
+            for row, spec in manifest.items()
+            for prefix, details in spec.get("owns", {}).items()
+        ),
+        key=lambda item: -len(item[0]),
+    )
+
+    def owner(case):
+        if case in exact:
+            return exact[case]
+        return next(
+            (
+                (row, prefix, details)
+                for prefix, row, details in prefixes
+                if case.startswith(prefix)
+            ),
+            None,
+        )
+
+    return owner
+
+
+def expand(manifest, actual):
+    """Give every row its executable cases; also return the unowned cases and prefix hits."""
+    owner = resolver(manifest)
+    rows = {row: {**spec, "cases": {}} for row, spec in manifest.items()}
+    unowned = []
+    hits = collections.Counter()
+    for case in sorted(actual):
+        found = owner(case)
+        if found is None:
+            unowned.append(case)
+            continue
+        row, key, details = found
+        hits[row, key] += 1
+        if case not in manifest[row].get("children", {}):
+            rows[row]["cases"][case] = details
+    return rows, unowned, hits
+
+
 def validate(manifest, actual):
-    owners = {}
+    prefix_owners, case_owners = {}, {}
     for row, spec in manifest.items():
         if "backend" in spec:
             if spec["backend"] not in {"local", "s3"}:
@@ -158,11 +229,20 @@ def validate(manifest, actual):
             raise ValueError(f"row needs its execution kind and title: {row}")
         if spec["kind"] == "python" and row not in {owner for owner, _ in PYTHON_PROJECTS.values()}:
             raise ValueError(f"row has no Python check in scripts/ci: {row}")
-        if any(case.startswith("python:") != (spec["kind"] == "python") for case in spec["cases"]):
-            raise ValueError(f"case does not match its row kind: {row}")
-        if not spec["cases"]:
+        owns, cases = spec.get("owns", {}), spec.get("cases", {})
+        if not owns and not cases:
             raise ValueError(f"zero-case row: {row}")
-        for case, details in spec["cases"].items():
+        for prefix in owns:
+            if not prefix.endswith(("/", "::")):
+                raise ValueError(f"prefix must end at a test group or module boundary: {prefix}")
+            if prefix in prefix_owners:
+                raise ValueError(
+                    f"duplicate prefix owner: {prefix}: {prefix_owners[prefix]} and {row}"
+                )
+            prefix_owners[prefix] = row
+        for case, details in {**owns, **cases}.items():
+            if case.startswith("python:") != (spec["kind"] == "python"):
+                raise ValueError(f"case does not match its row kind: {row}")
             if details.get("tier") not in {"quick", "full"}:
                 raise ValueError(f"case needs a quick or full tier: {case}")
             seconds = details.get("seconds")
@@ -176,37 +256,50 @@ def validate(manifest, actual):
                 or seconds < 0
             ):
                 raise ValueError(f"invalid case duration: {case}")
-            if case in owners:
-                raise ValueError(f"duplicate owner: {case}: {owners[case]} and {row}")
-            owners[case] = row
+        for case in (*cases, *spec.get("children", {})):
+            if case in case_owners:
+                raise ValueError(f"duplicate owner: {case}: {case_owners[case]} and {row}")
+            case_owners[case] = row
+    # An exception only earns its line when its prefix would own the case differently.
+    by_prefix = resolver({row: {"owns": spec.get("owns", {})} for row, spec in manifest.items()})
+    for row, spec in manifest.items():
+        for case, details in spec.get("cases", {}).items():
+            found = by_prefix(case)
+            if found and found[0] == row and found[2]["tier"] == details["tier"]:
+                raise ValueError(
+                    f"case is already owned by its prefix {found[1]}; remove it: {case}"
+                )
+    expanded, unowned, hits = expand(manifest, actual)
+    for row, spec in manifest.items():
         for child, details in spec.get("children", {}).items():
             parents = details["parents"]
-            if child in owners:
-                raise ValueError(f"duplicate child owner: {child}")
-            if not parents or any(parent not in spec["cases"] for parent in parents):
+            if not parents or any(parent not in expanded[row]["cases"] for parent in parents):
                 raise ValueError(f"child parent is not executed by {row}: {parents}")
             expected = (
-                "quick" if any(spec["cases"][p]["tier"] == "quick" for p in parents) else "full"
+                "quick"
+                if any(expanded[row]["cases"][p]["tier"] == "quick" for p in parents)
+                else "full"
             )
             if details.get("tier") != expected:
                 raise ValueError(f"child tier differs from its executing parents: {child}")
-            owners[child] = row
-    missing = actual.keys() - owners.keys()
-    stale = owners.keys() - actual.keys()
-    if missing or stale:
-        raise ValueError(f"unowned cases: {sorted(missing)}\nstale cases: {sorted(stale)}")
-    for row, spec in manifest.items():
+    stale = sorted(
+        [case for case in case_owners if case not in actual]
+        + [prefix for prefix, row in prefix_owners.items() if not hits[row, prefix]]
+    )
+    if unowned or stale:
+        raise ValueError(f"unowned cases: {unowned}\nstale cases and prefixes: {stale}")
+    for row, spec in expanded.items():
         print(f"{row}: {len(spec['cases'])} cases, {len(spec.get('children', {}))} named children")
-    print(f"ownership: {len(owners)} executable cases, each with exactly one owner")
+    print(f"ownership: {len(actual)} executable cases, each with exactly one owner")
     counts = collections.Counter(
         details["tier"]
-        for spec in manifest.values()
+        for spec in expanded.values()
         for details in [*spec["cases"].values(), *spec.get("children", {}).values()]
     )
-    print(f"tiers: {counts['quick']} quick; {len(owners)} full ({counts['full']} additional)")
+    print(f"tiers: {counts['quick']} quick; {len(actual)} full ({counts['full']} additional)")
 
 
-def run(spec):
+def run(spec, compiled=None):
     groups = collections.defaultdict(list)
     for case in spec["cases"]:
         group, name = case.split("/", 1) if not case.startswith("python:") else (None, None)
@@ -219,7 +312,8 @@ def run(spec):
             groups[f"python:{directory}:{parent}"].append(name)
         else:
             groups[group].append(name)
-    compiled = artifacts() if any(not g.startswith("python:") for g in groups) else None
+    if compiled is None and any(not g.startswith("python:") for g in groups):
+        compiled = artifacts()
     for group, names in groups.items():
         if group.startswith("python:"):
             directory = group.split(":")[1]
@@ -303,7 +397,7 @@ def run(spec):
 async def pool(manifest, logs, jobs, rows):
     """Schedule independent parents; every worker owns its fixture and process."""
     display_logs = logs.relative_to(ROOT) if logs.is_relative_to(ROOT) else logs
-    selected = [(row, case) for row in rows for case in selected_cases(manifest[row])]
+    selected = [(row, case) for row in rows for case in selected_cases(manifest[row]["cases"])]
     selected.sort(key=lambda item: -case_seconds(manifest[item[0]]["cases"][item[1]]))
     plan = [
         {
@@ -311,7 +405,7 @@ async def pool(manifest, logs, jobs, rows):
             "case": case,
             "tier": manifest[row]["cases"][case]["tier"],
             "status": "selected"
-            if row in rows and case in selected_cases(manifest[row])
+            if row in rows and case in selected_cases(manifest[row]["cases"])
             else "n/e",
         }
         for row, spec in manifest.items()
@@ -450,7 +544,7 @@ async def pool(manifest, logs, jobs, rows):
             await sampler
     for row in rows:
         items = results[row]
-        for case in manifest[row]["cases"].keys() - selected_cases(manifest[row]).keys():
+        for case in manifest[row]["cases"].keys() - selected_cases(manifest[row]["cases"]).keys():
             items.append(
                 {
                     "row": row,
@@ -503,38 +597,42 @@ def main():
         for row, spec in manifest.items():
             print(f"{row}\t{spec['kind']}\t{spec['title']}")
     elif mode == "rows":
-        rows = [
-            row
-            for row, spec in manifest.items()
-            if (
-                spec["kind"] == "rust"
-                if sys.argv[2] == "pool"
-                else row.startswith(sys.argv[2] + "-")
-            )
-        ]
-        for row in sorted(
-            rows, key=lambda r: -sum(case_seconds(d) for d in selected_cases(manifest[r]).values())
-        ):
-            print(f"{row}\t{len(selected_cases(manifest[row]))}" if sys.argv[2] == "pool" else row)
+        # Rows with something to run in this tier; no build needed to know.
+        for row, spec in manifest.items():
+            if spec["kind"] == "rust":
+                entries = {**spec.get("owns", {}), **spec.get("cases", {})}
+                print(f"{row}\t{len(selected_cases(entries))}")
     elif mode == "settings":
         spec = manifest[sys.argv[2]]
         print(json.dumps({"backend": spec.get("backend"), "services": spec.get("services", [])}))
     elif mode == "plan":
-        for row, spec in manifest.items():
+        for row, spec in expand(manifest, inventory())[0].items():
             for case, details in {**spec["cases"], **spec.get("children", {})}.items():
                 print(f"{row}\t{spec.get('backend', 'core')}\t{details['tier']}\t{case}")
     elif mode == "pool":
-        asyncio.run(pool(manifest, Path(sys.argv[2]), int(sys.argv[3]), sys.argv[4:]))
+        rows = expand(manifest, rust_inventory(artifacts()))[0]
+        asyncio.run(pool(rows, Path(sys.argv[2]), int(sys.argv[3]), sys.argv[4:]))
     elif mode == "run":
-        spec = {**manifest[sys.argv[2]], "cases": selected_cases(manifest[sys.argv[2]])}
+        row = sys.argv[2]
+        spec = manifest[row]
+        compiled = None
         if len(sys.argv) == 4:
             case = sys.argv[3]
-            if case not in spec["cases"]:
+            found = resolver(manifest)(case)
+            if not found or found[0] != row or case in spec.get("children", {}):
                 raise ValueError("case does not belong to the selected owner")
-            spec = {**spec, "cases": {case: spec["cases"][case]}}
-        if not spec["cases"]:
+            cases = {case: found[2]}
+        else:
+            if spec["kind"] == "python":
+                actual = python_inventory(python_directories(spec))
+            else:
+                compiled = artifacts()
+                actual = rust_inventory(compiled)
+            cases = expand(manifest, actual)[0][row]["cases"]
+        cases = selected_cases(cases)
+        if not cases:
             raise ValueError("zero-case row")
-        run(spec)
+        run({**spec, "cases": cases}, compiled)
     else:
         raise ValueError(f"unknown mode: {mode}")
 

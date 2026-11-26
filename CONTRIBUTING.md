@@ -109,6 +109,12 @@ is kept under 40 GiB (`MBX_GC_MAX_SIZE`).
 
 `scripts/ci-cases.json` owns the cases and their `quick`/`full` tiers; the
 ownership gate checks all cases, including those excluded from the selected tier.
+A row owns the cases under its prefixes (`owns`). A prefix ends at a test group
+(`full:fyrr:test:dense_path/`) or a module (`full:fyrr:test:dense_path/incremental::`)
+and carries a tier and `seconds`, the mean time of one case; the pool only uses
+it to start long cases first. The longest prefix wins, and an exact entry in
+`cases` beats any prefix. `children` names the tests that a parent case runs
+in a child process.
 
 Run `scripts/ci --quick` before a PR. It runs all core gates, CLI and privacy
 cases, the Python SDK and example, local quickstart, and the local scenarios
@@ -178,8 +184,12 @@ not create.
 ## Rules for changes
 
 - **Tests.** Every executable test case has exactly one owner row in
-  `scripts/ci-cases.json`. When you add, rename or remove a test, update its
-  row in the same change; `scripts/ci-cases check` fails otherwise.
+  `scripts/ci-cases.json`. A new test under a prefix a row already owns needs
+  no edit. A new module needs a prefix in the row that runs it; a test that
+  must run in another row or tier than its prefix gives it needs an exact entry
+  in that row's `cases`. A new test in a mixed module takes the row and tier of
+  the module's prefix, so check where it runs. `scripts/ci-cases check` fails
+  on an unowned case, a stale entry, or an exact entry its prefix already covers.
 - **Contracts.** `schemas/`, the SDK's schema copies and `fixtures/mcp/` are
   generated from the Rust types. Regenerate them with
   `FYRR_UPDATE_GOLDEN=1 cargo test --locked -p fyrr-core --test generated`
