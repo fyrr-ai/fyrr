@@ -203,11 +203,15 @@ impl Preparation<'_> {
             .snapshot
             .as_ref()
             .ok_or(WriterError::PublicationInvalid)?;
-        let applied: std::collections::BTreeSet<_> = published
-            .applied
-            .union(&published.rejected)
-            .cloned()
-            .collect();
+        // The worker walks no chain: a permissions envelope that no publication
+        // resolved is unconfirmed to it.
+        let (retired, chains) = (Default::default(), Default::default());
+        let facts = crate::commit::Facts {
+            applied: &published.applied,
+            rejected: &published.rejected,
+            retired: &retired,
+            chains: &chains,
+        };
         let (store, root) = fyrr_reader::storage::namespace_store(self.config)?;
         // Always discover new envelopes; only immutable, fingerprinted bodies are reused.
         let objects: Vec<_> = self
@@ -247,12 +251,11 @@ impl Preparation<'_> {
                 }
                 envelope
             };
-            if !path
-                .filename()
-                .and_then(|name| name.strip_suffix(".json"))
-                .is_some_and(|id| applied.contains(id))
-                && let EnvelopePayload::Content(payload) = &envelope.payload
-            {
+            let resolved = matches!(
+                crate::commit::classify(&envelope, &facts),
+                crate::commit::State::Applied | crate::commit::State::Rejected
+            );
+            if !resolved && let EnvelopePayload::Content(payload) = &envelope.payload {
                 content_count += 1;
                 content_bytes += payload
                     .fragments
@@ -264,7 +267,7 @@ impl Preparation<'_> {
             if envelope.namespace != self.config.namespace.name {
                 return Err(WriterError::EnvelopeNamespaceInvalid);
             }
-            if envelope.source_id == self.source.id && !applied.contains(&envelope.envelope_id) {
+            if envelope.source_id == self.source.id && !resolved {
                 source_pending = true;
                 if envelope.kind == SyncKind::Content {
                     content_paths.push(path.clone());
@@ -300,7 +303,7 @@ impl Preparation<'_> {
                         envelope.cursor.start
                     },
                 ));
-                if !applied.contains(&envelope.envelope_id) {
+                if !resolved {
                     paths.push(path);
                 }
             }

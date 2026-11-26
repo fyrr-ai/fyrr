@@ -1995,6 +1995,25 @@ async fn incremental_permission_envelope_no_cursor_confirmed_is_inert_on_storage
     // An envelope no cursor confirmed is inert: it does not block its source.
     let status = command(&commit, &["writer", "status"]);
     assert_eq!(status["blocked_sources"], json!([]), "{status}");
+    // Neither the late put nor the orphan is pending work, to status as to the
+    // committer.
+    let head = fyrr_reader::storage::optional_head(&loaded.config)
+        .await
+        .unwrap()
+        .unwrap();
+    let pending = fyrr_writer::commit::pending(&loaded.config, &head)
+        .await
+        .unwrap();
+    assert!(
+        pending
+            .iter()
+            .all(|e| e.envelope_id != late.envelope_id && e.envelope_id != orphan.envelope_id)
+    );
+    assert_eq!(
+        status["pending_envelopes"],
+        json!(pending.len()),
+        "{status}"
+    );
     input(
         &root,
         json!({"epoch":3,"permissions":[[{"id":"a","revision":"p4","readers":[]}]]}),

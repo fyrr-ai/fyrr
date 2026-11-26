@@ -1,4 +1,5 @@
 //! Envelope diagnostics and bounded cleanup; the immutable log remains cursor authority.
+use crate::commit::State;
 use crate::{Result, WriterError};
 use futures::{StreamExt, TryStreamExt};
 use fyrr_core::config::Config;
@@ -116,12 +117,15 @@ async fn source_reads(
     Ok(reads)
 }
 
-/// What a count of the pending permissions envelopes holds of each: the walk
-/// of its chain, and no body.
+/// What a count of the unresolved envelopes holds of each: what [`classify`]
+/// and the walk of a chain read, and no body.
+///
+/// [`classify`]: crate::commit::classify
 #[derive(Clone)]
 struct StatusLink {
     id: String,
     source_id: String,
+    kind: SyncKind,
     previous: Option<String>,
     lease_generation: u64,
 }
@@ -131,6 +135,7 @@ impl From<&PreparedEnvelope> for StatusLink {
         Self {
             id: envelope.envelope_id.clone(),
             source_id: envelope.source_id.clone(),
+            kind: envelope.kind,
             previous: envelope.previous.clone(),
             lease_generation: envelope.lease_generation,
         }
@@ -144,8 +149,14 @@ impl From<PreparedEnvelope> for StatusLink {
 }
 
 impl crate::commit::Link for StatusLink {
+    fn id(&self) -> &str {
+        &self.id
+    }
     fn source_id(&self) -> &str {
         &self.source_id
+    }
+    fn kind(&self) -> SyncKind {
+        self.kind
     }
     fn previous(&self) -> Option<&String> {
         self.previous.as_ref()
@@ -166,12 +177,10 @@ pub async fn status(config: &Config) -> Result<serde_json::Value> {
     let prefix = root.clone().join("envelopes");
     let mut listing = store.list(Some(&prefix)).fuse();
     let mut envelopes = 0;
-    let mut pending = 0;
-    // What no commit resolved, by the committer's rules: the permissions envelopes
-    // that a cursor confirmed are pending, the others are not; the content and
-    // the listings of a source whose chain is broken wait, and are not.
+    // What no publication resolved, without its body: the committer holds all of
+    // it. One of another namespace, which the committer refuses, is not pending.
     let mut permissions = BTreeMap::<String, StatusLink>::new();
-    let mut held = BTreeMap::<String, usize>::new();
+    let mut others = Vec::<StatusLink>::new();
     let mut quarantine = BTreeMap::<String, u64>::new();
     loop {
         let mut paths = Vec::with_capacity(STATUS_PAGE_PATHS);
@@ -211,18 +220,14 @@ pub async fn status(config: &Config) -> Result<serde_json::Value> {
                 .contains(&envelope.envelope_id)
             };
             envelopes += 1;
-            if resolved {
-            } else if envelope.kind == SyncKind::Permissions {
-                // One of another namespace is read again by the walk, which
-                // refuses it, as the committer does.
-                if envelope.namespace == config.namespace.name {
-                    let body: &PreparedEnvelope = &envelope;
-                    permissions.insert(envelope.envelope_id.clone(), StatusLink::from(body));
+            if !resolved && envelope.namespace == config.namespace.name {
+                let body: &PreparedEnvelope = &envelope;
+                let link = StatusLink::from(body);
+                if link.kind == SyncKind::Permissions {
+                    permissions.insert(link.id.clone(), link);
+                } else {
+                    others.push(link);
                 }
-            } else if envelope.kind == SyncKind::Members {
-                pending += 1;
-            } else {
-                *held.entry(envelope.source_id.clone()).or_default() += 1;
             }
             if let EnvelopePayload::Content(payload) = &envelope.payload {
                 for entry in &payload.quarantined {
@@ -233,15 +238,9 @@ pub async fn status(config: &Config) -> Result<serde_json::Value> {
     }
     let policy: fyrr_core::publication::PolicyArtifact =
         fyrr_reader::storage::artifact(store.as_ref(), &root, &head.policy).await?;
-    let retired = |source: &String| policy.retired_sources.contains_key(source);
-    // The envelopes of a retired source are left to be rejected: they wait.
-    pending += permissions
-        .values()
-        .filter(|e| retired(&e.source_id))
-        .count();
-    permissions.retain(|_, e| !retired(&e.source_id));
-    // The sources whose permissions a publication applied are checked too: their
-    // chain breaks when the cursor goes, whatever is pending.
+    // The chains the committer walks, and those of the sources whose permissions
+    // a publication applied: their chain breaks when the cursor goes, whatever is
+    // pending.
     let applied_sources = crate::commit::previous_manifest(store.as_ref(), &root, &head)
         .await?
         .map(|manifest| {
@@ -253,14 +252,16 @@ pub async fn status(config: &Config) -> Result<serde_json::Value> {
         .unwrap_or_default();
     let sources: BTreeSet<String> = permissions
         .values()
+        .chain(&others)
+        .filter(|e| crate::commit::chained(config, e.kind, &e.source_id))
         .map(|e| e.source_id.clone())
-        .chain(held.keys().cloned())
-        .chain(applied_sources)
+        .chain(
+            applied_sources
+                .into_iter()
+                .filter(|source| crate::commit::synced(config, source)),
+        )
         .collect();
-    // Every link after what the manifest applied, then which of them no
-    // publication resolved: one that is listed and unresolved, or one that the
-    // walk read by ID and no manifest names.
-    let (links, blocked) = crate::commit::chains(
+    let (chains, links) = crate::commit::chains(
         config,
         &head,
         &policy,
@@ -269,9 +270,27 @@ pub async fn status(config: &Config) -> Result<serde_json::Value> {
         &|_: &str| -> Result<bool> { Ok(false) },
     )
     .await?;
-    for link in links {
-        if permissions.contains_key(&link.id)
-            || !applied_page(
+    let none = BTreeSet::new();
+    let facts = crate::commit::Facts {
+        applied: &none,
+        rejected: &none,
+        retired: &policy.retired_sources,
+        chains: &chains,
+    };
+    let pending_state = |e: &StatusLink| crate::commit::classify(e, &facts) == State::Pending;
+    let mut pending = permissions
+        .values()
+        .chain(&others)
+        .filter(|e| pending_state(e))
+        .count();
+    // A link the walk read by ID, which no listing showed, is pending when no
+    // publication resolved it, as the committer applies it.
+    for link in links
+        .iter()
+        .filter(|link| !permissions.contains_key(&link.id))
+    {
+        if pending_state(link)
+            && !applied_page(
                 store.clone(),
                 &root,
                 &head,
@@ -285,12 +304,11 @@ pub async fn status(config: &Config) -> Result<serde_json::Value> {
     }
     // A source whose chain does not reach what the manifest applied publishes
     // nothing of its permissions, content or listings until it is whole again.
-    let blocked_sources: Vec<&String> = blocked.iter().collect();
-    pending += held
+    let blocked_sources: Vec<&String> = chains
         .iter()
-        .filter(|(source, _)| !blocked.contains(*source))
-        .map(|(_, count)| count)
-        .sum::<usize>();
+        .filter(|(_, chain)| matches!(chain, crate::commit::Chain::Broken))
+        .map(|(source, _)| source)
+        .collect();
     let mut warnings = crate::maintenance::purge_warnings(config, &head).await?;
     // A retired source that the configuration still names: its syncs are
     // refused and its envelopes rejected until it is removed from the file.
@@ -426,109 +444,71 @@ pub(crate) async fn cleanup_held(
     discard_purged(config, lease).await?;
     let head = lease.head().await?;
     let (store, root, durability) = fyrr_reader::storage::cleanup_namespace_store(config)?;
-    // What a cursor confirmed is read before the log is: an envelope a worker
-    // confirms meanwhile is the newer, and the one before it is still reached.
-    // The cursors on storage, whatever the configuration names.
-    let mut cursors = BTreeMap::new();
-    let listed: Vec<_> = {
-        let (cursor_store, cursor_root) = namespace_store(config)?;
-        cursor_store
-            .list(Some(&cursor_root.join("cursors")))
-            .try_collect()
-            .await?
-    };
-    for object in listed {
-        let Some(source) = object
-            .location
-            .filename()
-            .and_then(|name| name.strip_suffix("-permissions.json"))
-        else {
-            continue;
-        };
-        if let Some(state) =
-            crate::sync_lease::CursorLease::peek(config, source, SyncKind::Permissions).await?
-        {
-            cursors.insert(source.to_owned(), state);
-        }
-    }
     let crate::commit::CleanupEvidence {
         applied,
         rejected: published_rejected,
         unresolved,
         envelopes,
     } = crate::commit::cleanup_evidence(config, &head).await?;
-    // The permissions envelopes a cursor confirmed and the manifest has not
-    // applied, rejected ones included, are what the committer walks: they stay,
-    // by the same walk. An envelope that is not on its chain goes after
-    // `max_envelope_age`, once its lease generation is not the cursor's. What
-    // has no cursor read, or a chain that does not reach the applied envelope,
-    // is kept.
-    let manifest = crate::commit::previous_manifest(store.as_ref(), &root, &head).await?;
+    let policy: fyrr_core::publication::PolicyArtifact =
+        fyrr_reader::storage::artifact(store.as_ref(), &root, &head.policy).await?;
+    // The permissions chains are walked as the committer walks them: what is on
+    // a chain stays, and so does what the committer waits on. An envelope that
+    // is dead goes after `max_envelope_age`.
     let listed: BTreeMap<_, _> = envelopes
         .iter()
         .filter(|(_, e)| e.kind == SyncKind::Permissions && e.namespace == config.namespace.name)
         .map(|(_, e)| (e.envelope_id.clone(), e.clone()))
         .collect();
-    let mut on_chain = BTreeSet::new();
-    let mut generations = BTreeMap::new();
-    let mut blocked = BTreeSet::new();
-    for (source, cursor) in cursors {
-        let applied_id = manifest
-            .as_ref()
-            .and_then(|m| m.authorization_applied.get(&source));
-        match crate::commit::walk(
-            config,
-            store.as_ref(),
-            &root,
-            &source,
-            cursor.last.map(|last| last.id),
-            applied_id,
-            &listed,
-            &|id: &str| -> Result<bool> { Ok(applied.contains(id)) },
-        )
-        .await?
-        {
-            Some(walk) => {
-                on_chain.extend(walk.ids);
-                generations.insert(source, cursor.lease.as_ref().map_or(0, |lease| lease.epoch));
-            }
-            None => {
-                blocked.insert(source);
-            }
-        }
-    }
-    let confirmed = |envelope: &PreparedEnvelope| {
-        on_chain.contains(&envelope.envelope_id)
-            || blocked.contains(&envelope.source_id)
-            || generations
-                .get(&envelope.source_id)
-                .is_none_or(|epoch| envelope.lease_generation >= *epoch)
+    let sources = listed.values().map(|e| e.source_id.clone()).collect();
+    let (chains, _) = crate::commit::chains(
+        config,
+        &head,
+        &policy,
+        &sources,
+        &listed,
+        &|id: &str| -> Result<bool> { Ok(applied.contains(id)) },
+    )
+    .await?;
+    let facts = crate::commit::Facts {
+        applied: &applied,
+        rejected: &published_rejected,
+        retired: &policy.retired_sources,
+        chains: &chains,
     };
+    let on_chain = |envelope: &PreparedEnvelope| {
+        matches!(
+            chains.get(&envelope.source_id),
+            Some(crate::commit::Chain::Whole { ids, .. }) if ids.contains(&envelope.envelope_id)
+        )
+    };
+    let envelopes: Vec<_> = envelopes
+        .into_iter()
+        .map(|(path, envelope)| {
+            let state = crate::commit::classify(&envelope, &facts);
+            (path, envelope, state)
+        })
+        .collect();
     let mut latest_applied = BTreeMap::new();
     let mut latest = BTreeMap::new();
     let mut keep_multipart = BTreeSet::new();
-    for (_, envelope) in &envelopes {
+    for (_, envelope, state) in &envelopes {
+        let resolved = matches!(state, State::Applied | State::Rejected);
         // The newest permissions envelope that counts is one that
         // was resolved or the cursor holds: one that is off its chain does not.
-        if envelope.kind != SyncKind::Permissions
-            || applied.contains(&envelope.envelope_id)
-            || on_chain.contains(&envelope.envelope_id)
-        {
+        if envelope.kind != SyncKind::Permissions || resolved || on_chain(envelope) {
             latest
                 .entry((envelope.source_id.clone(), envelope.kind.as_str()))
                 .and_modify(|seq: &mut u64| *seq = (*seq).max(envelope.sequence))
                 .or_insert(envelope.sequence);
         }
-        if applied.contains(&envelope.envelope_id)
-            && crate::apply::complete_read(envelope)
-            && !published_rejected.contains(&envelope.envelope_id)
-        {
+        if *state == State::Applied && crate::apply::complete_read(envelope) {
             latest_applied
                 .entry((envelope.source_id.clone(), envelope.kind.as_str()))
                 .and_modify(|seq: &mut u64| *seq = (*seq).max(envelope.sequence))
                 .or_insert(envelope.sequence);
         }
-        if !applied.contains(&envelope.envelope_id) {
+        if !resolved {
             match &envelope.payload {
                 EnvelopePayload::Reconcile(p) => {
                     keep_multipart.insert((
@@ -549,7 +529,7 @@ pub(crate) async fn cleanup_held(
         }
     }
     let mut retired = Vec::new();
-    for (path, envelope) in envelopes {
+    for (path, envelope, state) in envelopes {
         if retired.len() as u64 >= config.writer.commit.group_max_rows {
             break;
         }
@@ -559,15 +539,14 @@ pub(crate) async fn cleanup_held(
             _ => None,
         };
         let key = (envelope.source_id.clone(), envelope.kind.as_str());
-        let resolved = applied.contains(&envelope.envelope_id);
-        // A permissions envelope that is not on its chain, and whose lease
-        // generation is over, is dead: it goes whatever else says to keep it.
-        let dead = envelope.kind == SyncKind::Permissions && !resolved && !confirmed(&envelope);
+        let resolved = matches!(state, State::Applied | State::Rejected);
+        // A dead envelope goes whatever else says to keep it.
+        let dead = state == State::Dead;
         let kept = latest.get(&key) == Some(&envelope.sequence)
             || unresolved.contains(&envelope.envelope_id)
             || latest_applied.get(&key) == Some(&envelope.sequence)
             || !resolved
-            || on_chain.contains(&envelope.envelope_id)
+            || on_chain(&envelope)
             || multipart.is_some_and(|id| {
                 keep_multipart.contains(&(
                     envelope.source_id.clone(),
