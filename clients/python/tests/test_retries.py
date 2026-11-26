@@ -261,13 +261,6 @@ def test_a_key_is_stripped_checked_and_never_shown() -> None:
         assert secret not in str(raised.value) and "kéy" not in str(raised.value)
 
 
-def test_a_scim_error_without_a_type_has_no_code() -> None:
-    script = Script(httpx.Response(403, json={"schemas": [], "status": "403", "detail": "no"}))
-    with pytest.raises(FyrrError) as raised:
-        client(script).delete_namespace("ns")
-    assert raised.value.code is None
-
-
 def test_a_missing_writer_url_is_refused() -> None:
     with pytest.raises(ValueError, match="writer_url"):
         Client(READER, api_key="k").write("ns", WRITE)

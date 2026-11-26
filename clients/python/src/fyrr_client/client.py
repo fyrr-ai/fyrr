@@ -43,7 +43,7 @@ FIRST_CHARACTERS = "0123456789abcdefghijklmnopqrstuvwxyz"
 
 
 class FyrrError(Exception):
-    """An error answer: `{"error": "<code>"}` of the API, or a SCIM error."""
+    """An error answer: `{"error": "<code>"}` of the API."""
 
     def __init__(self, status: int, code: str | None, retry_after: float | None = None) -> None:
         super().__init__(f"{status} {code}" if code else str(status))
@@ -157,7 +157,7 @@ class _Base:
             return body
         code = None
         if isinstance(body, dict):
-            code = body.get("error") or body.get("scimType")
+            code = body.get("error")
         raise FyrrError(response.status_code, code, _retry_after(response))
 
 

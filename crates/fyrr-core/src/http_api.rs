@@ -215,8 +215,7 @@ pub struct DeleteNamespaceResponse {
     pub deleted: bool,
 }
 
-/// The body of an error answer of the reader and of the write route. The
-/// namespace deletion answers a SCIM error instead.
+/// The body of an error answer of the reader and of the writer's namespace routes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ErrorBody {
     /// A code that [`docs/http-api.md`](../docs/http-api.md) lists.

@@ -161,7 +161,8 @@ durable, not only when its request arrived, so a request that was accepted
 before the switch but had not written its envelope yet is refused too. An
 envelope that was durable before the switch is still committed, also after it.
 The committer holds the namespace lease while it publishes, so a switch made
-then answers `503` (`temporarilyUnavailable`) and is repeated.
+then answers `503 busy` and is repeated. `PATCH` and `DELETE` of a namespace answer
+errors as the [write route](#write-documents) does, `{"error":"<code>"}`.
 
 The check and the write of an envelope are not atomic with the switch: a
 request whose check ran before the switch was published can still write its

@@ -642,25 +642,34 @@ async fn http_delete_needs_an_admin_key_and_the_repeated_name_on_local_storage()
     let status = |request: reqwest::RequestBuilder| async move {
         request.send().await.unwrap().status().as_u16()
     };
-    assert_eq!(status(client.delete(&url).json(&body)).await, 401);
+    // Every refusal is the standard error shape: `{"error": "<code>"}`.
+    let refused = |request: reqwest::RequestBuilder| async move {
+        let answer = request.send().await.unwrap();
+        let code = answer.status().as_u16();
+        (code, answer.json::<serde_json::Value>().await.unwrap())
+    };
     assert_eq!(
-        status(client.delete(&url).bearer_auth(&reader).json(&body)).await,
-        403
+        refused(client.delete(&url).json(&body)).await,
+        (401, json!({"error": "unauthorized"}))
     );
     assert_eq!(
-        status(client.delete(&url).bearer_auth(&admin)).await,
-        400,
+        refused(client.delete(&url).bearer_auth(&reader).json(&body)).await,
+        (403, json!({"error": "forbidden"}))
+    );
+    assert_eq!(
+        refused(client.delete(&url).bearer_auth(&admin)).await,
+        (400, json!({"error": "body_invalid"})),
         "no name in the body"
     );
     assert_eq!(
-        status(
+        refused(
             client
                 .delete(&url)
                 .bearer_auth(&admin)
                 .json(&json!({"namespace": "another"}))
         )
         .await,
-        400
+        (400, json!({"error": "body_invalid"}))
     );
     assert!(
         fyrr_reader::storage::optional_head(&config)

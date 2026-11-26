@@ -1184,10 +1184,38 @@ async fn identity_write_api_freezes_a_namespace_and_commits_what_it_accepted_bef
         (200, json!({"upserted": 1, "deleted": 0}))
     );
     // Only a key with the `admin` role switches it, and only for a namespace it names.
-    assert_eq!(writer.freeze(WRITE_KEY, namespace, true).await.0, 403);
-    assert_eq!(writer.freeze(READ_KEY, namespace, true).await.0, 403);
-    assert_eq!(writer.freeze(ADMIN_KEY, "Not_a_name", true).await.0, 404);
-    assert_eq!(writer.freeze(ADMIN_KEY, "no-such-one", true).await.0, 404);
+    let forbidden = (403, json!({"error": "forbidden"}));
+    let not_found = (404, json!({"error": "not_found"}));
+    assert_eq!(writer.freeze(WRITE_KEY, namespace, true).await, forbidden);
+    assert_eq!(writer.freeze(READ_KEY, namespace, true).await, forbidden);
+    assert_eq!(
+        writer.freeze(ADMIN_KEY, "Not_a_name", true).await,
+        not_found
+    );
+    assert_eq!(
+        writer.freeze(ADMIN_KEY, "no-such-one", true).await,
+        not_found
+    );
+    // A deletion names its namespace by the path too, and answers as the switch does.
+    let delete = |name: &'static str| {
+        let writer = &writer;
+        async move {
+            let response = writer
+                .client
+                .delete(format!("{}/v1/namespaces/{name}", writer.base))
+                .bearer_auth(secret(ADMIN_KEY))
+                .json(&json!({ "namespace": name }))
+                .send()
+                .await
+                .unwrap();
+            (
+                response.status().as_u16(),
+                response.json::<Value>().await.unwrap(),
+            )
+        }
+    };
+    assert_eq!(delete("Not_a_name").await, not_found);
+    assert_eq!(delete("no-such-one").await, (200, json!({"deleted": true})));
 
     // The committer finds the lease taken and publishes nothing until it is
     // released: the request below is accepted, its envelope durable, and the

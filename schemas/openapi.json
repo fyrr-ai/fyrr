@@ -130,7 +130,7 @@
             }
           },
           "default": {
-            "$ref": "#/components/responses/ScimError"
+            "$ref": "#/components/responses/Error"
           }
         },
         "requestBody": {
@@ -168,7 +168,7 @@
             }
           },
           "default": {
-            "$ref": "#/components/responses/ScimError"
+            "$ref": "#/components/responses/Error"
           }
         },
         "requestBody": {
@@ -411,38 +411,6 @@
           "application/json": {
             "schema": {
               "$ref": "#/components/schemas/ErrorBody"
-            }
-          }
-        }
-      },
-      "ScimError": {
-        "description": "A SCIM error (`application/scim+json`).",
-        "content": {
-          "application/json": {
-            "schema": {
-              "type": "object",
-              "required": [
-                "schemas",
-                "status",
-                "detail"
-              ],
-              "properties": {
-                "schemas": {
-                  "const": [
-                    "urn:ietf:params:scim:api:messages:2.0:Error"
-                  ]
-                },
-                "status": {
-                  "type": "string",
-                  "description": "The HTTP status."
-                },
-                "detail": {
-                  "type": "string"
-                },
-                "scimType": {
-                  "type": "string"
-                }
-              }
             }
           }
         }
@@ -3475,7 +3443,7 @@
         "required": [
           "error"
         ],
-        "description": "The body of an error answer of the reader and of the write route. The\nnamespace deletion answers a SCIM error instead."
+        "description": "The body of an error answer of the reader and of the writer's namespace routes."
       }
     }
   }

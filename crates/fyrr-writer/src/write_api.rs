@@ -136,9 +136,9 @@ impl WriteApi {
 const LEASE_WAIT_TRIES: u32 = 50;
 const LEASE_WAIT: Duration = Duration::from_millis(100);
 
-struct ApiError(u16, &'static str);
+pub(crate) struct ApiError(pub(crate) u16, pub(crate) &'static str);
 impl ApiError {
-    fn response(self) -> Response {
+    pub(crate) fn response(self) -> Response {
         let mut reply = (
             StatusCode::from_u16(self.0).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
             Json(json!({ "error": self.1 })),

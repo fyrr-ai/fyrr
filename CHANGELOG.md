@@ -9,6 +9,10 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Changed
 
+- `PATCH` and `DELETE /v1/namespaces/{namespace}` answer `{"error":"<code>"}`
+  for every status, as the other routes do, not a SCIM error; `DELETE` admits
+  the key against the namespace of its path, as `PATCH` does. The clients no
+  longer read `scimType`.
 - One analyzer cuts the text of a namespace for its index, its highlights and
   its excerpts. The keys `fts_stem`, `fts_remove_stop_words`,
   `fts_ascii_folding` and `fts_max_token_length` are gone (a file that sets one

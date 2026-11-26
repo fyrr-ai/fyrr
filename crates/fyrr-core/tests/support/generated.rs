@@ -143,7 +143,7 @@ fn openapi() -> Value {
                 "writer",
                 "Freeze a namespace or thaw it",
                 "an API key with the `admin` role",
-                "ScimError",
+                "Error",
                 Some(requests.subschema_for::<PatchNamespaceRequest>()),
                 answers.subschema_for::<PatchNamespaceResponse>(),
             ),
@@ -151,7 +151,7 @@ fn openapi() -> Value {
                 "writer",
                 "Delete a namespace and its data",
                 "an API key with the `admin` role",
-                "ScimError",
+                "Error",
                 Some(requests.subschema_for::<DeleteNamespaceRequest>()),
                 answers.subschema_for::<DeleteNamespaceResponse>(),
             ),
@@ -272,22 +272,6 @@ fn openapi() -> Value {
                 "Error": json_body(
                     error,
                     "An error: an HTTP status and `{\"error\":\"<code>\"}`; docs/http-api.md lists the codes.",
-                ),
-                // The writer's admin listener answers the namespace deletion
-                // with a SCIM error (RFC 7644, section 3.12), as it does its
-                // SCIM routes.
-                "ScimError": json_body(
-                    json!({
-                        "type": "object",
-                        "required": ["schemas", "status", "detail"],
-                        "properties": {
-                            "schemas": {"const": ["urn:ietf:params:scim:api:messages:2.0:Error"]},
-                            "status": {"type": "string", "description": "The HTTP status."},
-                            "detail": {"type": "string"},
-                            "scimType": {"type": "string"},
-                        },
-                    }),
-                    "A SCIM error (`application/scim+json`).",
                 ),
             },
             "schemas": schemas,

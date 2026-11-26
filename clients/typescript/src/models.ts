@@ -999,10 +999,7 @@ export interface WriteResponse {
   skipped?: number | bigint | null;
 }
 
-/**
- * The body of an error answer of the reader and of the write route. The
- * namespace deletion answers a SCIM error instead.
- */
+/** The body of an error answer of the reader and of the writer's namespace routes. */
 export interface ErrorBody {
   /** A code that [`docs/http-api.md`](../docs/http-api.md) lists. */
   error: string;
