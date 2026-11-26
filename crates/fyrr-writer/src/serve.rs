@@ -267,7 +267,15 @@ async fn maintain(config: fyrr_core::config::Config, commits: Arc<crate::write_a
     eprintln!("writer_service event=maintenance_started");
     match crate::maintenance::maintain_serving(&config, false, Some(&commits)).await {
         Ok(done) => {
-            eprintln!("writer_service event=maintained");
+            let yielded = done["yielded"].as_bool().unwrap_or(false);
+            eprintln!(
+                "writer_service event={}",
+                if yielded {
+                    "maintenance_yielded"
+                } else {
+                    "maintained"
+                }
+            );
             for (step, key) in [
                 ("compaction", "compaction_steps"),
                 ("index_merge", "index_merge_steps"),

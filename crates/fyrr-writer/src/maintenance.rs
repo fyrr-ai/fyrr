@@ -197,6 +197,13 @@ pub(crate) async fn maintain_serving(
     crate::lease::LeaseGuard::with(config, |lease| async move {
         let mut history = commit::RestoreHistory::new(config)?;
         let mut result = maintain_held(config, &lease, &mut history, rebalance, writes).await;
+        // A request that needs the lease itself ends the run between two steps.
+        if result
+            .as_ref()
+            .is_err_and(|error| *error == WriterError::MaintenanceYielded)
+        {
+            result = Ok(serde_json::json!({"yielded":true}));
+        }
         // Every expired native step yields to authorization, including storage
         // reads during purge/compaction/index planning before cleanup begins.
         if result

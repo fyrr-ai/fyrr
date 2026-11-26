@@ -66,6 +66,8 @@ pub(crate) struct Commits {
     pub(crate) requested: Notify,
     pub(crate) done: watch::Sender<u64>,
     waiting: std::sync::Mutex<BTreeMap<String, usize>>,
+    /// When a request last wanted the lease of a namespace for itself.
+    leased: std::sync::Mutex<BTreeMap<String, std::time::Instant>>,
 }
 impl Commits {
     pub(crate) fn new() -> Self {
@@ -73,6 +75,7 @@ impl Commits {
             requested: Notify::new(),
             done: watch::channel(0).0,
             waiting: std::sync::Mutex::default(),
+            leased: std::sync::Mutex::default(),
         }
     }
     /// The namespaces with a request that waits for its publication.
@@ -91,6 +94,13 @@ impl Commits {
         config: &Config,
         lease: &crate::lease::LeaseGuard,
     ) -> crate::Result<()> {
+        if self.leased.lock().is_ok_and(|leased| {
+            leased
+                .get(&config.namespace.name)
+                .is_some_and(|at| at.elapsed() < LEASE_WANTED)
+        }) {
+            return Err(crate::WriterError::MaintenanceYielded);
+        }
         let head = lease.head().await?;
         if crate::commit::pending(config, &head).await?.is_empty() {
             return Ok(());
@@ -106,6 +116,13 @@ impl Commits {
         );
         self.done.send_modify(|rounds| *rounds += 1);
         Ok(())
+    }
+    /// A request that needs the lease, as a schema change or a freeze does, says so: a run
+    /// of maintenance that holds it ends at its next step and hands it over.
+    pub(crate) fn want_lease(&self, name: &str) {
+        if let Ok(mut leased) = self.leased.lock() {
+            leased.insert(name.to_owned(), std::time::Instant::now());
+        }
     }
     fn wait(&self, name: &str) -> Waiting<'_> {
         if let Ok(mut waiting) = self.waiting.lock() {
@@ -160,6 +177,8 @@ impl WriteApi {
 /// How long a schema change waits for the lease: tries, and the pause between them.
 const LEASE_WAIT_TRIES: u32 = 50;
 const LEASE_WAIT: Duration = Duration::from_millis(100);
+/// How long after a request that wanted the lease a run of maintenance still hands it over.
+const LEASE_WANTED: Duration = Duration::from_secs(2);
 
 struct ApiError(u16, &'static str);
 impl ApiError {
@@ -1187,11 +1206,10 @@ fn change_schema_waiting<'a>(
     change: impl Fn(&NamespaceSettings) -> Result<NamespaceSettings> + Send + Sync + 'a,
 ) -> futures::future::BoxFuture<'a, Result<()>> {
     Box::pin(async move {
-        // A run of maintenance that holds the lease ends after its step: the change waits
-        // for it as a write does.
-        let _waiting = commits.wait(&config.namespace.name);
         let mut waited = 0;
         loop {
+            // A run of maintenance that holds the lease ends at its next step.
+            commits.want_lease(&config.namespace.name);
             let changed = crate::commit::change_schema(config, |held, current| {
                 if held.incarnation != incarnation {
                     return Err(WriterError::NamespaceChanged);
