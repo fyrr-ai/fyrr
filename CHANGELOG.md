@@ -158,6 +158,9 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Added
 
+- The MCP `search` tool takes `phrase`, as the JSON `query` route does: the
+  tokens of its `text` occur in a hit next to one another, in a namespace with
+  `fts_positions`. `tools/list` describes it.
 - `[namespace.analyzer]` gives the full-text index of `searchable_text` the
   settings of an attribute's analyzer: the tokenizer (`simple`, `whitespace`,
   `unicode`, `ngram`), one of 18 languages for stemming and stop words, stop

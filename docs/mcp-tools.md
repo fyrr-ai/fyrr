@@ -80,6 +80,7 @@ empty result is not an error. Scores only order results.
 | `attributes` | 1–16 connector attributes as `{ key, values }` (a key of 1–128 characters, 1–64 values of 1–384 characters each): equality or IN within one key, AND across keys. |
 | `exclude` | 1–100 `{ source_id, root_id }` pairs to leave out. |
 | `filter` | A tree of `and`, `or`, `not` and comparisons with at most 64 nodes; a hit must also match every argument above. See [Filters](#filters). |
+| `phrase` | `{ text, slop }`: the tokens of `text`, 1–4096 UTF-8 bytes, occur in the text of a hit next to one another in this order, as the index of `searchable_text` cuts them. A hit must also match the filters. Needs `query`, `queries` or `vector`, and a namespace created with `fts_positions = true`; else `invalid_argument`. `slop` accepts only 0, the default. See [the JSON `phrase`](http-api.md#matching-tokens). |
 | `deadline_ms` | 1–300000; default 10 s. |
 
 Each hit has `source_id`, [`root_id`](architecture.md#terms), [`record_id`](architecture.md#terms), `revision`, `source_uri`,
