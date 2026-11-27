@@ -84,11 +84,11 @@ pub(crate) enum State {
     /// It waits until the permissions chain of its source is whole: its source
     /// must not publish with rights that chain may have revoked.
     Blocked,
-    /// A permissions envelope that is not on the chain its cursor confirmed,
-    /// of a lease generation not older than the cursor's: a cursor may still
+    /// A chained envelope that is not on the chain its cursor confirmed, of a
+    /// lease generation not older than the cursor's: a cursor may still
     /// confirm it. A caller that walked no chain sees every one as this.
     Unconfirmed,
-    /// A permissions envelope that is not on its chain, of an older lease
+    /// A chained envelope that is not on its chain, of an older lease
     /// generation than the cursor's: nothing confirms it, ever.
     Dead,
 }
@@ -105,7 +105,7 @@ pub(crate) struct Facts<'a> {
     pub(crate) chains: &'a BTreeMap<String, Chain>,
 }
 
-/// What the walk of the permissions chain of a source found.
+/// What the walk of the chain of a source found.
 pub(crate) enum Chain {
     /// It reaches what the manifest applied: every link after that, and the
     /// lease generation of the cursor.
@@ -117,10 +117,10 @@ pub(crate) enum Chain {
     Broken,
 }
 
-/// The state of `envelope`. Members wait on nothing; content and a listing,
-/// which derives deletes, wait on a broken chain; a permissions envelope is
-/// pending only on the chain its cursor confirmed, and one of a retired source
-/// is pending until the committer rejects it.
+/// The state of `envelope`. A chained envelope is pending only on the chain
+/// its cursor confirmed, and one of a retired source is pending until the
+/// committer rejects it; members wait on nothing; other content and a listing,
+/// which derives deletes, wait on a broken chain.
 pub(crate) fn classify(envelope: &impl Link, facts: &Facts) -> State {
     let (id, source) = (envelope.id(), envelope.source_id());
     if facts.rejected.contains(id) {
@@ -130,21 +130,31 @@ pub(crate) fn classify(envelope: &impl Link, facts: &Facts) -> State {
         return State::Applied;
     }
     let chain = facts.chains.get(source);
-    match envelope.kind() {
-        SyncKind::Members => State::Pending,
-        SyncKind::Content | SyncKind::Reconcile => match chain {
-            Some(Chain::Broken) => State::Blocked,
-            _ => State::Pending,
-        },
-        SyncKind::Permissions if facts.retired.contains_key(source) => State::Pending,
-        SyncKind::Permissions => match chain {
+    if envelope.kind() == chain_kind(source) {
+        return match chain {
+            _ if facts.retired.contains_key(source) => State::Pending,
             Some(Chain::Whole { ids, .. }) if ids.contains(id) => State::Pending,
             Some(Chain::Whole { generation, .. }) if envelope.lease_generation() < *generation => {
                 State::Dead
             }
             Some(Chain::Broken) => State::Blocked,
             _ => State::Unconfirmed,
-        },
+        };
+    }
+    match (envelope.kind(), chain) {
+        (SyncKind::Members, _) => State::Pending,
+        (_, Some(Chain::Broken)) => State::Blocked,
+        _ => State::Pending,
+    }
+}
+
+/// The kind whose envelopes the cursor of `source` confirms, as links of a
+/// chain: the content of the write API, the permissions of any other source.
+pub(crate) fn chain_kind(source: &str) -> SyncKind {
+    if source == fyrr_core::connector::API_SOURCE_ID {
+        SyncKind::Content
+    } else {
+        SyncKind::Permissions
     }
 }
 
@@ -157,11 +167,11 @@ pub(crate) fn synced(config: &Config, source: &str) -> bool {
 }
 
 /// Whether an envelope of `kind` makes the committer walk the chain of its
-/// source: a permissions envelope does, and content or a listing of a source
-/// that syncs its permissions, so that they never publish while its tail is
-/// missing. A source without permission reads has no chain.
+/// source: a chained envelope does, and content or a listing of a source that
+/// syncs its permissions, so that they never publish while its tail is
+/// missing. A connector source without permission reads has no chain.
 pub(crate) fn chained(config: &Config, kind: SyncKind, source: &str) -> bool {
-    kind == SyncKind::Permissions || (kind != SyncKind::Members && synced(config, source))
+    kind == chain_kind(source) || (kind != SyncKind::Members && synced(config, source))
 }
 
 /// The envelopes of `pending` that [`classify`] finds pending, with the links
@@ -187,7 +197,7 @@ pub(crate) async fn confirmed(
         fyrr_reader::storage::artifact(store.as_ref(), &root, &head.policy).await?;
     let (listed, mut kept): (Vec<_>, Vec<_>) = pending
         .into_iter()
-        .partition(|e| e.kind == SyncKind::Permissions);
+        .partition(|e| e.kind == chain_kind(&e.source_id));
     let listed: BTreeMap<_, _> = listed
         .into_iter()
         .map(|e| (e.envelope_id.clone(), e))
@@ -213,7 +223,7 @@ pub(crate) async fn confirmed(
 /// Walks the chain of each of `sources` that is not retired, from the newest
 /// envelope its cursor confirmed back to the newest one the manifest records as
 /// applied: what each chain is, and its links that `resolved` does not tell,
-/// oldest first. `listed` holds permissions envelopes the caller has read.
+/// oldest first. `listed` holds chained envelopes the caller has read.
 pub(crate) async fn chains<L: Link>(
     config: &Config,
     head: &ServingHead,
@@ -230,11 +240,9 @@ pub(crate) async fn chains<L: Link>(
         .iter()
         .filter(|source| !policy.retired_sources.contains_key(*source))
     {
-        let applied = manifest
-            .as_ref()
-            .and_then(|m| m.authorization_applied.get(source));
+        let applied = manifest.as_ref().and_then(|m| m.chain_applied.get(source));
         let cursor =
-            crate::sync_lease::CursorLease::peek(config, source, SyncKind::Permissions).await?;
+            crate::sync_lease::CursorLease::peek(config, source, chain_kind(source)).await?;
         // A missing cursor of a source whose envelopes a worker chained lost
         // what confirmed them: the source is blocked until it is purged.
         let mut lost = false;
@@ -323,7 +331,7 @@ impl Link for PreparedEnvelope {
     }
 }
 
-/// Walks the chain of the permissions of `source` by ID from `last`, the newest
+/// Walks the chain of `source` by ID from `last`, the newest
 /// envelope its cursor confirmed, back to `applied`: `None` when it does not
 /// reach it, or when `last` is missing while an envelope was applied. The
 /// source is then blocked, and nothing is skipped. A link that is not there is
@@ -375,7 +383,7 @@ async fn walk<L: Link>(
                     Ok(envelope)
                         if envelope.envelope_id == id
                             && envelope.namespace == config.namespace.name
-                            && envelope.kind == SyncKind::Permissions =>
+                            && envelope.kind == chain_kind(source) =>
                     {
                         L::from(envelope)
                     }
@@ -413,7 +421,7 @@ pub(crate) async fn permission_log(config: &Config, source: &str) -> Result<(boo
     let (store, root) = namespace_store(config)?;
     let applied = previous_manifest(store.as_ref(), &root, &head)
         .await?
-        .is_some_and(|m| m.authorization_applied.contains_key(source));
+        .is_some_and(|m| m.chain_applied.contains_key(source));
     let (paths, resolved) = envelope_paths(config, &head).await?;
     let mut left = applied;
     let mut generation = 0;
@@ -1506,12 +1514,13 @@ mod classify_tests {
                 purged_at: None,
             },
         )]);
-        let chains = |chain: Option<Chain>| {
+        let chains = |source: &str, chain: Option<Chain>| {
             chain
-                .map(|chain| BTreeMap::from([("source".to_owned(), chain)]))
+                .map(|chain| BTreeMap::from([(source.to_owned(), chain)]))
                 .unwrap_or_default()
         };
         use SyncKind::{Content, Members, Permissions, Reconcile};
+        use fyrr_core::connector::API_SOURCE_ID as API;
         // kind, source, applied, rejected, chain, state
         type Case = (
             SyncKind,
@@ -1584,6 +1593,20 @@ mod classify_tests {
                 Some(whole(&["other"], 2)),
                 Dead,
             ),
+            // The content of the write API is chained as permissions are.
+            (Content, API, &["on"], &[], Some(Chain::Broken), Applied),
+            (Content, API, &[], &[], Some(whole(&["on"], 2)), Pending),
+            (Content, API, &[], &[], Some(Chain::Broken), Blocked),
+            (Content, API, &[], &[], None, Unconfirmed),
+            (
+                Content,
+                API,
+                &[],
+                &[],
+                Some(whole(&["other"], 1)),
+                Unconfirmed,
+            ),
+            (Content, API, &[], &[], Some(whole(&["other"], 2)), Dead),
         ];
         for (kind, source, applied, rejected, chain, state) in cases {
             let mut envelope = base.clone();
@@ -1591,7 +1614,7 @@ mod classify_tests {
             envelope.source_id = source.into();
             envelope.envelope_id = "on".into();
             envelope.lease_generation = 1;
-            let (applied, rejected, chains) = (set(applied), set(rejected), chains(chain));
+            let (applied, rejected, chains) = (set(applied), set(rejected), chains(source, chain));
             let facts = Facts {
                 applied: &applied,
                 rejected: &rejected,

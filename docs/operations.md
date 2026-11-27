@@ -243,7 +243,10 @@ The permission reads of a source form a chain: its cursor names the newest
 read, each envelope names the one before, and the publication names the
 newest one applied. An envelope that no cursor confirmed (a read that failed,
 or whose worker died before it wrote its cursor) is not on the chain and
-publishes nothing: the next read redoes it, with no operator.
+publishes nothing: the next read redoes it, with no operator. The writes of
+the write API form a chain the same way (`cursors/_api-content.json`): a write
+whose process died before its cursor write publishes nothing, and its client
+gets no answer and retries it.
 
 Cursor objects (`cursors/SOURCE_ID-permissions.json`) and envelopes
 (`envelopes/ID.json`) are internal: never delete, copy, edit or restore them

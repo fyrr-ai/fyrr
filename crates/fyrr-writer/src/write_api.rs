@@ -25,7 +25,6 @@ use fyrr_core::connector::{
 };
 use fyrr_core::envelope::{
     BaseHead, DocumentIntent, DocumentPatch, EnvelopeDocument, FilterPatch, FilterWrites,
-    envelope_id,
 };
 use fyrr_core::http_api::WriteResponse;
 use fyrr_core::identity::ApiKeysArtifact;
@@ -1564,7 +1563,6 @@ async fn write_envelope(
     mut changes: Vec<ContentChange>,
     attributes: Vec<(String, ArrayRef)>,
 ) -> Result<(String, String), ApiError> {
-    let (store, root) = fyrr_reader::storage::namespace_store(config)?;
     let mut state = lease.state().await?;
     // The namespace the request was checked against is the one it is written
     // into: another may have taken its place since.
@@ -1573,34 +1571,6 @@ async fn write_envelope(
         .is_none_or(|current| current.incarnation != head.incarnation)
     {
         return Err(ApiError(409, "namespace_changed"));
-    }
-    let (generation, cursor) = (state.rejection_generation, state.cursor.clone());
-    let id_of = |sequence: u64| {
-        envelope_id(
-            &config.namespace.name,
-            API_SOURCE_ID,
-            SyncKind::Content,
-            sequence,
-            generation,
-            cursor.as_deref(),
-        )
-    };
-    // A crash between an envelope and the cursor that counts it leaves the
-    // envelope named by the next sequence: the cursor catches up first.
-    let mut sequence = state.sequence;
-    loop {
-        let next = sequence
-            .checked_add(1)
-            .ok_or(WriterError::CursorSequenceOverflow)?;
-        let path = root
-            .clone()
-            .join("envelopes")
-            .join(format!("{}.json", id_of(next)));
-        match object_store::ObjectStoreExt::head(store.as_ref(), &path).await {
-            Ok(_) => sequence = next,
-            Err(object_store::Error::NotFound { .. }) => break,
-            Err(_) => return Err(ApiError(503, "unavailable")),
-        }
     }
     // A restore moves the boundary that an envelope of the source must have been
     // prepared after, as it does for a connector's cursor.
@@ -1611,15 +1581,16 @@ async fn write_envelope(
         .map(|m| m.restore_sequence)
         .max()
         .unwrap_or(0);
-    if sequence != state.sequence || boundary > state.restore_sequence {
-        state.sequence = sequence;
-        state.restore_sequence = state.restore_sequence.max(boundary);
+    if boundary > state.restore_sequence {
+        state.restore_sequence = boundary;
         lease.write(state.clone()).await?;
     }
-    let sequence = sequence
+    // An envelope that a crash left before the cursor confirmed it is not on
+    // the chain: the next one takes its sequence under a new lease generation.
+    let sequence = state
+        .sequence
         .checked_add(1)
         .ok_or(WriterError::CursorSequenceOverflow)?;
-    let id = id_of(sequence);
     // Every revision of the source is newer than the one before it.
     let revision = i64::try_from(sequence).map_err(|_| WriterError::CursorSequenceOverflow)?;
     for change in &mut changes {
@@ -1670,6 +1641,7 @@ async fn write_envelope(
         attributes,
     )
     .await?;
+    let id = state.last.ok_or(WriterError::EnvelopeInvalid)?.id;
     Ok((id, format!("rev-{sequence}")))
 }
 

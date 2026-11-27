@@ -122,11 +122,13 @@ pub(crate) async fn commit_one(
         .await?;
     work.apply_non_content(&mut head, non_content, &mut receipts, sequence)
         .await?;
-    // The newest chained permissions envelope of each source applied: native
-    // apply refuses content only.
-    let mut permissions = BTreeMap::new();
-    for e in envelopes.iter().filter(|e| e.kind == SyncKind::Permissions) {
-        permissions.insert(e.source_id.clone(), e.envelope_id.clone());
+    // The newest chained envelope of each source resolved, in sequence order.
+    let mut chained = BTreeMap::new();
+    for e in envelopes
+        .iter()
+        .filter(|e| e.kind == chain_kind(&e.source_id))
+    {
+        chained.insert(e.source_id.clone(), e.envelope_id.clone());
     }
     stage(stage_timings, "data_commit", data_start);
     let native::ContentWork {
@@ -175,7 +177,7 @@ pub(crate) async fn commit_one(
         head,
         lineage,
         receipts,
-        permissions,
+        chained,
         acl_changed,
         Vec::new(),
         false,
