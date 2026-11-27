@@ -64,8 +64,9 @@ cargo() {
 # Fetch the pinned archive of <name> (protoc, helm, cargo-deny) into
 # target/tools/<name> once and verify its checksum. pins.env names the archive
 # per build host as <NAME>_URL_<ARCH> and <NAME>_SHA256_<ARCH>. The stamp,
-# written last, holds the checksum of every extracted file, so a missing or
-# damaged file and an unfinished extraction fetch the archive again.
+# written last, holds the mode and checksum of every extracted file, so a
+# missing, damaged or non-executable file and an unfinished extraction fetch
+# the archive again.
 ensure_tool() {
   local name="$1" pin arch dir="$TOOLS_DIR/$1" tmp rc=0
   pin="${name^^}"
@@ -74,7 +75,8 @@ ensure_tool() {
   local url_var="${pin}_URL_${arch^^}" sha_var="${pin}_SHA256_${arch^^}"
   [[ -n "${!url_var:-}" ]] || die "no pinned $name for $arch"
   local url="${!url_var}" sha="${!sha_var}"
-  if (cd "$dir" 2>/dev/null && sha256sum -c --status ".$sha" &>/dev/null); then
+  inventory() { (cd "$dir" && find . -type f ! -path "./.$sha" -printf '%m ' -exec sha256sum {} \; | LC_ALL=C sort); }
+  if [[ -f "$dir/.$sha" ]] && cmp -s "$dir/.$sha" <(inventory); then
     return 0
   fi
   log "fetching $name"
@@ -87,7 +89,7 @@ ensure_tool() {
         *.zip) unzip -q "$tmp/archive" -d "$dir" ;;
         *) tar -xzf "$tmp/archive" --strip-components=1 -C "$dir" ;;
       esac &&
-      (cd "$dir" && find . -type f -exec sha256sum {} + >"$tmp/stamp") &&
+      inventory >"$tmp/stamp" &&
       mv "$tmp/stamp" "$dir/.$sha"
   } || rc=$?
   rm -rf "$tmp"
