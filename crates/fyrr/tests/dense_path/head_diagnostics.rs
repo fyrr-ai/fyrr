@@ -8,7 +8,12 @@ use std::sync::{
 #[test]
 #[ignore = "real S3 conditional write, untrusted HTTP response and CLI privacy sandbox"]
 fn conditional_head_failure_classifies_untrusted_storage_error_on_real_s3() {
-    let (config, root, _) = super::tools::fixture();
+    // The faulted commit needs synced rows to publish: a commit with nothing
+    // to publish takes no lease, so it never releases one.
+    let (config, root) = setup();
+    success(&config, &["writer", "namespace", "create"]);
+    let synced = run(&config, &["writer", "sync"]);
+    assert!(synced.status.success(), "{}", report(&synced));
     let sandbox = common::Sandbox::new("conditional-head-privacy");
     let mut sentinels = common::Sentinels::new();
     let marker = sentinels.mark("storage-error-body");
