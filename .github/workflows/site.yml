@@ -5,9 +5,9 @@ name: site
 on:
   push:
     branches: ["main"]
-    paths: ["site/**", "docs/**", ".github/workflows/site.yml"]
+    paths: ["site/**", "docs/**", "README.md", "scripts/check-docs", ".github/workflows/site.yml"]
   pull_request:
-    paths: ["site/**", "docs/**", ".github/workflows/site.yml"]
+    paths: ["site/**", "docs/**", "README.md", "scripts/check-docs", ".github/workflows/site.yml"]
 
 permissions:
   contents: read
@@ -30,6 +30,8 @@ jobs:
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version: 1.4.4
+      - name: Generated docs match their sources
+        run: ../scripts/check-docs --static
       - run: bun install --frozen-lockfile
       - run: bun run test:compare
       - run: bun run build

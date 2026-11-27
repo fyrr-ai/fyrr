@@ -10,7 +10,7 @@
 
 ## Prepare the namespace
 
-Use Linux x86-64 images from the same release. The example uses the `0.1.0`
+Use Linux x86-64 images from the same release. The example uses the `0.1.1`
 release image names. Resolve and pin their digests before deploying. Replace
 `ACCOUNT_ID`, `KEY_ID`, bucket, prefix, namespace and service URLs throughout.
 Use one region, here `eu-central-1`, and a private SSE-S3 bucket.
@@ -68,7 +68,7 @@ Save this as `Dockerfile`. The matching full image supplies Python's standard
 library for secret retrieval. The final image runs the reader executable.
 
 ```dockerfile
-FROM ghcr.io/fyrr-ai/fyrr:0.1.0 AS runtime
+FROM ghcr.io/fyrr-ai/fyrr:0.1.1 AS runtime
 USER root
 RUN mkdir -p /runtime/bin /runtime/lib && \
     cp /usr/local/bin/python3.13 /runtime/bin/python3 && \
@@ -76,7 +76,7 @@ RUN mkdir -p /runtime/bin /runtime/lib && \
     cp -a /usr/local/lib/python3.13 /runtime/lib/ && \
     rm -rf /runtime/lib/python3.13/site-packages
 FROM public.ecr.aws/awsguru/aws-lambda-adapter:0.9.1@sha256:46d6625e68cbbdd2efab4a20245977664513f13ffef47915b000d431adcea0b4 AS adapter
-FROM ghcr.io/fyrr-ai/fyrr-reader:0.1.0
+FROM ghcr.io/fyrr-ai/fyrr-reader:0.1.1
 COPY --from=runtime /runtime /usr/local
 COPY --from=runtime /usr/lib/x86_64-linux-gnu/libssl.so.3 /usr/lib/x86_64-linux-gnu/libcrypto.so.3 /usr/lib/x86_64-linux-gnu/libz.so.1 /usr/lib/x86_64-linux-gnu/
 COPY --from=adapter /lambda-adapter /opt/extensions/lambda-adapter

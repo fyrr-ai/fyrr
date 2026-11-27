@@ -275,43 +275,9 @@ every source until it is removed or put back
 
 ## Upgrades
 
-The current configuration schema is `6.0`, the MCP contract is `4.0`, the prepared-envelope and
-rejection contracts are `6.0`, content manifests are `6.0`, serving heads are
-`4.1`, and policy artifacts are `5.0`. Each contract has one major; this build
-refuses every other. Embedding settings are required even
-for the default BGE-M3 model. Republish older namespaces before using this
-build.
-
-v0.2.0 refuses every local storage root that v0.1.x or an earlier build wrote,
-with `storage_root_old`: the root holds `.fyrr-storage.lock` or
-`.fyrr-storage.stage`, which this build never creates. Recreate its namespaces
-in a new root with v0.2.0. Remove the two files only once no older writer runs.
-A namespace that v0.1.x or an earlier build wrote is refused with
-`namespace_layout_old`, in any root, S3 included: one of its stored contracts (the serving
-head, the policy, the manifest) is of an older major than v0.2.0 writes. Recreate the namespace
-under a new name with v0.2.0 (`writer namespace create`), sync its sources again
-and write again what was written through the API. Or, after stopping every
-writer of the namespace and keeping a recoverable copy, delete its
-`namespaces/<name>/` prefix and recreate it under the same name. The command line prints what to do under
-`error: <code>`.
-
-Configuration schema `4.0` changed the default retrieval policy to
-`dense_weight = 0.5` and `lexical_candidates = 200`. A namespace created from
-a file that omits them gets those values. An existing namespace keeps the
-policy it was created with; its readers and writers use it whatever their
-files say.
-
-Configuration schema `6.0` removes `reader.version_check`,
-`reader.per_request_wait` and `identity.validity_deadline`; delete all three
-keys. The reader checks for a new version every `reader.version_check_interval`
-and catches up by itself after it did not run. The reader has no clock: results
-change only with a new publication. The serving head (`4.1`), the prepared envelope (`6.0`) and the identity
-artifact (`2.0`) carry no
-freshness instants and MCP `4.0` has no `metadata.hidden_sources`. Republish
-older namespaces.
-
-Contracts carry `major.minor` versions; a new minor reads older data. These
-changes need a fresh namespace instead: a new contract major, and any change
+Contracts carry `major.minor` versions; a new minor reads older data. A
+contract major needs a fresh namespace; the [changelog](../CHANGELOG.md)
+records the contract changes of each release. So does any change
 of the settings a namespace is created with: the embedding `model`,
 `dimensions`, prefixes, `roles` and `send_dimensions`, the analyzer
 (`namespace.analyzer`, `fts_positions`), the vector index, composition, retrieval and the reranker's `model`,
