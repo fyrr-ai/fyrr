@@ -119,7 +119,7 @@ pub(super) async fn content_page(
     }
     lease.state().await?;
     lease.persist_observed().await?;
-    crate::commit::ensure_writable(config).await?;
+    crate::commit::ensure_writable(config, SyncKind::Content).await?;
     put_immutable(store.as_ref(), &envelope_path, &envelope).await?;
     record(state, &envelope);
     lease.write(state.clone()).await?;

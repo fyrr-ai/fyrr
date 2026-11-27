@@ -480,8 +480,9 @@ pub(super) fn publish_initial(worker: &Path, commit: &Path, root: &Path) {
     publish(commit);
 }
 
-/// A frozen namespace takes no sync, whatever the source, and still commits the
-/// envelope that was prepared before the switch; thawed, it syncs again.
+/// A frozen namespace takes no content sync, whatever the source, and still
+/// commits the envelope that was prepared before the switch; thawed, it syncs
+/// again.
 #[tokio::test]
 #[ignore = "real CLI and local storage; scripts/ci"]
 async fn incremental_read_only_namespace_refuses_syncs_and_commits_what_was_prepared_on_storage() {
@@ -504,8 +505,8 @@ async fn incremental_read_only_namespace_refuses_syncs_and_commits_what_was_prep
         "freezing twice changes nothing"
     );
 
-    // A sync of any source is refused with one named error, before the provider
-    // reads anything.
+    // A content sync of any source is refused with one named error, before the
+    // provider reads anything.
     input(
         &root,
         json!({"epoch":3,"content":[[doc("d","r1","fixture document 3")]]}),
@@ -513,7 +514,7 @@ async fn incremental_read_only_namespace_refuses_syncs_and_commits_what_was_prep
     let before = envelopes(&worker).await.len();
     for source in ["incremental", "allowed"] {
         let refused = worker_command(&worker)
-            .args(["writer", "sync", source, "--full"])
+            .args(["writer", "sync", source, "--kind", "content", "--full"])
             .output()
             .unwrap();
         assert!(!refused.status.success(), "{source}");
@@ -551,6 +552,58 @@ async fn incremental_read_only_namespace_refuses_syncs_and_commits_what_was_prep
         source_roots(&worker, "incremental").await,
         ["a", "b", "c", "d"]
     );
+}
+
+/// A frozen namespace still takes a revoke: a permission sync is prepared and
+/// committed, and readers no longer see the document; content stays frozen
+/// (#163).
+#[tokio::test]
+#[ignore = "real CLI and local storage; scripts/ci"]
+async fn incremental_read_only_namespace_publishes_a_revoke_and_refuses_content_on_storage() {
+    let (worker, commit, root) = fixture();
+    publish_initial(&worker, &commit, &root);
+    let fetch = |root_id: &str| {
+        super::tools::Mcp::open(&worker).call(
+            "fetch",
+            json!({"source_id":"incremental","root_id":root_id}),
+        )
+    };
+    let readable = |result: &Value| {
+        result["structuredContent"]["documents"]
+            .as_array()
+            .is_some_and(|d| !d.is_empty())
+    };
+    assert!(readable(&fetch("a")), "a is readable before the revoke");
+    assert_eq!(
+        command(&commit, &["writer", "namespace", "read-only", "true"]),
+        json!({"read_only":true,"changed":true})
+    );
+    input(
+        &root,
+        json!({"epoch":2,
+            "content":[[doc("c","r1","fixture document 2")]],
+            "permissions":[[{"id":"a","revision":"p2","readers":[]},{"id":"b","revision":"p1","readers":["grp:group"]}]]}),
+    );
+    worker_sync(&worker, &["incremental", "--kind", "permissions"]);
+    publish(&commit);
+    assert!(
+        row_readers(&rows(&worker).await, "a").is_empty(),
+        "the revoke is published"
+    );
+    assert!(!readable(&fetch("a")), "readers no longer see a");
+    assert!(readable(&fetch("b")), "b keeps its readers");
+    let refused = worker_command(&worker)
+        .args(["writer", "sync", "incremental", "--kind", "content"])
+        .output()
+        .unwrap();
+    assert!(!refused.status.success());
+    assert!(
+        String::from_utf8_lossy(&refused.stdout).contains("namespace_read_only"),
+        "{}",
+        String::from_utf8_lossy(&refused.stdout)
+    );
+    publish(&commit);
+    assert_eq!(source_roots(&worker, "incremental").await, ["a", "b"]);
 }
 
 /// A member read that repeats the published snapshot writes no envelope and

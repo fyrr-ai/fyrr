@@ -1213,7 +1213,7 @@ async fn put_envelope(
     let (store, root) = namespace_store(config)?;
     lease.state().await?;
     lease.persist_observed().await?;
-    crate::commit::ensure_writable(config).await?;
+    crate::commit::ensure_writable(config, envelope.kind).await?;
     put_immutable(
         store.as_ref(),
         &root
