@@ -234,7 +234,6 @@ async fn running_reader_never_serves_a_replaced_namespace_incarnation(backend: B
         &[("kept.txt", KEPT), ("doomed.txt", DOOMED)],
     );
     success(&config, &["writer", "commit"]);
-    let restorable = super::coordination::publication(&config).await.1;
     sync_texts(
         &config,
         &root,
@@ -253,9 +252,14 @@ async fn running_reader_never_serves_a_replaced_namespace_incarnation(backend: B
     assert_eq!(id, first.publication_id);
     assert!(hits.contains(DOOMED) && hits.contains(EXTRA), "{hits}");
 
-    // A restore stays in the lineage: a higher sequence that the running
-    // reader switches to, without the rows the restore removed.
-    success(&config, &["writer", "restore", &restorable.publication_id]);
+    // A higher sequence that the running reader switches to, without the
+    // rows it removed.
+    sync_texts(
+        &config,
+        &root,
+        &[("kept.txt", KEPT), ("doomed.txt", DOOMED)],
+    );
+    success(&config, &["writer", "commit"]);
     let restored = super::coordination::publication(&config).await.1;
     assert_eq!(restored.sequence, 3);
     let hits = await_publication(&mut client, &restored.publication_id, &[EXTRA]);

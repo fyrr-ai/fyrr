@@ -89,27 +89,8 @@ pub(crate) fn own_readers(batch: &RecordBatch, row: usize) -> Result<Option<Vec<
         .transpose()
 }
 
-/// Set or remove the row's own readers (a one-row batch).
-pub(crate) fn with_own_readers(batch: &RecordBatch, own: Option<&[String]>) -> Result<RecordBatch> {
-    let mut metadata: serde_json::Value =
-        serde_json::from_str(strings(batch, "metadata_json")?.value(0))
-            .map_err(|_| WriterError::ChangedRowsInvalid)?;
-    let fields = metadata
-        .as_object_mut()
-        .ok_or(WriterError::ChangedRowsInvalid)?;
-    match own {
-        Some(own) => fields.insert(OWN_READERS.into(), serde_json::json!(own)),
-        None => fields.remove(OWN_READERS),
-    };
-    replace(
-        batch,
-        "metadata_json",
-        Arc::new(StringArray::from(vec![metadata.to_string()])),
-    )
-}
-
 /// The readers of a row: its document's, or its own section readers within
-/// them. The only derivation: content, permissions and restore all use it.
+/// them. The only derivation: content and permissions both use it.
 pub(crate) fn effective_readers(own: Option<&[String]>, document: &[String]) -> Vec<String> {
     match own {
         None => document.to_vec(),

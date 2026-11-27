@@ -32,12 +32,6 @@
       "minimum": 0,
       "description": "Incremented when a rejected envelope rewinds the cursor."
     },
-    "restore_sequence": {
-      "type": "integer",
-      "format": "uint64",
-      "minimum": 0,
-      "description": "Latest manifest-authorized restore reset consumed by this log/cache entry."
-    },
     "updated_at": {
       "type": "string",
       "format": "date-time"
@@ -77,7 +71,6 @@
     "kind",
     "sequence",
     "rejection_generation",
-    "restore_sequence",
     "updated_at"
   ],
   "description": "The durable per-source, per-kind cursor the worker keeps on S3.",
@@ -144,5 +137,5 @@
     }
   },
   "x-fyrr-contract": "connector-cursor",
-  "x-fyrr-schema-version": "1.4"
+  "x-fyrr-schema-version": "2.0"
 }

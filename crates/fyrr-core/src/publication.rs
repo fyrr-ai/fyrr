@@ -202,9 +202,8 @@ pub struct PolicyArtifact {
     /// Old pins predating a row-ACL change cannot authorize with their old rows.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub row_acl_sequence: Option<u64>,
-    /// Retired sources: readers deny them at once, the committer
-    /// rejects their envelopes, and a restore cannot bring them back. An
-    /// entry is never removed.
+    /// Retired sources: readers deny them at once and the committer
+    /// rejects their envelopes. An entry is never removed.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub retired_sources: BTreeMap<String, RetiredSource>,
     /// The namespace is frozen: API writes and connector syncs are refused
@@ -304,9 +303,6 @@ pub struct ContentManifest {
     pub policy: GenerationPointer,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rejected_envelope_ids: Vec<String>,
-    /// Immutable restore rewind marker paths; visible only through this publication.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub cursor_rewinds: Vec<String>,
     /// The incarnation of the namespace that published this version, copied
     /// from the serving head.
     pub incarnation: String,
@@ -536,21 +532,6 @@ impl Contract for ContentManifest {
             "envelope_evidence.rejected_since",
             &self.envelope_evidence.rejected_since,
         )?;
-        let mut rewind_paths = BTreeSet::new();
-        for path in &self.cursor_rewinds {
-            let hash = path
-                .strip_prefix("rejections/restore-")
-                .and_then(|p| p.strip_suffix(".json"))
-                .ok_or("cursor rewind path invalid")?;
-            if hash.len() != 64
-                || !hash
-                    .bytes()
-                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-                || !rewind_paths.insert(path)
-            {
-                return Err("cursor rewind path invalid".into());
-            }
-        }
         let lineage = &self.lineage;
         check_id("lineage.holder", &lineage.holder)?;
         if lineage.epoch == 0 {

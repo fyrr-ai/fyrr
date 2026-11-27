@@ -1572,19 +1572,6 @@ async fn write_envelope(
     {
         return Err(ApiError(409, "namespace_changed"));
     }
-    // A restore moves the boundary that an envelope of the source must have been
-    // prepared after, as it does for a connector's cursor.
-    let boundary = crate::commit::rejection_markers(config, head)
-        .await?
-        .iter()
-        .filter(|m| m.source_id == API_SOURCE_ID && m.kind == SyncKind::Content)
-        .map(|m| m.restore_sequence)
-        .max()
-        .unwrap_or(0);
-    if boundary > state.restore_sequence {
-        state.restore_sequence = boundary;
-        lease.write(state.clone()).await?;
-    }
     // An envelope that a crash left before the cursor confirmed it is not on
     // the chain: the next one takes its sequence under a new lease generation.
     let sequence = state

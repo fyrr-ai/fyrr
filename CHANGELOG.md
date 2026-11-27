@@ -9,6 +9,17 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Changed
 
+- `writer restore` and `writer rollback` are a plain Lance restore under the
+  namespace lease, for a namespace written through the write API only: its
+  documents come back with the readers they had then. A namespace of connector
+  sources fails with `restore_unsupported`; sync it again or copy a backup back
+  with `writer namespace copy`. The restore that rewrote every row with the
+  current rights is gone, with its rewind markers (`rejections/restore-*`),
+  the `cursor_rewinds` of content manifests and the `restore_sequence` of
+  envelopes, rejection markers and cursors. The cursor contract is 2.0; the
+  codes `restore_authorization_changed` and `restore_verification_failed` are
+  gone. A namespace of an earlier build is not upgraded; recreate it.
+
 - A namespace's settings are one type. `NamespaceConfig` embeds what the policy
   artifact stores, and each content manifest holds the settings it was built
   with in one `settings` object instead of copying them field by field, so the

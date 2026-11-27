@@ -15,9 +15,7 @@ use arrow_array::{
 use arrow_buffer::{Buffer, NullBuffer, OffsetBuffer};
 use arrow_schema::{DataType, Field, Schema};
 use fyrr_core::config::{Config, DenseElement, PermissionsMode, ProcessEnvironment};
-use fyrr_core::connector::{
-    CONNECTOR_CONTRACT_VERSION, ChangeOp, ConnectorBatch, CursorState, DocumentChange, SyncKind,
-};
+use fyrr_core::connector::{ChangeOp, ConnectorBatch, CursorState, DocumentChange, SyncKind};
 use fyrr_core::envelope::*;
 use fyrr_core::{Contract, write_contract};
 use fyrr_reader::embedding::{digest, identity};
@@ -602,14 +600,13 @@ pub async fn content(
 
 pub fn initial_cursor(config: &Config, source: &str, kind: SyncKind) -> CursorState {
     CursorState {
-        schema_version: CONNECTOR_CONTRACT_VERSION,
+        schema_version: fyrr_core::connector::CURSOR_CONTRACT_VERSION,
         namespace: config.namespace.name.clone(),
         source_id: source.into(),
         kind,
         cursor: None,
         sequence: 0,
         rejection_generation: 0,
-        restore_sequence: 0,
         // No read has completed yet: the kind is due at once.
         updated_at: chrono::DateTime::UNIX_EPOCH,
         lease: None,
@@ -1145,7 +1142,6 @@ fn build_envelope(
         kind,
         sequence,
         rejection_generation: state.rejection_generation,
-        restore_sequence: state.restore_sequence,
         cursor,
         advances_cursor,
         base_head: base,

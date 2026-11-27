@@ -33,8 +33,6 @@ pub struct PreparedEnvelope {
     /// Rejection generation of this source and kind; part of the ID so
     /// re-fetched changes after a rejection form a new envelope.
     pub rejection_generation: u32,
-    /// Latest manifest-authorized restore reset consumed by this log/cache entry.
-    pub restore_sequence: u64,
     /// Connector cursors before and after the envelope's changes.
     pub cursor: CursorStep,
     /// False when the envelope leaves the cursor where it was, absent or opaque.
@@ -94,7 +92,6 @@ pub fn largest_permission_end(namespace: &str) -> PreparedEnvelope {
         kind: SyncKind::Permissions,
         sequence: u64::MAX,
         rejection_generation: u32::MAX,
-        restore_sequence: u64::MAX,
         cursor: CursorStep {
             start: Some(cursor.clone()),
             end: cursor,
@@ -624,8 +621,6 @@ pub struct RejectionMarker {
     pub kind: SyncKind,
     pub sequence: u64,
     pub rejection_generation: u32,
-    /// Latest manifest-authorized restore reset consumed by this log/cache entry.
-    pub restore_sequence: u64,
     pub start_cursor: Option<String>,
     pub reason: String,
 }

@@ -42,6 +42,8 @@ use crate::version::{Contract, ContractError, SchemaVersion, check_compatible};
 
 /// The connector contract version written by this build.
 pub const CONNECTOR_CONTRACT_VERSION: SchemaVersion = SchemaVersion::new(1, 4);
+/// The version of the cursor state, which only the writer reads and writes.
+pub const CURSOR_CONTRACT_VERSION: SchemaVersion = SchemaVersion::new(2, 0);
 
 /// Arrow schema metadata key naming the contract part.
 pub const ARROW_CONTRACT_KEY: &str = "fyrr.contract";
@@ -321,8 +323,6 @@ pub struct CursorState {
     pub sequence: u64,
     /// Incremented when a rejected envelope rewinds the cursor.
     pub rejection_generation: u32,
-    /// Latest manifest-authorized restore reset consumed by this log/cache entry.
-    pub restore_sequence: u64,
     pub updated_at: DateTime<Utc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lease: Option<crate::publication::Lease>,
@@ -516,7 +516,7 @@ impl DocumentMetadata {
 
 impl Contract for CursorState {
     const NAME: &'static str = "connector-cursor";
-    const VERSION: SchemaVersion = CONNECTOR_CONTRACT_VERSION;
+    const VERSION: SchemaVersion = CURSOR_CONTRACT_VERSION;
 
     fn validate(&self) -> Result<(), String> {
         check_id("namespace", &self.namespace)?;

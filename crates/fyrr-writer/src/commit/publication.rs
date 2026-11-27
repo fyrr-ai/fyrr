@@ -22,7 +22,6 @@ pub(crate) async fn publish(
     receipts: Vec<String>,
     chained: ChainApplied,
     acl_changed: bool,
-    cursor_rewinds: Vec<String>,
     maintenance_completed: bool,
     carry: Option<&AttributeIndexes>,
 ) -> Result<u64> {
@@ -35,14 +34,11 @@ pub(crate) async fn publish(
         receipts,
         chained,
         acl_changed,
-        cursor_rewinds,
         maintenance_completed,
         carry,
     )
     .await?;
     verify_lineage(dataset, &lineage).await?;
-    #[cfg(test)]
-    crate::maintenance::restore_test_publication();
     lease.publish(head).await?;
     fyrr_reader::metrics::add(&crate::telemetry::PUBLICATIONS, &[], 1);
     Ok(manifest.lance_version)
@@ -63,18 +59,11 @@ pub(crate) async fn write_manifest(
     receipts: Vec<String>,
     chained: ChainApplied,
     acl_changed: bool,
-    mut cursor_rewinds: Vec<String>,
     maintenance_completed: bool,
     carry: Option<&AttributeIndexes>,
 ) -> Result<ContentManifest> {
     let (store, root) = namespace_store(config)?;
     let previous_manifest = previous_manifest(store.as_ref(), &root, head).await?;
-    if cursor_rewinds.is_empty() {
-        cursor_rewinds = previous_manifest
-            .as_ref()
-            .map(|m| m.cursor_rewinds.clone())
-            .unwrap_or_default();
-    }
     let actual = dataset.load_indices().await?;
     let fragment_rows: std::collections::HashMap<u32, u64> = dataset
         .manifest()
@@ -307,7 +296,6 @@ pub(crate) async fn write_manifest(
         identity: head.identity.clone(),
         policy: head.policy.clone(),
         rejected_envelope_ids: head.rejected_envelope_ids.clone(),
-        cursor_rewinds,
         incarnation: head.incarnation.clone(),
         envelope_evidence: evidence,
         stats,

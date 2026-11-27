@@ -36,7 +36,7 @@ impl Drop for Index {
 }
 impl Index {
     pub(crate) fn new(config: &Config) -> Result<Self> {
-        Self::open(crate::scratch::directory(config, "history")?, false)
+        Self::open(crate::scratch::directory(config)?, false)
     }
 
     pub(crate) fn command(config: &Config) -> Result<Self> {
@@ -62,7 +62,7 @@ impl Index {
 
     fn open_inner(scratch: PathBuf, remove_directory: bool) -> Result<Self> {
         check_space(&scratch, 8 * 1024 * 1024)?;
-        let db = crate::scratch::open(&scratch, "history", |_| {})?;
+        let db = crate::scratch::open(&scratch)?;
         db.execute_batch(
             "PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF;
              PRAGMA locking_mode=EXCLUSIVE; PRAGMA page_size=4096;

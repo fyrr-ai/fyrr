@@ -90,8 +90,8 @@ At the default timer the 561,600 `GET` or `HEAD` cost $0.22 and the 86,400
 task remains: one head `GET` per timer, 43,200 a month, $0.017.
 
 **The head watch** is a task that reads the head once per timer (the second
-head read above). A changed head, which carries rejections and rewinds,
-wakes every source.
+head read above). A changed head, which carries rejections, wakes every
+source.
 
 **Sync workers** are started per source, and each source sleeps until a
 kind of it is due (`sources.intervals`: content 15 min and reconcile 1 day
@@ -105,7 +105,7 @@ envelope listing.
 | --- | --- |
 | Each kind not due | 4 `GET` outside the history: head and policy (retirement check), head and cursor (scheduler) |
 | Each kind due, nothing changed | at least 3 `PUT` (lease take, cursor write, lease release), 1 `LIST`, about 9 `GET` |
-| History, once per worker | 1 `GET` per publication of the namespace, plus the rejection and rewind records they carry |
+| History, once per worker | 1 `GET` per publication of the namespace, plus the rejection records they carry |
 | First due pass of a worker | also 1 `GET` per retained envelope, applied ones included |
 | Each kind with changes | the above, plus the envelopes it writes |
 

@@ -249,7 +249,7 @@ async fn local_storage_reaps_abandoned_uploads_but_protects_live_staging() {
 
 #[tokio::test]
 #[ignore = "real executable and long local publication history; scripts/ci"]
-async fn lifetime_history_keeps_maintenance_restore_and_receipts_available() {
+async fn lifetime_history_keeps_maintenance_and_receipts_available() {
     use super::coordination::{command, publication, worker_sync};
     use super::incremental::{envelopes, input, publish, publish_initial, roots, rows};
     use fyrr_core::connector::SyncKind;
@@ -448,16 +448,6 @@ async fn lifetime_history_keeps_maintenance_restore_and_receipts_available() {
         replay_publication
     );
 
-    command(&commit, &["writer", "restore", &template.publication_id]);
-    assert_eq!(
-        roots(&rows(&worker).await),
-        ["b"],
-        "restore preserves the revoke"
-    );
-    assert_eq!(
-        command(&commit, &["writer", "commit", "--receipt", &oldest])["publication_id"],
-        template.publication_id
-    );
     std::fs::remove_dir_all(storage).unwrap();
     std::fs::remove_dir_all(root).unwrap();
 }

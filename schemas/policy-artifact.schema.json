@@ -40,7 +40,7 @@
       "additionalProperties": {
         "$ref": "#/$defs/RetiredSource"
       },
-      "description": "Retired sources: readers deny them at once, the committer\nrejects their envelopes, and a restore cannot bring them back. An\nentry is never removed."
+      "description": "Retired sources: readers deny them at once and the committer\nrejects their envelopes. An entry is never removed."
     },
     "read_only": {
       "type": "boolean",

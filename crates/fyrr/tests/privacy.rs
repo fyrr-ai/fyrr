@@ -1809,28 +1809,6 @@ async fn identity_storage_inputs_credentials_missing_key_and_rotation_are_fail_c
     let status: Value = serde_json::from_slice(&result.stdout).unwrap();
     assert_eq!(status["directory"]["encrypted_inputs"], true);
     assert_clean(&sentinels, &result, &sandbox, "status and HTTP logs");
-    let target = &before.content.as_ref().unwrap().publication_id;
-    let result = sandbox.run(
-        [
-            "--config",
-            config.to_str().unwrap(),
-            "writer",
-            "restore",
-            target,
-        ],
-        &[],
-    );
-    assert!(
-        result.status.success(),
-        "{}",
-        String::from_utf8_lossy(&result.stderr)
-    );
-    assert_clean(
-        &sentinels,
-        &result,
-        &sandbox,
-        "private restore working index",
-    );
 }
 
 #[test]

@@ -29,12 +29,6 @@
       "minimum": 0,
       "description": "Rejection generation of this source and kind; part of the ID so\nre-fetched changes after a rejection form a new envelope."
     },
-    "restore_sequence": {
-      "type": "integer",
-      "format": "uint64",
-      "minimum": 0,
-      "description": "Latest manifest-authorized restore reset consumed by this log/cache entry."
-    },
     "cursor": {
       "$ref": "#/$defs/CursorStep",
       "description": "Connector cursors before and after the envelope's changes."
@@ -84,7 +78,6 @@
     "kind",
     "sequence",
     "rejection_generation",
-    "restore_sequence",
     "cursor",
     "advances_cursor",
     "created_at",

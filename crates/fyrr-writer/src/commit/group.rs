@@ -179,7 +179,6 @@ pub(crate) async fn commit_one(
         receipts,
         chained,
         acl_changed,
-        Vec::new(),
         false,
         None,
     )

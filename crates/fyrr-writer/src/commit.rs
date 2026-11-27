@@ -514,11 +514,10 @@ pub(crate) struct ChainLog {
     pub(crate) generation: u64,
     /// The newest envelope a publication resolved, as the manifest names it.
     pub(crate) applied: Option<fyrr_core::connector::LastEnvelope>,
-    /// The highest sequence, rejection generation and restore sequence of its
-    /// envelopes, which the next envelope must not go below.
+    /// The highest sequence and rejection generation of its envelopes, which
+    /// the next envelope must not go below.
     pub(crate) sequence: u64,
     pub(crate) rejection_generation: u32,
-    pub(crate) restore_sequence: u64,
 }
 
 pub(crate) async fn chain_log(config: &Config, source: &str, kind: SyncKind) -> Result<ChainLog> {
@@ -528,7 +527,6 @@ pub(crate) async fn chain_log(config: &Config, source: &str, kind: SyncKind) -> 
         applied: None,
         sequence: 0,
         rejection_generation: 0,
-        restore_sequence: 0,
     };
     let Some(head) = fyrr_reader::storage::optional_head(config).await? else {
         return Ok(log);
@@ -552,7 +550,6 @@ pub(crate) async fn chain_log(config: &Config, source: &str, kind: SyncKind) -> 
         log.generation = log.generation.max(envelope.lease_generation);
         log.sequence = log.sequence.max(envelope.sequence);
         log.rejection_generation = log.rejection_generation.max(envelope.rejection_generation);
-        log.restore_sequence = log.restore_sequence.max(envelope.restore_sequence);
         if applied.as_ref() == Some(&envelope.envelope_id) {
             log.applied = Some(fyrr_core::connector::LastEnvelope {
                 sequence: envelope.sequence,
@@ -601,7 +598,6 @@ pub async fn published_ids(
 pub(crate) struct PublishedEvidence {
     pub(crate) applied: BTreeSet<String>,
     pub(crate) rejected: BTreeSet<String>,
-    rewinds: Vec<String>,
 }
 
 /// What the manifest chain ending at `manifest` records. Publications are
@@ -612,7 +608,6 @@ struct ChainEvidence {
     sequence: u64,
     applied: Arc<BTreeSet<String>>,
     rejected: Arc<BTreeSet<String>>,
-    rewinds: Arc<Vec<String>>,
 }
 
 /// The chain evidence of the newest head this process walked, by namespace
@@ -635,7 +630,6 @@ pub(crate) async fn published_evidence(
         return Ok(PublishedEvidence {
             applied: BTreeSet::new(),
             rejected,
-            rewinds: Vec::new(),
         });
     };
     let key = (root.to_string(), head.incarnation.clone());
@@ -656,12 +650,10 @@ pub(crate) async fn published_evidence(
         return Ok(PublishedEvidence {
             applied: known.applied.as_ref().clone(),
             rejected,
-            rewinds: known.rewinds.to_vec(),
         });
     }
     let mut applied = BTreeSet::new();
     let mut chain_rejected = BTreeSet::new();
-    let mut rewinds = None;
     let mut newest_sequence = None;
     let mut next = Some(newest.clone());
     let mut newer_sequence: Option<u64> = None;
@@ -673,7 +665,6 @@ pub(crate) async fn published_evidence(
             }
             applied.extend(known.applied.iter().cloned());
             chain_rejected.extend(known.rejected.iter().cloned());
-            rewinds.get_or_insert_with(|| known.rewinds.to_vec());
             break;
         }
         let publication = fyrr_reader::storage::read_manifest(store.as_ref(), &root, &path).await?;
@@ -683,7 +674,6 @@ pub(crate) async fn published_evidence(
         }
         newer_sequence = Some(publication.sequence);
         newest_sequence.get_or_insert(publication.sequence);
-        rewinds.get_or_insert_with(|| publication.cursor_rewinds.clone());
         applied.extend(publication.envelope_ids);
         chain_rejected.extend(publication.rejected_envelope_ids);
         next = publication
@@ -705,7 +695,6 @@ pub(crate) async fn published_evidence(
             break;
         }
     }
-    let rewinds = rewinds.unwrap_or_default();
     if let Some(sequence) = newest_sequence {
         let mut cache = CHAIN_EVIDENCE
             .lock()
@@ -721,16 +710,11 @@ pub(crate) async fn published_evidence(
                 sequence,
                 applied: Arc::new(applied.clone()),
                 rejected: Arc::new(chain_rejected.clone()),
-                rewinds: Arc::new(rewinds.clone()),
             },
         ));
     }
     rejected.extend(chain_rejected);
-    Ok(PublishedEvidence {
-        applied,
-        rejected,
-        rewinds,
-    })
+    Ok(PublishedEvidence { applied, rejected })
 }
 
 /// The checkpoint a manifest names. `None` when maintenance removed it as
@@ -782,7 +766,6 @@ pub(crate) async fn markers_from_evidence(
         .rejected
         .iter()
         .map(|id| format!("rejections/{id}.json"))
-        .chain(evidence.rewinds.iter().cloned())
     {
         markers.push(
             fyrr_reader::storage::read_contract(
@@ -797,7 +780,6 @@ pub(crate) async fn markers_from_evidence(
 
 async fn rejection_markers_from_ids(
     config: &Config,
-    head: &ServingHead,
     rejected: &BTreeSet<String>,
 ) -> Result<Vec<RejectionMarker>> {
     let (store, root) = namespace_store(config)?;
@@ -811,22 +793,6 @@ async fn rejection_markers_from_ids(
             .await?,
         );
     }
-    if let Some(pointer) = &head.content {
-        let manifest: ContentManifest = fyrr_reader::storage::read_contract(
-            store.as_ref(),
-            &Path::from(format!("{root}/{}", pointer.manifest)),
-        )
-        .await?;
-        for path in &manifest.cursor_rewinds {
-            markers.push(
-                fyrr_reader::storage::read_contract(
-                    store.as_ref(),
-                    &Path::from(format!("{root}/{path}")),
-                )
-                .await?,
-            );
-        }
-    }
     Ok(markers)
 }
 
@@ -839,10 +805,9 @@ pub async fn unconsumed_rejections(
 ) -> Result<Vec<RejectionMarker>> {
     let (store, root) = namespace_store(config)?;
     let evidence = published_evidence(config, head).await?;
-    // Markers are the rejected envelopes and the cursor rewinds of the
-    // served manifest; without either nothing is unconsumed, and the
-    // retained envelopes need not be listed or read.
-    if evidence.rejected.is_empty() && evidence.rewinds.is_empty() {
+    // Markers are the rejected envelopes; without one nothing is unconsumed,
+    // and the retained envelopes need not be listed or read.
+    if evidence.rejected.is_empty() {
         return Ok(Vec::new());
     }
     let (applied, rejected) = (evidence.applied, evidence.rejected);
@@ -867,26 +832,20 @@ pub async fn unconsumed_rejections(
         }
     }
     let reads = reads.iter().collect::<Vec<_>>();
-    unconsumed_rejections_from_reads(config, head, &reads, &rejected).await
+    unconsumed_rejections_from_reads(config, &reads, &rejected).await
 }
 
 /// Reuse an operation's envelope snapshot and receipt sets during cleanup.
 pub(crate) async fn unconsumed_rejections_from_reads(
     config: &Config,
-    head: &ServingHead,
     reads: &[&PreparedEnvelope],
     rejected: &BTreeSet<String>,
 ) -> Result<Vec<RejectionMarker>> {
     let mut unresolved = Vec::new();
-    for marker in rejection_markers_from_ids(config, head, rejected).await? {
+    for marker in rejection_markers_from_ids(config, rejected).await? {
         if !reads.iter().any(|e| {
-            history::replacement_matches(
-                &marker,
-                &e.source_id,
-                e.kind,
-                e.rejection_generation,
-                e.restore_sequence,
-            ) && crate::apply::complete_read(e)
+            history::replacement_matches(&marker, &e.source_id, e.kind, e.rejection_generation)
+                && crate::apply::complete_read(e)
         }) {
             unresolved.push(marker);
         }
@@ -928,13 +887,8 @@ pub(crate) async fn cleanup_evidence(
         .into_iter()
         .filter(|marker| {
             !reads.iter().any(|e| {
-                history::replacement_matches(
-                    marker,
-                    &e.source_id,
-                    e.kind,
-                    e.rejection_generation,
-                    e.restore_sequence,
-                ) && crate::apply::complete_read(e)
+                history::replacement_matches(marker, &e.source_id, e.kind, e.rejection_generation)
+                    && crate::apply::complete_read(e)
             })
         })
         .map(|marker| marker.envelope_id)
@@ -1076,32 +1030,13 @@ async fn served_receipt(config: &Config, head: &ServingHead) -> Result<(CommitRe
     Ok((receipt, due))
 }
 
-/// Maintenance services authorization at every boundary without draining content backlog.
-/// Share bounded history evidence without changing either drain policy:
-/// restore snapshots initial arrivals; maintenance drains until quiet.
+/// Maintenance services authorization at every boundary without draining
+/// content backlog, until no authorization is pending.
 pub(crate) async fn drain_cached_authorization(
     config: &Config,
     lease: &LeaseGuard,
     history: &mut RestoreHistory,
     pending: Vec<PreparedEnvelope>,
-    snapshot: bool,
-) -> Result<usize> {
-    Box::pin(drain_authorization_held(
-        config,
-        lease,
-        snapshot,
-        Some(history),
-        Some(pending),
-    ))
-    .await
-}
-
-async fn drain_authorization_held(
-    config: &Config,
-    lease: &LeaseGuard,
-    snapshot: bool,
-    mut history: Option<&mut RestoreHistory>,
-    initial: Option<Vec<PreparedEnvelope>>,
 ) -> Result<usize> {
     let mut groups = 0;
     crate::envelopes::discard_purged(config, lease).await?;
@@ -1109,51 +1044,25 @@ async fn drain_authorization_held(
     if head.content.is_none() {
         return Ok(groups);
     }
-    let mut remaining = match initial {
-        Some(pending) => pending,
-        None => pending(config, &head)
-            .await?
-            .into_iter()
-            .filter(|e| e.kind.is_authorization())
-            .collect(),
-    };
-    let mut snapshot_ids: BTreeSet<_> = remaining.iter().map(|e| e.envelope_id.clone()).collect();
+    let mut remaining = pending;
     loop {
-        let group = if let Some(h) = history.as_deref_mut() {
-            h.refresh(config, &head).await?;
-            let unresolved = h.unconsumed_rejections(config, &remaining).await?;
-            commit_group_with_rejections(config, remaining, &head, unresolved).await?
-        } else {
-            commit_group(config, remaining, &head).await?
-        };
+        history.refresh(config, &head).await?;
+        let unresolved = history.unconsumed_rejections(config, &remaining).await?;
+        let group = commit_group_with_rejections(config, remaining, &head, unresolved).await?;
         if group.is_empty() {
             return Ok(groups);
         }
-        let selected: BTreeSet<_> = group.iter().map(|e| e.envelope_id.clone()).collect();
-        commit_one(config, false, lease, group, history.as_deref_mut()).await?;
-        #[cfg(test)]
-        crate::maintenance::restore_test_drain();
+        Box::pin(commit_one(config, false, lease, group, Some(&mut *history))).await?;
         groups += 1;
         crate::envelopes::discard_purged(config, lease).await?;
         head = lease.head().await?;
-        if let Some(h) = history.as_deref_mut() {
-            h.refresh(config, &head).await?;
-        }
-        if snapshot {
-            snapshot_ids.retain(|id| !selected.contains(id));
-            if snapshot_ids.is_empty() {
-                return Ok(groups);
-            }
-        }
-        remaining = match history.as_deref_mut() {
-            Some(h) => h.pending(config, &head, true).await?,
-            None => pending(config, &head).await?,
-        }
-        .into_iter()
-        .filter(|e| {
-            e.kind.is_authorization() && (!snapshot || snapshot_ids.contains(&e.envelope_id))
-        })
-        .collect();
+        history.refresh(config, &head).await?;
+        remaining = history
+            .pending(config, &head, true)
+            .await?
+            .into_iter()
+            .filter(|e| e.kind.is_authorization())
+            .collect();
     }
 }
 

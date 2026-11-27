@@ -88,12 +88,12 @@ pub enum WriterCommand {
     /// Counts are relative to the printed, pinned content_sequence and exact in
     /// a quiescent namespace. Concurrent commits and arrivals can overcount pending work.
     Status,
-    /// Commit a new publication from an earlier retained content version.
+    /// Publish a retained version of a write API namespace again.
     Restore {
         /// Retained publication ID to restore through a new fenced Lance commit.
         publication: String,
     },
-    /// Restore the preceding retained publication with current authorization.
+    /// Restore the preceding retained publication of a write API namespace.
     Rollback,
     /// Verify the full published content on demand.
     Verify,
@@ -167,7 +167,7 @@ pub enum NamespaceAction {
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum SourceAction {
     /// Deny the source to every reader at once and reject its further
-    /// commits; final, and kept by restore.
+    /// commits; final.
     Retire {
         /// Source ID.
         source: String,

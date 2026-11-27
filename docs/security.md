@@ -137,8 +137,9 @@ plan for:
   per source in `fyrr writer status` (`source_reads`, null when no read ever
   completed); alert on it. The reader never uses it.
 - A retired source (`fyrr writer source retire`) is denied by every reader
-  once it has read the serving head again, and restore and rollback never
-  bring it back.
+  once it has read the serving head again. A namespace of connector sources
+  is never restored, so no restore brings back a revoked grant; a restore of
+  a write API namespace brings back the readers its documents had then.
 - A reader reads the serving head at every version check
   (`reader.version_check_interval`, default and at most 30 s), `SIGHUP` and
   `POST /admin/refresh`, and its requests check their grants against that

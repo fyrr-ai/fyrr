@@ -1,20 +1,15 @@
 //! Bounded native work under the namespace lease; manifests remain the only visibility point.
 use crate::{Result, WriterError};
 pub(crate) mod local_staging;
-mod restoration;
-pub use restoration::restore;
-use restoration::*;
 
 use crate::{apply, commit, lease::LeaseGuard, prepare};
-mod restore_fragments;
-mod restore_index;
 use arrow_array::Array;
 use chrono::Utc;
 use futures::TryStreamExt;
 use fyrr_core::Contract;
 use fyrr_core::attributes::stale_analyzers;
 use fyrr_core::config::Config;
-use fyrr_core::envelope::{EnvelopePayload, RejectionMarker};
+use fyrr_core::envelope::EnvelopePayload;
 use fyrr_core::publication::{
     CommitLineage, ContentManifest, HISTORY_CUT_OBJECT, HistoryCut, PolicyArtifact, ServingHead,
 };
@@ -338,8 +333,132 @@ async fn boundary(
     lease: &LeaseGuard,
     history: &mut commit::RestoreHistory,
 ) -> Result<ServingHead> {
-    cached_drain_authorization(config, lease, history, false).await?;
+    cached_drain_authorization(config, lease, history).await?;
     lease.head().await
+}
+
+// A fresh complete listing is mandatory, even when a cursor advance failed.
+// Quiet boundaries stop here, before history, markers, grouping or publication.
+async fn cached_drain_authorization(
+    config: &Config,
+    lease: &LeaseGuard,
+    history: &mut commit::RestoreHistory,
+) -> Result<usize> {
+    let pending = history.pending(config, &lease.head().await?, true).await?;
+    if pending.is_empty() {
+        return Ok(0);
+    }
+    commit::drain_cached_authorization(config, lease, history, pending).await
+}
+
+async fn command_start(
+    config: &Config,
+    lease: &LeaseGuard,
+    history: &mut commit::RestoreHistory,
+) -> Result<ServingHead> {
+    history.refresh(config, &lease.head().await?).await?;
+    command_recover(config, lease, history).await
+}
+
+// A failed maintenance step must yield to fresh authorization discovery before
+// reading new publication history or recovering its unpublished native suffix.
+async fn command_recover(
+    config: &Config,
+    lease: &LeaseGuard,
+    history: &mut commit::RestoreHistory,
+) -> Result<ServingHead> {
+    cached_drain_authorization(config, lease, history).await?;
+    commit::commit_one(config, false, lease, Vec::new(), Some(history)).await?;
+    lease.head().await
+}
+
+/// Publishes the version of a retained publication again, or of the one before
+/// the head's with `None`: a plain Lance restore under the namespace lease. The
+/// rows come back as they were then, with the readers they had. Only a
+/// namespace written through the write API alone restores; one that holds a
+/// connector source fails with `restore_unsupported` and recovers by a sync or
+/// `writer namespace copy`.
+pub async fn restore(config: &Config, publication: Option<&str>) -> Result<serde_json::Value> {
+    if publication.is_some_and(|id| !fyrr_core::limits::prefixed_hex(id, "pub-", 32)) {
+        return Err(WriterError::PublicationIdInvalid);
+    }
+    crate::lease::LeaseGuard::with(config, |lease| async move {
+        // Keep the native publication future off the caller's stack.
+        Box::pin(restore_held(config, &lease, publication)).await
+    })
+    .await
+}
+
+async fn restore_held(
+    config: &Config,
+    lease: &LeaseGuard,
+    publication: Option<&str>,
+) -> Result<serde_json::Value> {
+    // A source that ever published names its chain in every later manifest.
+    let (store, root) = namespace_store(config)?;
+    let head = lease.head().await?;
+    let connector = !config.sources.is_empty()
+        || commit::previous_manifest(store.as_ref(), &root, &head)
+            .await?
+            .is_some_and(|m| {
+                m.chain_applied
+                    .keys()
+                    .any(|source| source != fyrr_core::connector::API_SOURCE_ID)
+            });
+    if connector {
+        return Err(WriterError::RestoreUnsupported);
+    }
+    // Recover an unpublished native suffix, so the restore follows the head.
+    commit::commit_one(config, false, lease, Vec::new(), None).await?;
+    let head = lease.head().await?;
+    let retained = retained(config, &head).await?;
+    let target = if let Some(id) = publication {
+        retained.iter().find(|m| m.publication_id == id)
+    } else {
+        retained.get(1)
+    }
+    .filter(|m| {
+        (fyrr_core::clock::now() - m.committed_at)
+            .to_std()
+            .is_ok_and(|age| age < config.writer.purge_window.as_duration())
+    })
+    .ok_or(WriterError::RestoreHorizonExpired)?;
+    let current = pinned(config, &head).await?;
+    let mut dataset = current
+        .checkout_version(target.lance_version)
+        .await
+        .map_err(|_| WriterError::RestoreHorizonExpired)?;
+    let mut work = lineage(lease, &head);
+    commit::native_step(lease, dataset.restore(), WriterError::RestoreCommitFailed).await?;
+    commit::record_transaction(&dataset, &mut work, current.version().version).await?;
+    // The settings hold the attributes of now: a version from before one was
+    // added has no column for it, and gets one that reads null.
+    Box::pin(commit::add_attribute_columns(
+        config,
+        lease,
+        &mut dataset,
+        &mut work,
+    ))
+    .await?;
+    let version = commit::publish(
+        config,
+        lease,
+        &dataset,
+        head,
+        work,
+        Vec::new(),
+        Default::default(),
+        true,
+        false,
+        // The indexes stand as the restored publication built them.
+        Some(&target.settings.namespace.attribute_indexes),
+    )
+    .await?;
+    Ok(serde_json::json!({
+        "restored": true,
+        "lance_version": version,
+        "from_publication": target.publication_id,
+    }))
 }
 
 pub async fn maintain(config: &Config) -> Result<serde_json::Value> {
@@ -351,7 +470,7 @@ pub async fn maintain(config: &Config) -> Result<serde_json::Value> {
         if result
             .as_ref()
             .is_err_and(|error| *error == WriterError::MaintenanceStepDeadline)
-            && let Err(error) = command_recover(config, &lease, &mut history, false).await
+            && let Err(error) = command_recover(config, &lease, &mut history).await
         {
             result = Err(error);
         }
@@ -370,7 +489,7 @@ async fn maintain_held(
     let mut envelopes = crate::envelopes::cleanup_held(config, lease).await?;
     // Recover the previous command's private suffix and reconcile configuration
     // once. Quiet native boundaries need only fresh authorization discovery.
-    command_start(config, lease, history, false).await?;
+    command_start(config, lease, history).await?;
     let version = |head: &ServingHead| head.content.as_ref().map_or(0, |p| p.lance_version);
     let mut skipped = Vec::new();
     let mut compacted = 0;
@@ -451,7 +570,7 @@ async fn maintain_held(
                         // Recorded now: a later step of this run may fail before the run ends.
                         skip_merge(&config.namespace.name, &name, at);
                         crate::telemetry::index_merge_skipped(&name);
-                        command_recover(config, lease, history, false).await?;
+                        command_recover(config, lease, history).await?;
                         skipped.push(name);
                         break;
                     }
@@ -515,7 +634,6 @@ async fn maintain_held(
             Vec::new(),
             Default::default(),
             false,
-            Vec::new(),
             true,
             Some(&built),
         )
@@ -913,7 +1031,6 @@ async fn merge_step(
         Vec::new(),
         Default::default(),
         false,
-        Vec::new(),
         false,
         None,
     )
@@ -1000,7 +1117,6 @@ async fn purge_denied(config: &Config, lease: &LeaseGuard, head: &ServingHead) -
             Vec::new(),
             Default::default(),
             true,
-            Vec::new(),
             false,
             None,
         )
@@ -1473,52 +1589,6 @@ pub async fn verify(config: &Config) -> Result<serde_json::Value> {
     Ok(serde_json::json!({"verified":true,"lance_version":dataset.version().version,"rows":rows}))
 }
 
-#[cfg(test)]
-type RestoreTestHook = std::sync::Arc<dyn Fn() + Send + Sync>;
-#[cfg(test)]
-static RESTORE_TEST_GROUP: std::sync::Mutex<Option<RestoreTestHook>> = std::sync::Mutex::new(None);
-#[cfg(test)]
-static RESTORE_TEST_PUBLICATION: std::sync::Mutex<Option<RestoreTestHook>> =
-    std::sync::Mutex::new(None);
-#[cfg(test)]
-static RESTORE_TEST_DRAIN: std::sync::Mutex<Option<RestoreTestHook>> = std::sync::Mutex::new(None);
-#[cfg(test)]
-type RestoreScanTestHook = std::sync::Arc<dyn Fn(&mut RestoreCadence) + Send + Sync>;
-#[cfg(test)]
-static RESTORE_TEST_SCAN: std::sync::Mutex<Option<RestoreScanTestHook>> =
-    std::sync::Mutex::new(None);
-#[cfg(test)]
-fn restore_test_scan(cadence: &mut RestoreCadence) {
-    let hook = RESTORE_TEST_SCAN.lock().unwrap().clone();
-    if let Some(hook) = hook {
-        hook(cadence);
-    }
-}
-#[cfg(test)]
-pub(crate) fn restore_test_publication() {
-    let hook = RESTORE_TEST_PUBLICATION.lock().unwrap().clone();
-    if let Some(hook) = hook {
-        hook();
-    }
-}
-#[cfg(test)]
-pub(crate) fn restore_test_drain() {
-    let hook = RESTORE_TEST_DRAIN.lock().unwrap().clone();
-    if let Some(hook) = hook {
-        hook();
-    }
-}
-#[cfg(test)]
-fn restore_test_group() {
-    let hook = RESTORE_TEST_GROUP
-        .lock()
-        .expect("restore hook lock")
-        .clone();
-    if let Some(hook) = hook {
-        hook();
-    }
-}
-
 /// A bounded, conservative warning, with no source/document identifiers or counts.
 pub(crate) async fn purge_warnings(
     config: &Config,
@@ -1633,9 +1703,6 @@ pub(crate) async fn purge_warnings(
         Vec::new()
     })
 }
-
-#[cfg(test)]
-mod restore_tests;
 
 #[cfg(test)]
 mod merge_run_tests {
@@ -1840,7 +1907,6 @@ async fn compact_one(
             Vec::new(),
             Default::default(),
             false,
-            Vec::new(),
             false,
             None,
         )
