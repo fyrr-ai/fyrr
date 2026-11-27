@@ -23,8 +23,19 @@ tokens name: `all` every row, `p10` 10% of them, `p1` 1%. It then times:
              `telemetry` and the reader's own storage counters (`/metrics`)
              around it. The dense one reads the index files and builds the
              admission of the subject;
-  warm       p50, p95 and p99 of `--queries` more queries, for the lanes dense
-             (`vector`), full-text (`query`) and hybrid (both);
+  warming    dense queries while the reader still copies the generation's
+             files into its mirror, until `/readyz` reports `warm_ready`:
+             their p50 and p95, and the seconds from the end of the first
+             queries to `warm_ready`. A reader that cannot warm ends the wait
+             at once: `cold` (its memory budget allows no warming) or with a
+             native cache below its need (`native_cache=degraded` in its log);
+             its warm phase is then skipped and its state recorded. Past
+             `WARM_LIMIT` the run fails, after writing the report so far;
+  warm       p50, p95 and p99 of `--queries` more queries on the warmed
+             reader, for the lanes dense (`vector`), full-text (`query`) and
+             hybrid (both). Warm means a warmed reader: the queries start once
+             `/readyz` reports `warm_ready`, whose state is recorded again
+             after them;
   isolated   `isolated_admission`, a diagnosis and not an admission time: on
              one cold reader the first query of one subject loads the files,
              then the first query of each other subject is compared with
@@ -288,6 +299,30 @@ class Server:
 def alive(pid):
     state = Path("/proc/%d/stat" % pid).read_text().rsplit(")", 1)[1].split()[0]
     return state != "Z"
+
+
+# The longest wait for `warm_ready` after the first queries; past it the run fails.
+WARM_LIMIT = 900
+
+
+def readiness(server, key, deadline):
+    """The `/readyz` body of a reader that answers 200, or None. An answer
+    that arrives after `deadline` is not accepted: past it, TimeoutError."""
+    left = deadline - time.perf_counter()
+    if left > 0:
+        try:
+            status, state, _ = server.call("GET", "/readyz", key, timeout=left)
+        except OSError:
+            status, state = None, None
+        if time.perf_counter() < deadline:
+            return state if status == 200 else None
+    raise TimeoutError
+
+
+def cache_degraded(run):
+    """Whether the reader logged a native cache below its need: it never warms."""
+    log = run.work / "reader-serve.stderr"
+    return "native_cache=degraded" in log.read_text(errors="replace")
 
 
 def wait_ready(server, key, pid, limit=3600):
@@ -623,7 +658,7 @@ def ids(answer):
     return [int(hit["root_id"][1:]) for hit in answer["hits"]]
 
 
-def arm(run, corpus, memory_max_bytes, vectors, texts, stored):
+def arm(run, corpus, memory_max_bytes, vectors, texts, stored, arms):
     """One reader process per subject, each started on an empty mirror, so that
     the first query of a subject is the first on its process: its admission is
     built then, and the startup is a measurement of its own."""
@@ -634,6 +669,7 @@ def arm(run, corpus, memory_max_bytes, vectors, texts, stored):
     }
     path = "/v1/namespaces/%s/query" % NAMESPACE
     result = {"memory_max_bytes": memory_max_bytes, "subjects": []}
+    arms.append(result)  # a run that fails later still reports this arm
     answers, errors = {}, []
     for subject, every in SUBJECTS:
         remove(run.work, run.work / "mirror")
@@ -654,19 +690,29 @@ def arm(run, corpus, memory_max_bytes, vectors, texts, stored):
             counters = storage_counters(run.metrics_address)
             out["storage_at_ready"] = counters
 
-            def search(lane, n):
+            def search(lane, n, deadline=None):
                 body = {"limit": K, "output": "metadata"}
                 if lane in ("dense", "hybrid"):
                     body["vector"] = [float(x) for x in vectors[n]]
                 if lane in ("fts", "hybrid"):
                     body["query"] = texts[n]
-                status, answer, took = read.call(
-                    "POST",
-                    path,
-                    keys[subject],
-                    json.dumps(body).encode(),
-                    timeout=310,
-                )
+                timeout = 310
+                if deadline is not None:
+                    timeout = min(timeout, deadline - time.perf_counter())
+                    if timeout <= 0:
+                        return None, 0, {"status": None, "answer": "past the deadline"}
+                try:
+                    status, answer, took = read.call(
+                        "POST",
+                        path,
+                        keys[subject],
+                        json.dumps(body).encode(),
+                        timeout=timeout,
+                    )
+                except OSError as error:
+                    if deadline is None:
+                        raise
+                    return None, timeout, {"status": None, "answer": repr(error)}
                 if status != 200:
                     return None, took, {"status": status, "answer": answer}
                 return answer, took, None
@@ -693,8 +739,56 @@ def arm(run, corpus, memory_max_bytes, vectors, texts, stored):
                     file=sys.stderr,
                     flush=True,
                 )
+            # Dense queries until the reader is warm; they are not warm queries.
+            # A `cold` reader or one with a degraded native cache never warms.
+            started, times, failed, n = time.perf_counter(), [], 0, 0
+            deadline, state = started + WARM_LIMIT, None
+            while True:
+                try:
+                    state = readiness(read, keys[subject], deadline) or state
+                except TimeoutError:
+                    raise SystemExit(
+                        "%s: reader not warm %d s after its first queries (%s)"
+                        % (subject, WARM_LIMIT, state)
+                    ) from None
+                if state and (
+                    state["warm_ready"] or state["state"] == "cold" or cache_degraded(run)
+                ):
+                    break
+                answer, took, error = search("dense", n % args.queries + 1, deadline)
+                n += 1
+                if error:
+                    failed += 1
+                else:
+                    times.append(took)
+            warmed = state["warm_ready"]
+            out["warming"] = {
+                "seconds": round(time.perf_counter() - started, 2),
+                "reader_state": state["state"],
+                "native_cache_degraded": cache_degraded(run),
+                "errors": failed,
+            }
+            if times:
+                out["warming"].update(summary(times))
+            print(
+                "warming %s %.1f s, %d dense queries, p50 %s ms, state %s"
+                % (
+                    subject,
+                    out["warming"]["seconds"],
+                    len(times),
+                    out["warming"].get("p50_ms"),
+                    state["state"],
+                ),
+                file=sys.stderr,
+                flush=True,
+            )
             out["warm"] = []
-            for lane in LANES:
+            if not warmed:
+                out["warm_skipped"] = {
+                    "reader_state": state["state"],
+                    "native_cache_degraded": out["warming"]["native_cache_degraded"],
+                }
+            for lane in LANES if warmed else ():
                 times, telemetry, failed = [], [], 0
                 for n in range(1, args.queries + 1):
                     answer, took, error = search(lane, n)
@@ -722,15 +816,19 @@ def arm(run, corpus, memory_max_bytes, vectors, texts, stored):
             # files and builds the subject's admission. The time over the warm
             # median is that cost; the requests and bytes are the reader's own
             # counters. `isolated_admission` is a diagnosis, not an admission time.
-            first, warm = out["first"][0], out["warm"][0]
-            if "telemetry" in first and "p50_ms" in warm:
+            if warmed:
+                try:
+                    out["readiness_after_warm"] = readiness(
+                        read, keys[subject], time.perf_counter() + 60
+                    )
+                except TimeoutError:
+                    out["readiness_after_warm"] = None
+            first = out["first"][0]
+            warm = out["warm"][0] if out["warm"] else {}
+            if "telemetry" in first:
                 telemetry = first["telemetry"]
                 out["cold_first_query"] = {
                     "first_query_ms": round(first["seconds"] * 1000, 1),
-                    "warm_p50_ms": warm["p50_ms"],
-                    "excess_over_warm_ms": round(
-                        first["seconds"] * 1000 - warm["p50_ms"], 1
-                    ),
                     "stage_s3_requests_admission": telemetry["stage_s3_requests"].get(
                         "admission"
                     ),
@@ -739,6 +837,11 @@ def arm(run, corpus, memory_max_bytes, vectors, texts, stored):
                     ),
                     "storage_requests_and_bytes": first["storage_requests_and_bytes"],
                 }
+                if "p50_ms" in warm:
+                    out["cold_first_query"]["warm_p50_ms"] = warm["p50_ms"]
+                    out["cold_first_query"]["excess_over_warm_ms"] = round(
+                        first["seconds"] * 1000 - warm["p50_ms"], 1
+                    )
             out["reader_peak_rss_mib"] = peak_rss_mib(reader.pid)
             out["mirror_bytes"] = tree_bytes(run.work / "mirror")
             if subject == "all" and args.native_recall:
@@ -887,15 +990,30 @@ def table(report):
                 continue
             admission = out.get("cold_first_query", {})
             print(
-                "%s: ready %.1f s, cold first query +%s ms, recall@10 %s"
+                "%s: ready %.1f s, cold first query %s ms (+%s over warm), recall@10 %s"
                 % (
                     out["subject"],
                     out["ready_seconds"],
+                    admission.get("first_query_ms"),
                     admission.get("excess_over_warm_ms"),
                     out["recall_numpy"]["recall_at_10_mean"],
                 ),
                 file=sys.stderr,
             )
+            warming = out.get("warming", {})
+            print(
+                "  warming %.1f s, dense p50 %s p95 %s (%s queries), then %s"
+                % (
+                    warming.get("seconds", 0),
+                    warming.get("p50_ms"),
+                    warming.get("p95_ms"),
+                    warming.get("n", 0),
+                    warming.get("reader_state"),
+                ),
+                file=sys.stderr,
+            )
+            if "warm_skipped" in out:
+                print("  warm skipped: %s" % out["warm_skipped"], file=sys.stderr)
             for case in out["warm"]:
                 print(
                     "  %-7s p50 %8s p95 %8s p99 %8s errors %d"
@@ -987,9 +1105,14 @@ def main():
             (work / "load.json").write_text(json.dumps(report["load"], indent=2))
         vectors, texts = corpus.queries(args.queries + 1)
         stored = corpus.stored()
-        report["arms"] = [
-            arm(run, corpus, memory, vectors, texts, stored) for memory in args.memory
-        ]
+        report["arms"] = []
+        for memory in args.memory:
+            arm(run, corpus, memory, vectors, texts, stored, report["arms"])
+    except BaseException as error:
+        # The arms measured so far are not lost with the run.
+        report["error"] = str(error) or type(error).__name__
+        print(json.dumps(report, indent=2))
+        raise
     finally:
         run.terminate_all()
         if not args.keep and not args.reuse:
