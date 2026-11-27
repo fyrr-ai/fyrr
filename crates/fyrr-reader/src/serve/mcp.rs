@@ -134,15 +134,14 @@ pub(super) async fn execute(
         let result = bounded(&context, work).await;
         settle(&mut reader, granted, result).await
     };
-    let outcome = if job
-        .subject
-        .as_ref()
-        .is_some_and(|s| s.expires <= fyrr_core::clock::now().timestamp())
-    {
-        Err(AuthorizationUnavailable)
-    } else {
-        outcome
-    };
+    let outcome =
+        if job.subject.as_ref().is_some_and(|s| {
+            !crate::auth::unexpired(s.expires, fyrr_core::clock::now().timestamp())
+        }) {
+            Err(AuthorizationUnavailable)
+        } else {
+            outcome
+        };
     #[cfg(test)]
     reader.test_hooks.completion.wait().await;
     let successful = outcome.is_ok() && !context.cancelled.is_cancelled();
