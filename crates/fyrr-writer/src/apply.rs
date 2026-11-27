@@ -188,13 +188,15 @@ async fn write_fragments(
     }
     let mut fragments = Vec::new();
     for (schema, batches) in groups {
+        // One batch per schema: Lance writes each batch it is given apart, so
+        // rows held one by one would cost their write per row.
+        let batch = arrow_select::concat::concat_batches(&schema, &batches)
+            .map_err(|_| WriterError::FragmentWriteFailed)?;
+        drop(batches);
         fragments.extend(
             FragmentCreateBuilder::new(&fyrr_reader::storage::dataset_uri(config))
                 .write_params(&params)
-                .write_fragments(RecordBatchIterator::new(
-                    batches.into_iter().map(Ok),
-                    schema,
-                ))
+                .write_fragments(RecordBatchIterator::new([Ok(batch)], schema))
                 .await
                 .map_err(|_| WriterError::FragmentWriteFailed)?,
         );
@@ -810,13 +812,18 @@ mod tests {
             .unwrap()
         };
         let rows: Vec<_> = (0..5).map(|n| row(&format!("root-{n}"))).collect();
+        let batch = arrow_select::concat::concat_batches(&rows[0].schema(), &rows).unwrap();
+        // Under the default bounds the five are one step, held as one batch:
+        // a step of one-row batches costs its write per row (#416).
+        let mut steps = Steps::default();
+        steps.push(&config, batch.clone()).await.unwrap();
+        assert_eq!(steps.rows.len(), 1, "a step holds the batch as one slice");
         let (_, one) = row_size(&rows[..1]).unwrap();
         let one = one - ROW_OVERHEAD_BYTES;
         // Two rows fit a group, three do not; the five come as one batch, as
         // the rows of an API envelope do.
         config.writer.commit.group_max_bytes =
             fyrr_core::units::ByteSize::bytes(ROW_OVERHEAD_BYTES + 2 * one + one / 2);
-        let batch = arrow_select::concat::concat_batches(&rows[0].schema(), &rows).unwrap();
         let mut steps = Steps::default();
         steps.push(&config, batch).await.unwrap();
         let fragments = steps.finish(&config).await.unwrap();
