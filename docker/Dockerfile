@@ -31,7 +31,7 @@ ENV RUSTUP_TOOLCHAIN=1.97.1 \
 WORKDIR /src
 # The pinned, checksum-verified protoc that Lance's build scripts need.
 COPY scripts/lib.sh scripts/pins.env scripts/
-RUN bash -c 'source scripts/lib.sh && ensure_protoc'
+RUN bash -c 'source scripts/lib.sh && ensure_tool protoc'
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY .cargo .cargo
 COPY crates crates

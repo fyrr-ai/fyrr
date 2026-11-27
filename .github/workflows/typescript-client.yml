@@ -83,18 +83,23 @@ jobs:
           rustup toolchain install "$channel" --profile minimal
           rustup default "$channel"
 
+      - name: Read the mbx pin (mise.toml)
+        id: mbx
+        if: steps.binary.outputs.cache-hit != 'true'
+        run: echo "version=$(sed -n 's/^mr-boxington = "\(.*\)"/\1/p' mise.toml)" >> "$GITHUB_OUTPUT"
+
       - name: Shared Cargo compilation cache
         if: steps.binary.outputs.cache-hit != 'true'
         uses: jdx/mr-boxington-action@88acf2bb50552c7c508cbac13e5f8c576b95b1de # v1
         with:
-          version: '1.30.0'
+          version: ${{ steps.mbx.outputs.version }}
           backend: github
 
       - name: Build the full fyrr binary
         if: steps.binary.outputs.cache-hit != 'true'
         run: |
           source scripts/lib.sh
-          ensure_protoc
+          ensure_tool protoc
           cargo build --locked -p fyrr
           install -D target/debug/fyrr target/ci-build/full/fyrr
 

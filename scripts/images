@@ -69,8 +69,8 @@ rm -rf "$OUT"
 mkdir -p "$OUT/compose"
 
 # --- the Helm chart ----------------------------------------------------------
-ensure_helm
-helm="$HELM_DIR/helm"
+ensure_tool helm
+helm="$TOOLS_DIR/helm/helm"
 chart=deploy/helm/fyrr
 log "linting and rendering $chart"
 "$helm" lint --strict "$chart" >"$OUT/helm-lint.log" 2>&1 || { cat "$OUT/helm-lint.log"; die "helm lint failed"; }

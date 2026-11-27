@@ -14,7 +14,7 @@ supported build host.
 
 Prerequisites: git, curl, unzip, openssl, Python 3.11 or newer, Docker with the compose
 plugin, rustup, uv,
-cargo-deny 0.20.2, mise with `mise install` (mr-boxington 1.30.0), binutils (`readelf`), jq, a C compiler (GCC 12+ or Clang 6+), and about 10 GiB
+mise with `mise install` (mr-boxington, pinned in `mise.toml`), binutils (`readelf`), jq, a C compiler (GCC 12+ or Clang 6+), and about 10 GiB
 of free space for `target/`.
 
 ```sh
@@ -23,9 +23,9 @@ scripts/doctor --local   # local development without Docker
 ```
 
 `scripts/doctor` checks the pinned Rust toolchain and components and prepares
-checksum-verified protoc in `target/tools`, uv-managed Python and the locked
-`connectors/.venv`. Default mode also prepares the S3 fixture image. Local
-mode warns about missing CI-only mbx and cargo-deny. It is idempotent.
+checksum-verified protoc and cargo-deny in `target/tools`, uv-managed Python
+and the locked `connectors/.venv`. Default mode also prepares the S3 fixture
+image. Local mode warns about missing CI-only mbx. It is idempotent.
 
 ## Building
 
