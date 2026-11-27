@@ -62,6 +62,10 @@ mod synthetic;
 mod tools;
 #[path = "dense_path/write_api.rs"]
 mod write_api;
+#[path = "dense_path/write_api_aggregate.rs"]
+mod write_api_aggregate;
+#[path = "dense_path/write_api_query.rs"]
+mod write_api_query;
 
 use common::embedding::{FixtureRoot, configure as configure_embedding};
 use fyrr_core::publication::{ContentManifest, PolicyArtifact, ServingHead};
