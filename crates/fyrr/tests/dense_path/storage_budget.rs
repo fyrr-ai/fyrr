@@ -384,6 +384,29 @@ async fn a_vector_attribute_costs_a_reader_a_bounded_number_of_storage_requests(
     );
 }
 
+/// Sends a request and its answer's status and body. A reader refuses with
+/// 503 `authorization_unavailable`, without a read, while the published keys it
+/// holds are older than two version checks, and a loaded host can delay its
+/// checks that long: that answer is asked for again, at most 1,200 times.
+async fn answered(send: impl Fn() -> reqwest::RequestBuilder) -> (u16, String) {
+    const RETRIES: usize = 1200;
+    let mut answer = (0, String::new());
+    for _ in 0..=RETRIES {
+        let response = send().send().await.unwrap();
+        let status = response.status().as_u16();
+        let body = response.text().await.unwrap();
+        let refused = status == 503
+            && serde_json::from_str::<Value>(&body).ok()
+                == Some(json!({"error": "authorization_unavailable"}));
+        answer = (status, body);
+        if !refused {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    answer
+}
+
 /// What a reader that declares API keys adds to the budgets above: one `GET`
 /// of the published keys when it starts and one per version check, and nothing
 /// per request.
@@ -444,17 +467,16 @@ async fn an_http_reader_with_api_keys_reads_them_once_per_version_check() {
     // Requests that carry a key nobody published read no keys.
     let secret = format!("fyrr_key_{:064}", 7);
     for _ in 0..20 {
-        let response = reader
-            .client
-            .post(format!("{}/mcp", reader.base))
-            .bearer_auth(&secret)
-            .header("Accept", "application/json, text/event-stream")
-            .json(&json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}))
-            .send()
-            .await
-            .unwrap();
-        let status = response.status();
-        assert_eq!(status, 401, "{}", response.text().await.unwrap());
+        let (status, body) = answered(|| {
+            reader
+                .client
+                .post(format!("{}/mcp", reader.base))
+                .bearer_auth(&secret)
+                .header("Accept", "application/json, text/event-stream")
+                .json(&json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}))
+        })
+        .await;
+        assert_eq!(status, 401, "{body}");
     }
     tokio::time::sleep(Duration::from_secs(4)).await;
     let keys_read = || {
@@ -476,33 +498,15 @@ async fn an_http_reader_with_api_keys_reads_them_once_per_version_check() {
         "the keys were read {keys} times, allowed {allowed}"
     );
 
-    // A reader refuses, without a read, while the published keys it holds are
-    // older than two version checks: a loaded host can delay its checks that
-    // long. The request is asked again until that has passed.
     let post_as = |key: usize, namespace: String| {
         let reader = &reader;
-        async move {
-            let deadline = std::time::Instant::now() + Duration::from_secs(120);
-            loop {
-                let response = reader
-                    .client
-                    .post(format!("{}/v1/namespaces/{namespace}/query", reader.base))
-                    .bearer_auth(format!("fyrr_key_{key:064}"))
-                    .json(&json!({"query":"ledger"}))
-                    .send()
-                    .await
-                    .unwrap();
-                let status = response.status().as_u16();
-                let body = response.text().await.unwrap();
-                if body.contains("authorization_unavailable")
-                    && std::time::Instant::now() < deadline
-                {
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                    continue;
-                }
-                return (status, body);
-            }
-        }
+        answered(move || {
+            reader
+                .client
+                .post(format!("{}/v1/namespaces/{namespace}/query", reader.base))
+                .bearer_auth(format!("fyrr_key_{key:064}"))
+                .json(&json!({"query":"ledger"}))
+        })
     };
     // A namespace that does not exist costs one read of its head and nothing
     // else; one that does opens within the budget of any namespace. Reads of
@@ -1315,9 +1319,9 @@ async fn a_writer_service_maintains_the_namespace_it_serves() {
         segments.values().all(|count| *count <= SEGMENT_CAP)
     })
     .await;
+    drop(writer);
     let log = std::fs::read_to_string(root.join("service.stderr")).unwrap();
     assert!(!log.contains("maintenance_failed"), "{log}");
-    drop(writer);
     success(&config, &["writer", "verify"]);
     std::fs::remove_dir_all(root).unwrap();
 }
