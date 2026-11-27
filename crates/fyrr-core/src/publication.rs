@@ -41,30 +41,109 @@ pub struct NamespaceSettings {
     pub namespace: PersistedSettings,
 }
 
-/// A stored document names every setting that has a default in a file.
+/// The settings whose members a stored document names too: a file may leave
+/// one out for its default, a stored document may not.
+const COMPLETE_MEMBERS: [&str; 3] = ["retrieval", "composition", "analyzer"];
+
+/// A stored document names every setting that has a default in a file, and
+/// every member of the settings in [`COMPLETE_MEMBERS`].
 fn stored_settings_required(schema: &mut schemars::Schema) {
+    let defaults = PersistedSettings::defaults();
     let mut required = vec!["embedding".to_owned()];
-    required.extend(PersistedSettings::defaults().keys().cloned());
+    required.extend(defaults.keys().cloned());
     schema.insert("required".into(), required.into());
+    for key in COMPLETE_MEMBERS {
+        let members: Vec<String> = defaults[key]
+            .as_object()
+            .map(|members| members.keys().cloned().collect())
+            .unwrap_or_default();
+        if let Some(property) = schema
+            .get_mut("properties")
+            .and_then(|properties| properties.get_mut(key))
+            .and_then(|property| property.as_object_mut())
+        {
+            property.insert("required".into(), members.into());
+        }
+    }
+}
+
+/// Whether `request` fits `schema` as far as keys go: an object names only the
+/// properties of an object schema (and, for a map, fits its value schema); a
+/// value that is not an object does not stand where a struct is declared.
+fn names_only(
+    request: &serde_json::Value,
+    schema: &serde_json::Value,
+    root: &serde_json::Value,
+) -> bool {
+    use serde_json::Value;
+    let Value::Object(schema) = schema else {
+        return true;
+    };
+    if let Some(Value::String(reference)) = schema.get("$ref") {
+        return reference
+            .strip_prefix("#/")
+            .and_then(|path| root.pointer(&format!("/{path}")))
+            .is_some_and(|target| names_only(request, target, root));
+    }
+    for union in ["anyOf", "oneOf"] {
+        if let Some(Value::Array(branches)) = schema.get(union) {
+            return branches
+                .iter()
+                .any(|branch| names_only(request, branch, root));
+        }
+    }
+    // A branch of a union fits the value only if its type is the value's.
+    let kind = match request {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "boolean",
+        serde_json::Value::Number(_) => "number",
+        serde_json::Value::String(_) => "string",
+        serde_json::Value::Array(_) => "array",
+        serde_json::Value::Object(_) => "object",
+    };
+    let fits = |declared: &serde_json::Value| {
+        declared == kind || (kind == "number" && declared == "integer")
+    };
+    if let Some(declared) = schema.get("type")
+        && !declared
+            .as_array()
+            .map_or_else(|| fits(declared), |types| types.iter().any(fits))
+    {
+        return false;
+    }
+    let declared = schema.get("properties").and_then(Value::as_object);
+    let values = schema.get("additionalProperties").filter(|v| v.is_object());
+    match request {
+        Value::Object(members) => match (declared, values) {
+            (Some(declared), _) => members.iter().all(|(key, member)| {
+                declared
+                    .get(key)
+                    .is_some_and(|schema| names_only(member, schema, root))
+            }),
+            (None, Some(values)) => members
+                .values()
+                .all(|member| names_only(member, values, root)),
+            // An enum or a constant is no object.
+            (None, None) => !schema.contains_key("enum") && !schema.contains_key("const"),
+        },
+        // A struct does not stand in for an array: serde would read one.
+        _ => declared.is_none(),
+    }
 }
 
 impl NamespaceSettings {
-    /// Whether a request's `settings` names only settings. A key this build
-    /// does not know would otherwise be dropped without a word.
+    /// Whether a request's `settings` names only settings, at every depth. A key
+    /// this build does not know would otherwise be dropped without a word.
+    /// Persisted types may not refuse it (a newer minor version adds fields),
+    /// so the request is checked against the keys the schema declares.
     pub fn names_only_settings(request: &serde_json::Value) -> bool {
-        let schema = schemars::schema_for!(NamespaceSettings);
-        match (
-            request.as_object(),
-            schema.get("properties").and_then(|known| known.as_object()),
-        ) {
-            (Some(request), Some(known)) => request.keys().all(|key| known.contains_key(key)),
-            _ => false,
-        }
+        let schema = serde_json::Value::from(schemars::schema_for!(NamespaceSettings));
+        names_only(request, &schema, &schema)
     }
 
     /// Refuses a stored document that leaves a setting out, which this build
-    /// would fill with its own default, and a `retrieval` or `composition`
-    /// that leaves out one of its members.
+    /// would fill with its own default, and a `retrieval`, `composition` or
+    /// `analyzer` that leaves out one of its members.
     fn check_complete(document: &serde_json::Value) -> Result<(), String> {
         let stored = document.get("settings").and_then(|s| s.as_object());
         let defaults = PersistedSettings::defaults();
@@ -82,7 +161,7 @@ impl NamespaceSettings {
         if let Some(key) = missing(stored, &defaults) {
             return Err(format!("settings.{key} is missing"));
         }
-        for key in ["retrieval", "composition"] {
+        for key in COMPLETE_MEMBERS {
             if let (Some(stored), Some(defaults)) = (
                 stored.get(key).and_then(|v| v.as_object()),
                 defaults.get(key).and_then(|v| v.as_object()),
