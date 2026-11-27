@@ -61,7 +61,7 @@
           "type": "null"
         }
       ],
-      "description": "The newest permissions envelope this cursor confirmed. Only the envelopes\nthat chain back from it, through their `previous`, are committable: the\nconditional write of this state is what makes a permissions envelope\ncount, so a worker that lost its lease cannot publish."
+      "description": "The newest content or permissions envelope this cursor confirmed. Only\nthe envelopes that chain back from it, through their `previous`, are\ncommittable: the conditional write of this state is what makes such an\nenvelope count, so a worker that lost its lease cannot publish."
     },
     "completed_generation": {
       "type": "integer",

@@ -48,11 +48,11 @@ pub struct PreparedEnvelope {
     #[schemars(with = "DateTime<Utc>")]
     pub created_at: DateTime<Utc>,
     /// The generation of the cursor lease its worker held; part of the ID of a
-    /// permissions envelope, so two workers never write the same one.
-    /// Zero on an envelope written before permissions envelopes were chained.
+    /// content or permissions envelope, so two workers never write the same
+    /// one. Zero for members and listings, which are not chained.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub lease_generation: u64,
-    /// The permissions envelope this one follows, from the cursor
+    /// The envelope of its source and kind this one follows, from the cursor
     /// of its worker; none for the first. The committer applies only the
     /// envelopes that chain back from the one the cursor confirmed.
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -214,11 +214,16 @@ impl Preparation<'_> {
         };
         let (store, root) = fyrr_reader::storage::namespace_store(self.config)?;
         // Always discover new envelopes; only immutable, fingerprinted bodies are reused.
-        let objects: Vec<_> = self
-            .rt
-            .block_on(store.list(Some(&root.join("envelopes"))).try_collect())?;
+        let objects: Vec<_> = self.rt.block_on(
+            store
+                .list(Some(&root.clone().join("envelopes")))
+                .try_collect(),
+        )?;
         let mut content_count = 0;
         let mut content_bytes = 0;
+        // The content of this source, decided once the chain its cursor
+        // confirmed is known: (path, ID, previous, bytes, resolved).
+        let mut own_content = Vec::new();
         for object in objects {
             let path = object.location;
             let stamp = serde_json::to_string(&(
@@ -255,30 +260,41 @@ impl Preparation<'_> {
                 crate::commit::classify(&envelope, &facts),
                 crate::commit::State::Applied | crate::commit::State::Rejected
             );
-            if !resolved && let EnvelopePayload::Content(payload) = &envelope.payload {
-                content_count += 1;
-                content_bytes += payload
+            if envelope.namespace != self.config.namespace.name {
+                return Err(WriterError::EnvelopeNamespaceInvalid);
+            }
+            let bytes = match &envelope.payload {
+                EnvelopePayload::Content(payload) => payload
                     .fragments
                     .iter()
                     .flat_map(|f| &f.files)
                     .map(|f| f.size_bytes)
-                    .sum::<u64>();
+                    .sum::<u64>(),
+                _ => 0,
+            };
+            if envelope.source_id == self.source.id && envelope.kind == SyncKind::Content {
+                own_content.push((
+                    path,
+                    envelope.envelope_id,
+                    envelope.previous,
+                    bytes,
+                    resolved,
+                ));
+                continue;
             }
-            if envelope.namespace != self.config.namespace.name {
-                return Err(WriterError::EnvelopeNamespaceInvalid);
+            if !resolved && envelope.kind == SyncKind::Content {
+                content_count += 1;
+                content_bytes += bytes;
             }
             if envelope.source_id == self.source.id && !resolved {
                 source_pending = true;
-                if envelope.kind == SyncKind::Content {
-                    content_paths.push(path.clone());
-                }
             }
-            // A permissions envelope counts only once the cursor confirmed it: the
+            // A chained envelope counts only once the cursor confirmed it: the
             // cursor holds what a read needs of them, and the committer reads
             // their chain.
             if envelope.source_id == self.source.id
                 && envelope.kind == self.kind
-                && envelope.kind != SyncKind::Permissions
+                && !crate::commit::chained(envelope.kind)
             {
                 durable_generation = durable_generation.max(envelope.rejection_generation);
                 durable_restore_sequence = durable_restore_sequence.max(envelope.restore_sequence);
@@ -304,6 +320,85 @@ impl Preparation<'_> {
                     },
                 ));
                 if !resolved {
+                    paths.push(path);
+                }
+            }
+        }
+        // Content of this source counts only on the chain from its cursor: an
+        // envelope that no cursor write confirmed never publishes.
+        if own_content.iter().any(|(.., resolved)| !resolved) {
+            let state = if self.kind == SyncKind::Content {
+                Some(self.rt.block_on(self.lease.state())?)
+            } else {
+                self.rt.block_on(crate::sync_lease::CursorLease::peek(
+                    self.config,
+                    &self.source.id,
+                    SyncKind::Content,
+                ))?
+            };
+            let links: BTreeMap<_, _> = own_content
+                .iter()
+                .map(|(_, id, previous, ..)| (id.clone(), previous.clone()))
+                .collect();
+            let mut on_chain = std::collections::BTreeSet::new();
+            let mut next = state.and_then(|state| state.last).map(|last| last.id);
+            while let Some(id) = next.take() {
+                if !on_chain.insert(id.clone()) {
+                    break;
+                }
+                if let Some(previous) = links.get(&id) {
+                    next.clone_from(previous);
+                    continue;
+                }
+                // A link the cursor confirmed after the listing is read by ID,
+                // as the committer reads it.
+                let path = root.clone().join("envelopes").join(format!("{id}.json"));
+                let bytes = match self.rt.block_on(async {
+                    object_store::ObjectStoreExt::get(store.as_ref(), &path)
+                        .await?
+                        .bytes()
+                        .await
+                }) {
+                    Ok(bytes) => bytes,
+                    Err(object_store::Error::NotFound { .. }) => break,
+                    Err(_) => return Err(WriterError::StorageUnavailable),
+                };
+                let envelope: PreparedEnvelope = fyrr_core::parse_contract(&bytes)
+                    .map_err(|_| WriterError::PublicationInvalid)?;
+                if envelope.envelope_id != id
+                    || matches!(
+                        crate::commit::classify(&envelope, &facts),
+                        crate::commit::State::Applied | crate::commit::State::Rejected
+                    )
+                {
+                    break;
+                }
+                let EnvelopePayload::Content(payload) = &envelope.payload else {
+                    break;
+                };
+                own_content.push((
+                    path,
+                    id,
+                    envelope.previous.clone(),
+                    payload
+                        .fragments
+                        .iter()
+                        .flat_map(|f| &f.files)
+                        .map(|f| f.size_bytes)
+                        .sum::<u64>(),
+                    false,
+                ));
+                next = envelope.previous;
+            }
+            for (path, id, _, bytes, resolved) in own_content {
+                if resolved || !on_chain.contains(&id) {
+                    continue;
+                }
+                source_pending = true;
+                content_count += 1;
+                content_bytes += bytes;
+                content_paths.push(path.clone());
+                if self.kind == SyncKind::Content {
                     paths.push(path);
                 }
             }

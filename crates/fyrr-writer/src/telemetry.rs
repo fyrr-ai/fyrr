@@ -73,11 +73,15 @@ pub(crate) fn head_write_failed(stage: HeadWriteStage, error: &Error) {
     eprintln!("telemetry head_write=failed stage={stage} category={category}");
 }
 
-/// A permissions chain that does not reach what the manifest applied: its
-/// source is blocked, and nothing is skipped. `writer status` lists it too.
+/// A chain of content or permissions that does not reach what the manifest
+/// applied: its source is blocked, and nothing is skipped. `writer status`
+/// lists it too.
 #[allow(clippy::print_stderr)]
-pub(crate) fn permissions_blocked(source: &str) {
-    eprintln!("telemetry permissions=blocked source={source}");
+pub(crate) fn chain_blocked(source: &str, kind: fyrr_core::connector::SyncKind) {
+    eprintln!(
+        "telemetry chain=blocked source={source} kind={}",
+        kind.as_str()
+    );
 }
 
 /// An index step that finished, at the rate it rewrote rows: `train`, `encode` or `copy` of a

@@ -5,8 +5,8 @@ use fyrr_core::attributes::{
 use lance::index::DatasetIndexInternalExt;
 use lance_index::metrics::NoOpMetricsCollector;
 
-/// The newest chained envelope resolved, by source.
-pub(crate) type ChainApplied = BTreeMap<String, String>;
+/// The newest chained envelope resolved, by source and kind.
+pub(crate) type ChainApplied = BTreeMap<String, BTreeMap<SyncKind, String>>;
 
 /// Publish native work through the same immutable manifest and fenced head CAS.
 /// `carry` holds the options of the indexes that stand as they were built: the
@@ -274,7 +274,9 @@ pub(crate) async fn write_manifest(
         .as_ref()
         .map(|m| m.chain_applied.clone())
         .unwrap_or_default();
-    chain_applied.extend(chained);
+    for (source, kinds) in chained {
+        chain_applied.entry(source).or_default().extend(kinds);
+    }
     let manifest = ContentManifest {
         schema_version: MANIFEST_CONTRACT_VERSION,
         namespace: config.namespace.name.clone(),

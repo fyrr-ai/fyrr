@@ -115,9 +115,24 @@
     "chain_applied": {
       "type": "object",
       "additionalProperties": {
-        "type": "string"
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "members": {
+            "type": "string"
+          },
+          "permissions": {
+            "type": "string"
+          },
+          "reconcile": {
+            "type": "string"
+          }
+        }
       },
-      "description": "The newest chained envelope of each source (the write API's content, a\nconnector's permissions) that this publication and every older one\nresolved. The committer walks the chain of the cursor back to it."
+      "description": "The newest chained envelope of each source and kind (content and\npermissions) that this publication and every older one resolved. The\ncommitter walks the chain of the cursor back to it."
     }
   },
   "required": [

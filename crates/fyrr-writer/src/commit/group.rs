@@ -123,12 +123,12 @@ pub(crate) async fn commit_one(
     work.apply_non_content(&mut head, non_content, &mut receipts, sequence)
         .await?;
     // The newest chained envelope of each source resolved, in sequence order.
-    let mut chained = BTreeMap::new();
-    for e in envelopes
-        .iter()
-        .filter(|e| e.kind == chain_kind(&e.source_id))
-    {
-        chained.insert(e.source_id.clone(), e.envelope_id.clone());
+    let mut chained: super::publication::ChainApplied = BTreeMap::new();
+    for e in envelopes.iter().filter(|e| crate::commit::chained(e.kind)) {
+        chained
+            .entry(e.source_id.clone())
+            .or_default()
+            .insert(e.kind, e.envelope_id.clone());
     }
     stage(stage_timings, "data_commit", data_start);
     let native::ContentWork {
