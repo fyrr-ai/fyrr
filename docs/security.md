@@ -106,15 +106,16 @@ unknown identities and unsupported holder types grant nobody.
 ## Score statistics
 
 The permission mask applies after Lance computes BM25 statistics over an
-index. For the indexed part of a namespace, a document's `lexical_score`
-(see [`scores`](http-api.md#returned-fields)) depends on the document count, the
-average document length and the number of documents containing each query
-term, counted over every indexed document, including those the subject cannot
-read. A caller can therefore see a visible document's score move when readable
-or unreadable documents change. This reveals aggregate term statistics only: a
-result never carries the content or id of a document the subject cannot read,
-and the mask still decides which documents appear. Documents written after the
-last index build are scored over the documents admitted for the request.
+index. For the indexed part of a namespace, the `lexical_score` of a hit
+(see [`scores`](http-api.md#returned-fields)) depends on the number of indexed
+records, their average length and the number of indexed records containing each
+query term, counted over every indexed record, including those the subject
+cannot read. A caller can therefore see a visible hit's score move when
+readable or unreadable records change. This reveals aggregate term statistics
+only: a result never carries the content or id of a record the subject cannot
+read, and the mask still decides which hits appear. Documents written after the
+last index build add only the documents admitted for the request to these
+statistics; the indexed counts still apply to their scores.
 
 ## Revocation
 
