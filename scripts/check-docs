@@ -579,29 +579,47 @@ def render_routes(spec):
     return "\n".join(sections_)
 
 
-def api_reference_split():
-    """The hand-written part of docs/api-reference.md and its generated routes."""
-    text = (ROOT / "docs/api-reference.md").read_text()
-    start = text.index("\n## `") + 1
-    return text[:start], text[start:]
+def markers(name):
+    return f"<!-- {name}:begin (scripts/check-docs --render) -->", f"<!-- {name}:end -->"
 
 
-def render_api_reference():
+def read_block(path, name):
+    """The generated block between the markers of name in path, or None without them."""
+    begin, end = markers(name)
+    text = path.read_text()
+    if begin not in text or end not in text:
+        return None
+    return text.split(begin, 1)[1].split(end, 1)[0].strip("\n")
+
+
+def write_block(path, name, body):
+    begin, end = markers(name)
+    text = path.read_text()
+    if begin not in text or end not in text:
+        sys.exit(f"{path.relative_to(ROOT)}: add the lines `{begin}` and `{end}` where it goes")
+    head, rest = text.split(begin, 1)
+    path.write_text(f"{head}{begin}\n\n{body.strip(chr(10))}\n\n{end}{rest.split(end, 1)[1]}")
+
+
+def check_block(path, name, body, hint):
+    found = read_block(ROOT / path, name)
+    if found is None:
+        fail(path, f"the {name} markers are missing; {hint}")
+    elif found != body.strip("\n"):
+        fail(path, f"the generated {name} block is out of date; run scripts/check-docs --render")
+
+
+def render_all():
     spec = json.loads((ROOT / "schemas/openapi.json").read_text())
-    head, _ = api_reference_split()
-    (ROOT / "docs/api-reference.md").write_text(head + render_routes(spec))
+    write_block(ROOT / "docs/api-reference.md", "routes", render_routes(spec))
+    write_block(ROOT / "README.md", "docs-index", render_docs_index())
 
 
 def check_api_reference():
     spec = json.loads((ROOT / "schemas/openapi.json").read_text())
-    if api_reference_split()[1] != render_routes(spec):
-        fail(
-            "docs/api-reference.md",
-            "the route sections differ from schemas/openapi.json; run scripts/check-docs --render",
-        )
-
-
-DOCS_INDEX = re.compile(r"(## Documentation\n\n)(\|.*(?:\n\|.*)*)")
+    check_block(
+        "docs/api-reference.md", "routes", render_routes(spec), "see scripts/check-docs --render"
+    )
 
 
 def render_docs_index():
@@ -610,32 +628,54 @@ def render_docs_index():
     navigation = json.loads(source.split("=", 1)[1].rsplit("as const", 1)[0])
     rows = [
         f"| {name} | "
-        + " · ".join(f"[{title}](docs/{page})" for page, title, _ in pages)
+        + " \u00b7 ".join(f"[{title}](docs/{page})" for page, title, _ in pages)
         + " |"
         for name, pages in navigation
     ]
     return "\n".join(["| Section | Pages |", "| --- | --- |", *rows])
 
 
-def render_docs_index_readme():
-    path = ROOT / "README.md"
-    path.write_text(DOCS_INDEX.sub(lambda m: m.group(1) + render_docs_index(), path.read_text()))
-
-
 def check_docs_index():
-    found = DOCS_INDEX.search((ROOT / "README.md").read_text())
-    if not found or found.group(2) != render_docs_index():
-        fail("README.md", "the documentation table differs from site/lib/navigation.ts; run --render")
+    check_block("README.md", "docs-index", render_docs_index(), "see scripts/check-docs --render")
+
+
+# The whole tag counts: `latest` or `0.1.1-rc.1` is not the workspace version.
+RELEASE_TAG = re.compile(
+    r"(?:ghcr\.io/fyrr-ai/fyrr(?:-reader)?:|fyrr-ai/fyrr/v)([\w.+-]+)|fyrr-image-([^\s/]+?)-linux"
+)
+
+
+def stale_tags(text, version):
+    """Image, download and archive tags in text that are not the workspace version."""
+    return [a or b for a, b in RELEASE_TAG.findall(text) if (a or b) != version]
 
 
 def check_release_tags():
-    """Image, download and archive names in the docs carry the workspace version."""
     version = tomllib.loads((ROOT / "Cargo.toml").read_text())["workspace"]["package"]["version"]
-    tag = re.compile(r"(?:ghcr\.io/fyrr-ai/fyrr(?:-reader)?:|fyrr-ai/fyrr/v|fyrr-image-)(\d+\.\d+\.\d+)")
-    for page in [*sorted((ROOT / "docs").rglob("*.md")), ROOT / "README.md", ROOT / "CONTRIBUTING.md"]:
-        for found in tag.findall(page.read_text()):
-            if found != version:
-                fail(str(page.relative_to(ROOT)), f"release tag {found}, workspace version {version}")
+    for page in [
+        *sorted((ROOT / "docs").rglob("*.md")),
+        ROOT / "README.md",
+        ROOT / "CONTRIBUTING.md",
+    ]:
+        for found in stale_tags(page.read_text(), version):
+            fail(str(page.relative_to(ROOT)), f"release tag {found}, workspace version {version}")
+
+
+def self_check():
+    """The checks above reject what they exist to reject."""
+    image = "ghcr.io/fyrr-ai/fyrr-reader"
+    assert (
+        stale_tags(f"{image}:0.1.1 fyrr-ai/fyrr/v0.1.1/x fyrr-image-0.1.1-linux-x86_64", "0.1.1")
+        == []
+    )
+    for text in (
+        f"{image}:latest",
+        f"{image}:0.1.1-rc.1",
+        f"{image}:0.1.0",
+        "fyrr-ai/fyrr/v0.1.0/x",
+        "fyrr-image-0.1.0-linux-x86_64",
+    ):
+        assert stale_tags(text, "0.1.1"), text
 
 
 def check_guarantees():
@@ -690,9 +730,9 @@ def check_limits():
 
 def main():
     if sys.argv[1:] == ["--render"]:
-        render_api_reference()
-        render_docs_index_readme()
+        render_all()
         return 0
+    self_check()
     static = sys.argv[1:] == ["--static"]
     if not static and len(sys.argv) != 3:
         sys.exit(
@@ -720,8 +760,8 @@ def main():
     if static:
         print(
             f"ok: {', '.join(CONFIG_DOCS)}, docs/mcp-tools.md, docs/api-reference.md, "
-            "docs/guarantees.md, docs/limits.md, the README index and the release tags match committed "
-            "schemas, fixtures and sources"
+            "docs/guarantees.md, docs/limits.md, the README index and the release tags "
+            "match committed schemas, fixtures and sources"
         )
         print("n/e: CLI help, flag-boundary and example runtime checks (--static)")
     else:

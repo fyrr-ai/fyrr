@@ -10,8 +10,8 @@
 >   The reader serves it on `[reader.http]`; the writer serves it on the
 >   administration listener of `fyrr writer serve` (`[writer.serve.admin]`), and
 >   the documents route also needs `[namespace.write_api]`.
-> - The behavior of a route is in [HTTP JSON API](http-api.md); this page is
->   the index to it. The reader routes answer errors as
+> - The behavior of a route is in [HTTP JSON API](http-api.md); this page
+>   lists the routes. The reader routes answer errors as
 >   `{"error":"<code>"}` ([codes](http-api.md#errors)); the write route and the
 >   writer's `PATCH` and `DELETE` of a namespace likewise
 >   ([codes](http-api.md#write-documents)).
@@ -24,6 +24,8 @@ whose role or `namespace_prefix` does not fit the route answers
 `patch_where` needs the `admin` role besides `write`. `{namespace}` is a
 namespace name: lowercase letters, digits and `-`, at most 63 characters, not
 starting with `-`.
+
+<!-- routes:begin (scripts/check-docs --render) -->
 
 ## `GET /metrics`
 
@@ -122,3 +124,5 @@ Served by: writer.
 Needs: Needs an API key with the `write` role.
 
 Body: `WriteRequest`. Answer: `WriteResponse`.
+
+<!-- routes:end -->

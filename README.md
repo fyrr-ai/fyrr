@@ -149,6 +149,8 @@ The example's top hit is `notes/backup.md`, with the answer:
 
 ## Documentation
 
+<!-- docs-index:begin (scripts/check-docs --render) -->
+
 | Section | Pages |
 | --- | --- |
 | Get started | [Quickstart](docs/quickstart.md) · [How fyrr works](docs/architecture.md) |
@@ -156,6 +158,8 @@ The example's top hit is `notes/backup.md`, with the answer:
 | Run it | [Security model](docs/security.md) · [HTTP login and users](docs/http-users.md) · [Deployment](docs/deployment.md) · [AWS Lambda (experimental)](docs/lambda.md) · [Operations](docs/operations.md) · [Storage request costs](docs/storage-costs.md) · [Software factories](docs/software-factory.md) · [Connect an agent](docs/connect.md) |
 | Reference | [Configuration](docs/configuration.md) · [Identity and access](docs/identity.md) · [Tuning](docs/tuning.md) · [Reader memory investigation](docs/investigations/reader-memory-budget.md) · [Write latency investigation](docs/investigations/write-latency.md) · [Million-row query investigation](docs/investigations/million-row-query.md) · [Reader and writer](docs/reader-writer.md) · [CLI](docs/cli.md) · [MCP tools](docs/mcp-tools.md) · [HTTP JSON API](docs/http-api.md) · [API reference](docs/api-reference.md) · [Guarantees](docs/guarantees.md) · [Limits](docs/limits.md) |
 | Connectors | [Overview](docs/connectors/README.md) · [Local files](docs/connectors/local-files.md) · [Google Drive](docs/connectors/google-drive.md) · [Notion](docs/connectors/notion.md) · [GitHub](docs/connectors/github.md) · [Slack](docs/connectors/slack.md) · [Jira](docs/connectors/jira.md) · [Writing a provider](docs/connectors/authoring.md) |
+
+<!-- docs-index:end -->
 
 ## Contributing
 
