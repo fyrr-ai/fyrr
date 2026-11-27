@@ -52,6 +52,10 @@ pub struct MirrorStore {
     publication: Option<String>,
     /// The version manifests of that publication, relative to the dataset root.
     version_manifests: Option<Arc<std::collections::BTreeSet<String>>>,
+    /// Requests that hold a pin of this mirror now. Warming starts no fill
+    /// while one runs, so that its copies do not take the bandwidth and the
+    /// disk the request reads from.
+    requests: Arc<tokio::sync::watch::Sender<usize>>,
 }
 
 /// Counts the directory work of `make_room`, for tests.
@@ -242,6 +246,7 @@ pub(crate) struct MirrorRequest {
 }
 impl Drop for MirrorRequest {
     fn drop(&mut self) {
+        self.lease.mirror.requests.send_modify(|n| *n -= 1);
         let final_pin = {
             // Serialize refcount inspection and close with release() and other
             // request drops, so concurrent final drops cannot miss one another.
@@ -280,6 +285,7 @@ impl MirrorLease {
             .map_err(|_| StorageUnavailable)?
             .clone()
             .ok_or(StorageUnavailable)?;
+        self.mirror.requests.send_modify(|n| *n += 1);
         Ok(MirrorRequest {
             holder: Some(holder),
             lease: self.clone(),
@@ -491,6 +497,7 @@ impl MirrorStore {
             verified_pages: Arc::default(),
             publication: None,
             version_manifests: None,
+            requests: Arc::new(tokio::sync::watch::Sender::new(0)),
         })
     }
     /// The same mirror with its version manifest entries bound to `manifest`.
@@ -992,12 +999,14 @@ impl MirrorStore {
     const PREWARM_CONCURRENCY: usize = 16;
 
     /// Fill and verify every manifest file. At most `PREWARM_CONCURRENCY` files
-    /// are filled at once. The first failure stops new fills and in-flight
-    /// fills finish. Fills reserve their bytes in the order their responses
-    /// arrive, so under a tight budget a later file can take the room of an
-    /// earlier one: a capacity failure may then be a consequence of another
-    /// failure in the same batch. A failure other than capacity is therefore
-    /// reported first; within one kind, the file earliest in manifest order.
+    /// are filled at once, and none starts while a request holds a pin of
+    /// this mirror: the request reads in pages meanwhile. The first failure
+    /// stops new fills and in-flight fills finish. Fills reserve their bytes
+    /// in the order their responses arrive, so under a tight budget a later
+    /// file can take the room of an earlier one: a capacity failure may then
+    /// be a consequence of another failure in the same batch. A failure other
+    /// than capacity is therefore reported first; within one kind, the file
+    /// earliest in manifest order.
     pub(crate) async fn prewarm(
         &self,
         store: Arc<dyn ObjectStore>,
@@ -1009,7 +1018,7 @@ impl MirrorStore {
         &self,
         store: Arc<dyn ObjectStore>,
         files: &[fyrr_core::envelope::FileRef],
-        evict: bool,
+        warming: bool,
     ) -> Result<(), ReaderError> {
         let (prefix, root) = crate::sync::lock(&self.dataset_cache_key)
             .clone()
@@ -1024,7 +1033,16 @@ impl MirrorStore {
                 && running.len() < Self::PREWARM_CONCURRENCY
                 && let Some((index, file)) = pending.next()
             {
-                running.push(self.prewarm_file(&store, &prefix, &root, index, file, evict));
+                let mut requests = warming.then(|| self.requests.subscribe());
+                let (store, prefix, root) = (&store, &prefix, &root);
+                running.push(async move {
+                    if let Some(requests) = &mut requests {
+                        // This mirror holds the sender: the wait cannot fail.
+                        let _ = requests.wait_for(|n| *n == 0).await;
+                    }
+                    self.prewarm_file(store, prefix, root, index, file, warming)
+                        .await
+                });
             }
             let Some((index, result)) = running.next().await else {
                 break;
@@ -1041,7 +1059,8 @@ impl MirrorStore {
     /// `prewarm` that reserves each missing file's room before any request,
     /// without evicting: a file the mirror has no room for costs no request and
     /// no head, and is left to be read in pages. For a caller that reads all of
-    /// the files anyway and can read pages instead.
+    /// the files anyway and can read pages instead. A request fills through
+    /// it, so it does not wait for requests to end.
     pub(crate) async fn prewarm_if_room(
         &self,
         store: Arc<dyn ObjectStore>,

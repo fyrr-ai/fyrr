@@ -1165,16 +1165,19 @@ pub(crate) async fn serve(reader: crate::search::PreparedReader) -> Result<()> {
     );
     // Only a reader that declares API keys takes bearers for them, so only it
     // reads the published ones: at start and at each version check. Until
-    // they are read, API-key requests are refused and OIDC ones are not.
+    // they are read, API-key requests are refused and OIDC ones are not, so
+    // the first read ends before the reader answers any request.
     if !config.identity.api_keys.is_empty() {
         let interval = config
             .reader
             .version_check_interval
             .as_duration()
             .min(Duration::from_secs(30));
+        let _ = admission.refresh_api_keys().await;
         let admission = admission.clone();
         tokio::spawn(async move {
-            let mut tick = tokio::time::interval(interval);
+            let mut tick =
+                tokio::time::interval_at(tokio::time::Instant::now() + interval, interval);
             loop {
                 tick.tick().await;
                 let _ = admission.refresh_api_keys().await;

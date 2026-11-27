@@ -790,6 +790,35 @@ mod latency {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn warming_starts_no_fill_while_a_request_runs() {
+        let Fixture {
+            directory,
+            mirror,
+            source,
+            files,
+        } = fixture("prewarm-yields", 20, 10, 1024).await;
+        let lease = mirror.pin(&files).await.unwrap();
+        let store = LatencyStore::new(source, LATENCY);
+        let request = lease.request().unwrap();
+        let warming = tokio::spawn({
+            let (mirror, store, files) = (mirror.clone(), store.clone(), files.clone());
+            async move { mirror.prewarm(Arc::new(store), &files).await }
+        });
+        tokio::time::sleep(LATENCY * 10).await;
+        assert_eq!(store.requests(), 0, "no fill starts while a request runs");
+        // The request's own fill does not wait for it.
+        mirror
+            .prewarm_if_room(Arc::new(store.clone()), &files[..1])
+            .await
+            .unwrap();
+        assert_eq!(store.requests(), 1);
+        drop(request);
+        warming.await.unwrap().unwrap();
+        assert_eq!(store.requests(), 20, "warming fills the rest once it ends");
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn prewarm_failure_stops_new_fills_and_keeps_the_error() {
         let Fixture {
             directory,
