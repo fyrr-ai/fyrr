@@ -141,12 +141,17 @@ async fn fragment_rows(
         .await
         .map_err(|_| WriterError::ChangedRowsInvalid)
 }
+/// Writes `rows` in [`Steps`]: the caller stages them as one change of the
+/// dataset, so what it rewrites is never refused for its size.
 pub(crate) async fn write_rows(
     config: &Config,
     rows: Vec<RecordBatch>,
 ) -> Result<Vec<serde_json::Value>> {
-    check_row_bounds(config, &rows)?;
-    write_fragments(config, rows).await
+    let mut steps = Steps::default();
+    for row in rows {
+        steps.push(config, row).await?;
+    }
+    steps.finish(config).await
 }
 
 /// Writes `rows` as data files, unbounded: the caller bounds what it holds.
@@ -202,14 +207,9 @@ async fn write_fragments(
 
 pub(crate) const ROW_OVERHEAD_BYTES: u64 = 16384;
 
-pub(crate) fn check_row_bounds(config: &Config, rows: &[RecordBatch]) -> Result<()> {
-    let (count, bytes) = row_size(rows)?;
-    check_size(config, count, bytes)
-}
-
 /// Adds the rows of `batch`, loaded from storage, to the `(rows, bytes)` held so
 /// far, the lists of a multi-vector attribute included, and checks the total
-/// against the bounds of an envelope: rows are held until they are written, so
+/// against the bounds of a group: a patch holds the stored rows it loads, so
 /// those that are too many are refused as they are loaded.
 pub(crate) fn hold_rows(config: &Config, held: &mut (u64, u64), batch: &RecordBatch) -> Result<()> {
     let (count, bytes) = row_size(std::slice::from_ref(batch))?;
@@ -217,12 +217,8 @@ pub(crate) fn hold_rows(config: &Config, held: &mut (u64, u64), batch: &RecordBa
     held.1 = held
         .1
         .saturating_add(bytes.saturating_sub(ROW_OVERHEAD_BYTES));
-    check_size(config, held.0, held.1.saturating_add(ROW_OVERHEAD_BYTES))
-}
-
-fn check_size(config: &Config, count: u64, bytes: u64) -> Result<()> {
-    if count > config.writer.commit.group_max_rows
-        || bytes > config.writer.commit.group_max_bytes.as_u64()
+    if held.0 > config.writer.commit.group_max_rows
+        || held.1.saturating_add(ROW_OVERHEAD_BYTES) > config.writer.commit.group_max_bytes.as_u64()
     {
         return Err(WriterError::EnvelopeBoundsInvalid);
     }
@@ -372,7 +368,6 @@ pub async fn permissions(
         .collect::<Vec<_>>();
     let previous = states(dataset, &envelope.source_id, &roots).await?;
     let mut changed = Vec::new();
-    let mut fragments = Vec::new();
     let mut steps = Steps::default();
     for document in &payload.documents {
         let mut state = previous.get(&document.root_id).cloned().unwrap_or_default();
@@ -423,10 +418,9 @@ pub async fn permissions(
                 } else {
                     effective_readers(own_readers(&rows, row)?.as_deref(), &permission.readers)
                 };
-                let row = with_state(&rows.slice(row, 1), &state, &tokens)?;
-                if let Some(full) = steps.push(config, row)? {
-                    fragments.extend(write_fragments(config, full).await?);
-                }
+                steps
+                    .push(config, with_state(&rows.slice(row, 1), &state, &tokens)?)
+                    .await?;
             }
         }
         if !found {
@@ -437,45 +431,56 @@ pub async fn permissions(
                 &document.root_id,
                 &state,
             )?;
-            if let Some(full) = steps.push(config, marker)? {
-                fragments.extend(write_fragments(config, full).await?);
-            }
+            steps.push(config, marker).await?;
         }
         changed.push(filter);
     }
-    fragments.extend(write_fragments(config, steps.rows).await?);
-    Ok((changed, fragments))
+    Ok((changed, steps.finish(config).await?))
 }
 
 /// The rows of a root a permission replacement reads at a time.
-const STEP_ROWS: usize = 256;
+pub(crate) const STEP_ROWS: usize = 256;
 
-/// The rewritten rows of a permission replacement not yet written: a step of
-/// at most a group's rows and bytes, or a row alone.
+/// Rows written in steps of at most a group's rows and bytes, or of one row
+/// that is over them alone: the rows of a step not yet written, and the
+/// fragments of those written.
 #[derive(Default)]
-struct Steps {
+pub(crate) struct Steps {
     rows: Vec<RecordBatch>,
     held: (u64, u64),
+    fragments: Vec<serde_json::Value>,
 }
 
 impl Steps {
-    /// Holds `row`, and gives the step to write first when it would be over.
-    fn push(&mut self, config: &Config, row: RecordBatch) -> Result<Option<Vec<RecordBatch>>> {
-        let (count, bytes) = row_size(std::slice::from_ref(&row))?;
-        let bytes = bytes - ROW_OVERHEAD_BYTES;
-        let full = (!self.rows.is_empty()
-            && (self.held.0 + count > config.writer.commit.group_max_rows
-                || ROW_OVERHEAD_BYTES
-                    .saturating_add(self.held.1)
-                    .saturating_add(bytes)
-                    > config.writer.commit.group_max_bytes.as_u64()))
-        .then(|| {
-            self.held = (0, 0);
-            std::mem::take(&mut self.rows)
-        });
-        self.held = (self.held.0 + count, self.held.1.saturating_add(bytes));
-        self.rows.push(row);
-        Ok(full)
+    /// Holds each row of `batch`, and writes the step held first when the row
+    /// would put it over.
+    pub(crate) async fn push(&mut self, config: &Config, batch: RecordBatch) -> Result<()> {
+        for row in 0..batch.num_rows() {
+            let row = batch.slice(row, 1);
+            let (count, bytes) = row_size(std::slice::from_ref(&row))?;
+            let bytes = bytes - ROW_OVERHEAD_BYTES;
+            if !self.rows.is_empty()
+                && (self.held.0 + count > config.writer.commit.group_max_rows
+                    || ROW_OVERHEAD_BYTES
+                        .saturating_add(self.held.1)
+                        .saturating_add(bytes)
+                        > config.writer.commit.group_max_bytes.as_u64())
+            {
+                self.held = (0, 0);
+                let full = std::mem::take(&mut self.rows);
+                self.fragments.extend(write_fragments(config, full).await?);
+            }
+            self.held = (self.held.0 + count, self.held.1.saturating_add(bytes));
+            self.rows.push(row);
+        }
+        Ok(())
+    }
+
+    /// Writes the step held and gives the fragments of every step.
+    pub(crate) async fn finish(mut self, config: &Config) -> Result<Vec<serde_json::Value>> {
+        self.fragments
+            .extend(write_fragments(config, self.rows).await?);
+        Ok(self.fragments)
     }
 }
 
@@ -771,11 +776,52 @@ mod tests {
             hold_rows(&config, &mut held, &batch),
             Err(WriterError::EnvelopeBoundsInvalid)
         ));
-        // The same rows in one batch are refused by the check of `write_rows`.
-        let all = vec![batch.clone(); 4];
-        assert!(matches!(
-            check_row_bounds(&config, &all),
-            Err(WriterError::EnvelopeBoundsInvalid)
-        ));
+    }
+
+    #[tokio::test]
+    async fn a_batch_of_many_rows_is_written_in_steps_within_the_bounds_of_a_group() {
+        let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target")
+            .canonicalize()
+            .unwrap()
+            .join(format!("apply-steps-{}", std::process::id()));
+        let mut config = fyrr_core::config::parse(&format!(
+            "[namespace]\nname='steps'\n[storage]\nuri='file://{}'\n\
+             [embedding]\nendpoint='http://127.0.0.1:9/v1'\n",
+            directory.display()
+        ))
+        .unwrap()
+        .config;
+        let row = |root: &str| {
+            marker_row(
+                config.embedding.dimensions,
+                config.namespace.settings.dense_element,
+                "source",
+                root,
+                &DocumentState::default(),
+            )
+            .unwrap()
+        };
+        let rows: Vec<_> = (0..5).map(|n| row(&format!("root-{n}"))).collect();
+        let (_, one) = row_size(&rows[..1]).unwrap();
+        let one = one - ROW_OVERHEAD_BYTES;
+        // Two rows fit a group, three do not; the five come as one batch, as
+        // the rows of an API envelope do.
+        config.writer.commit.group_max_bytes =
+            fyrr_core::units::ByteSize::bytes(ROW_OVERHEAD_BYTES + 2 * one + one / 2);
+        let batch = arrow_select::concat::concat_batches(&rows[0].schema(), &rows).unwrap();
+        let mut steps = Steps::default();
+        steps.push(&config, batch).await.unwrap();
+        let fragments = steps.finish(&config).await.unwrap();
+        let sizes: Vec<_> = fragments
+            .iter()
+            .map(|f| f["physical_rows"].as_u64().unwrap())
+            .collect();
+        std::fs::remove_dir_all(&directory).ok();
+        assert_eq!(
+            sizes,
+            [2, 2, 1],
+            "each step is within the bounds of a group"
+        );
     }
 }

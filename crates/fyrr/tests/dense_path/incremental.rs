@@ -2445,6 +2445,116 @@ async fn incremental_permission_read_whose_rewritten_rows_are_over_a_group_publi
     assert!(row_readers(&batch, "a").is_empty() && row_readers(&batch, "b").is_empty());
 }
 
+/// A content change writes a root over a group in steps too: a replacement of
+/// `a` whose rows are over the bytes of the committer's group, its files
+/// within them, publishes in one publication.
+#[tokio::test]
+#[ignore = "real CLI and local storage; scripts/ci"]
+async fn incremental_a_replacement_of_a_root_over_a_group_publishes_in_steps_on_storage() {
+    let (worker, commit, root) = fixture();
+    publish_initial(&worker, &commit, &root);
+    large_documents(&worker);
+    small_group(&commit);
+    replace_a(&worker, &commit, &root, 2, "r2", 'A').await;
+}
+
+/// `writer restore` writes a root over a group in steps too: back to a
+/// replacement of `a`, whose rights changed since, its rows over the bytes of
+/// the group the committer has by then, in one publication.
+#[tokio::test]
+#[ignore = "real CLI and local storage; scripts/ci"]
+async fn incremental_a_restore_of_a_root_over_a_group_publishes_in_steps_on_storage() {
+    let (worker, commit, root) = fixture();
+    publish_initial(&worker, &commit, &root);
+    large_documents(&worker);
+    large_documents(&commit);
+    let target = replace_a(&worker, &commit, &root, 2, "r2", 'A').await;
+    replace_a(&worker, &commit, &root, 3, "r3", 'C').await;
+    // The rights of `a` change after the target: a restore rewrites its rows.
+    input(
+        &root,
+        json!({"epoch":4,"permissions":[[{"id":"a","revision":"p2","readers":["grp:group","grp:other"]}]]}),
+    );
+    worker_sync(&worker, &["incremental", "--kind", "permissions"]);
+    publish(&commit);
+    let text = std::fs::read_to_string(&commit)
+        .unwrap()
+        .replace("[writer]\ndocument_max_bytes='512KiB'\nenvelope_max_bytes='1MiB'\n[writer.commit]\ngroup_max_bytes='1MiB'\n", "")
+        .replace("document_max_bytes='512KiB'", "document_max_bytes='64B'");
+    std::fs::write(&commit, text).unwrap();
+    small_group(&commit);
+    let before = publication(&commit).await.1.sequence;
+    command(&commit, &["writer", "restore", &target]);
+    assert_eq!(publication(&commit).await.1.sequence, before + 1);
+    assert_eq!(revisions(&rows(&worker).await, "a"), ["r2"; 25]);
+}
+
+/// Lets `config` prepare documents of 400,000 characters, whose files are small
+/// (the text is one letter) and whose rows are over 256 KiB.
+fn large_documents(config: &Path) {
+    let text = std::fs::read_to_string(config)
+        .unwrap()
+        .replace("document_max_bytes='64B'", "document_max_bytes='512KiB'")
+        .replace(
+            "[reader]",
+            "[writer]\ndocument_max_bytes='512KiB'\nenvelope_max_bytes='1MiB'\n[writer.commit]\ngroup_max_bytes='1MiB'\n[reader]",
+        );
+    std::fs::write(config, text).unwrap();
+}
+
+/// Gives the committer of `config` a group of 256 KiB.
+fn small_group(config: &Path) {
+    let text = std::fs::read_to_string(config).unwrap().replace(
+        "[reader]",
+        "[writer]\ndocument_max_bytes='64KiB'\nenvelope_max_bytes='256KiB'\n[writer.commit]\ngroup_max_bytes='256KiB'\n[reader]",
+    );
+    std::fs::write(config, text).unwrap();
+}
+
+/// Replaces `a` at `revision` with 400,000 `letter`s, 25 records, in one
+/// publication; gives its ID.
+async fn replace_a(
+    worker: &Path,
+    commit: &Path,
+    root: &FixtureRoot,
+    epoch: u64,
+    revision: &str,
+    letter: char,
+) -> String {
+    let text = letter.to_string().repeat(400_000);
+    let vector = root.embedding.vector("fixture query");
+    for chunk in fyrr_writer::chunk::chunks(&text) {
+        root.embedding.insert_both(chunk, vector.clone());
+    }
+    input(
+        root,
+        json!({"epoch":epoch,"content":[[doc("a",revision,&text)]]}),
+    );
+    worker_sync(worker, &["incremental", "--kind", "content"]);
+    let before = publication(commit).await.1.sequence;
+    publish(commit);
+    let (_, manifest) = publication(commit).await;
+    assert_eq!(manifest.sequence, before + 1, "one publication");
+    assert_eq!(revisions(&rows(worker).await, "a"), [revision; 25]);
+    manifest.publication_id
+}
+
+/// The revision of each row of `root`.
+fn revisions(batch: &arrow_array::RecordBatch, root: &str) -> Vec<String> {
+    let revisions = batch
+        .column_by_name("source_revision")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .unwrap();
+    roots(batch)
+        .iter()
+        .enumerate()
+        .filter(|(_, id)| *id == root)
+        .map(|(row, _)| revisions.value(row).to_owned())
+        .collect()
+}
+
 /// A source of `a` and `b`, one row of `chars` characters each, read by
 /// `grp:group`, published once, its documents up to `document_max`.
 async fn published_large_rows(chars: usize, document_max: &str) -> (PathBuf, PathBuf, FixtureRoot) {

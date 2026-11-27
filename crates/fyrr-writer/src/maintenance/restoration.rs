@@ -224,8 +224,6 @@ pub(super) async fn restore_read(
         .map_err(|_| WriterError::RestoreVerificationFailed)?;
     restore_deadline(config, start)?;
     let mut rows = Vec::new();
-    let mut count = 0u64;
-    let mut bytes = apply::ROW_OVERHEAD_BYTES;
     while let Some(batch) = stream
         .try_next()
         .await
@@ -235,25 +233,13 @@ pub(super) async fn restore_read(
         if batch.num_rows() == 0 {
             continue;
         }
-        let (batch_count, batch_bytes) = apply::row_size(std::slice::from_ref(&batch))?;
-        count = count
-            .checked_add(batch_count)
-            .ok_or(WriterError::EnvelopeBoundsInvalid)?;
-        bytes = bytes
-            .checked_add(batch_bytes - apply::ROW_OVERHEAD_BYTES)
-            .ok_or(WriterError::EnvelopeBoundsInvalid)?;
-        if count > config.writer.commit.group_max_rows
-            || bytes > config.writer.commit.group_max_bytes.as_u64()
-        {
-            return Err(WriterError::EnvelopeBoundsInvalid);
-        }
-        restore_deadline(config, start)?;
         rows.push(batch);
     }
     Ok(rows)
 }
 
-/// Rewrites one complete root within a bounded page using current reader statements.
+/// Rewrites the rows of one root, or a part of its bodies, using current reader
+/// statements.
 pub(super) fn restore_rows(
     config: &Config,
     source: &str,
@@ -380,17 +366,6 @@ pub(super) async fn restore_bodies(
     body_reads: &mut u64,
     mut boundary: Option<(&LeaseGuard, &mut RestoreAttempt<'_>)>,
 ) -> Result<Vec<arrow_array::RecordBatch>> {
-    // The pinned prepared schema has 1024 Float16 vector values per row.
-    // This lower bound rejects certainly oversized roots without any body read.
-    let minimum = (addresses.len() as u64)
-        .checked_mul(2048)
-        .and_then(|n| n.checked_add(apply::ROW_OVERHEAD_BYTES))
-        .ok_or(WriterError::EnvelopeBoundsInvalid)?;
-    if addresses.len() as u64 > config.writer.commit.group_max_rows
-        || minimum > config.writer.commit.group_max_bytes.as_u64()
-    {
-        return Err(WriterError::EnvelopeBoundsInvalid);
-    }
     let dataset = std::sync::Arc::new(historical.clone());
     let projection = lance::dataset::ProjectionRequest::from(historical.schema().clone())
         .into_projection_plan(dataset.clone())
@@ -419,7 +394,6 @@ pub(super) async fn restore_bodies(
             return Err(WriterError::RestoreVerificationFailed);
         }
         rows.push(batch);
-        apply::check_row_bounds(config, &rows)?;
         restore_deadline(config, start)?;
     }
     Ok(rows)
@@ -451,107 +425,87 @@ pub(super) async fn restore_pass(
             sources.entry(source).or_default().push(root);
         }
         for (source, roots) in sources {
-            let mut pages = vec![roots];
-            while let Some(mut roots) = pages.pop() {
+            attempt
+                .cadence
+                .maybe(config, lease, attempt.history)
+                .await?;
+            let start = std::time::Instant::now();
+            // The rows of the page are written in steps as they are restored, and
+            // the bodies of a root are read `STEP_ROWS` at a time: a root over
+            // the bounds of a group is restored too.
+            let mut keys = Vec::new();
+            let mut steps = apply::Steps::default();
+            for root in &roots {
                 attempt
                     .cadence
                     .maybe(config, lease, attempt.history)
                     .await?;
-                let start = std::time::Instant::now();
-                let page = {
-                    let index = &mut *index;
-                    let roots = &roots;
-                    let source = &source;
-                    let body_reads = &mut body_reads;
-                    let attempt = &mut *attempt;
-                    async move {
-                        let mut keys = Vec::new();
-                        let mut output = Vec::new();
-                        for root in roots {
-                            attempt
-                                .cadence
-                                .maybe(config, lease, attempt.history)
-                                .await?;
-                            if index.retired.contains(source) {
-                                keys.push(root.clone());
-                                continue;
-                            }
-                            let authority = index.authority(config, source, root)?;
-                            let metadata = index.rows(config, 1, source, root)?;
-                            if restore_index::unchanged(source, root, &metadata, &authority) {
-                                continue;
-                            }
-                            let mut rows = Vec::new();
-                            // Addresses belong to the immutable target, never a mutated suffix.
-                            if !metadata.is_empty()
-                                && metadata.iter().all(|r| {
-                                    r.source == *source
-                                        && !r.state.deleted
-                                        && !r.state.content_purged
-                                })
-                                && authority
-                                    .states
-                                    .get(root)
-                                    .is_some_and(|s| !s.deleted && !s.content_purged)
-                            {
-                                rows = restore_bodies(
-                                    config,
-                                    historical,
-                                    &metadata.iter().map(|r| r.address).collect::<Vec<_>>(),
-                                    body_reads,
-                                    Some((lease, &mut *attempt)),
-                                )
-                                .await?;
-                            }
-                            if let Some(rows) = restore_rows(
-                                config,
-                                source,
-                                root,
-                                &rows,
-                                &authority,
-                                !metadata.is_empty(),
-                            )? {
-                                keys.push(root.clone());
-                                output.extend(rows);
-                                apply::check_row_bounds(config, &output)?;
-                            }
-                        }
-                        Ok::<_, WriterError>((keys, output))
-                    }
-                    .await
-                };
-                restore_deadline(config, start)?;
-                let (keys, rows) = match page {
-                    Err(WriterError::EnvelopeBoundsInvalid) if roots.len() > 1 => {
-                        let second = roots.split_off(roots.len() / 2);
-                        pages.push(second);
-                        pages.push(roots);
-                        continue;
-                    }
-                    result => result?,
-                };
-                if !keys.is_empty() {
-                    let fragments = apply::write_rows(config, rows).await?;
-                    // Body preparation may await storage. Discover revokes again
-                    // immediately before every changed-root native commit.
-                    attempt
-                        .cadence
-                        .drain(config, lease, attempt.history)
-                        .await?;
-                    commit::apply_staged(
-                        config,
-                        &mut attempt.dataset,
-                        lease,
-                        &mut attempt.work,
-                        vec![apply::keys_filter(&source, &keys)],
-                        fragments,
-                    )
-                    .await?;
-                    #[cfg(test)]
-                    restore_test_group();
+                if index.retired.contains(&source) {
+                    keys.push(root.clone());
+                    continue;
                 }
-                restore_deadline(config, start)?;
+                let authority = index.authority(&source, root)?;
+                let metadata = index.rows(1, &source, root)?;
+                if restore_index::unchanged(&source, root, &metadata, &authority) {
+                    continue;
+                }
+                // Addresses belong to the immutable target, never a mutated suffix.
+                let bodies = !metadata.is_empty()
+                    && metadata
+                        .iter()
+                        .all(|r| r.source == source && !r.state.deleted && !r.state.content_purged)
+                    && authority
+                        .states
+                        .get(root)
+                        .is_some_and(|s| !s.deleted && !s.content_purged);
+                if bodies {
+                    for part in metadata.chunks(apply::STEP_ROWS) {
+                        let rows = restore_bodies(
+                            config,
+                            historical,
+                            &part.iter().map(|r| r.address).collect::<Vec<_>>(),
+                            &mut body_reads,
+                            Some((lease, &mut *attempt)),
+                        )
+                        .await?;
+                        let restored =
+                            restore_rows(config, &source, root, &rows, &authority, true)?;
+                        for row in restored.into_iter().flatten() {
+                            steps.push(config, row).await?;
+                        }
+                    }
+                    keys.push(root.clone());
+                } else if let Some(rows) =
+                    restore_rows(config, &source, root, &[], &authority, !metadata.is_empty())?
+                {
+                    for row in rows {
+                        steps.push(config, row).await?;
+                    }
+                    keys.push(root.clone());
+                }
             }
+            restore_deadline(config, start)?;
+            if !keys.is_empty() {
+                let fragments = steps.finish(config).await?;
+                // Body preparation may await storage. Discover revokes again
+                // immediately before every changed-root native commit.
+                attempt
+                    .cadence
+                    .drain(config, lease, attempt.history)
+                    .await?;
+                commit::apply_staged(
+                    config,
+                    &mut attempt.dataset,
+                    lease,
+                    &mut attempt.work,
+                    vec![apply::keys_filter(&source, &keys)],
+                    fragments,
+                )
+                .await?;
+                #[cfg(test)]
+                restore_test_group();
+            }
+            restore_deadline(config, start)?;
         }
     }
     Ok((root_count, body_reads))

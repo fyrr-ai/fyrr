@@ -70,8 +70,8 @@ pub async fn content(
     let mut output = Vec::new();
     let mut rows = Vec::new();
     let mut taken = Vec::new();
-    // The rows and bytes of the stored rows a patch loads, which are held until
-    // `write_rows` checks the rows written.
+    // The rows and bytes of the stored rows a patch loads, held until they are
+    // written.
     let mut held = (0u64, 0u64);
     for document in documents.iter() {
         let old = previous.get(&document.root_id);
@@ -192,8 +192,8 @@ pub async fn content(
                 .map_err(|_| WriterError::ChangedRowScanFailed)?;
             match hold_rows(config, &mut held, &stored) {
                 Ok(()) => {}
-                // A patch writes whole rows of what is stored, a size its request
-                // could not know: the envelope is refused, as `write_rows` would.
+                // A patch holds whole rows of what is stored, a size its request
+                // could not know: the envelope is refused.
                 Err(WriterError::EnvelopeBoundsInvalid) => {
                     reject(config, envelope, "envelope_bounds_exceeded", rejected).await?;
                     return Ok(refused);
@@ -288,19 +288,7 @@ pub async fn content(
                 filter == &keys_filter(&envelope.source_id, std::slice::from_ref(root))
             })
     });
-    let fragments = match write_rows(config, output).await {
-        // A patch writes whole rows of what is stored, a size its request could
-        // not know: such an envelope is refused, not left to fail its group.
-        Err(WriterError::EnvelopeBoundsInvalid)
-            if payload.filter_writes.is_some()
-                || documents.iter().any(|d| d.intent == DocumentIntent::Patch) =>
-        {
-            reject(config, envelope, "envelope_bounds_exceeded", rejected).await?;
-            return Ok(refused);
-        }
-        written => written?,
-    };
-    Ok((changed, fragments, acl_changed))
+    Ok((changed, write_rows(config, output).await?, acl_changed))
 }
 
 /// Whether the stored document meets the condition of its change, tested
