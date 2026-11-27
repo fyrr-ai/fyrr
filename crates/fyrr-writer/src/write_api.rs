@@ -486,23 +486,6 @@ fn merge(into: &mut Value, patch: &Value) {
     }
 }
 
-/// Whether every key the request names is one that `parsed` carries, at every
-/// depth. A key this build does not know is dropped by the parse, and a
-/// persisted type may not refuse it (a newer minor version adds fields), so the
-/// request is checked against what the parse kept. A `null` or an empty object
-/// is no setting: it may be what a default leaves unwritten.
-fn names_only_settings(request: &Value, parsed: &Value) -> bool {
-    match (request, parsed) {
-        (Value::Object(request), Value::Object(parsed)) => {
-            request.iter().all(|(key, value)| match parsed.get(key) {
-                Some(kept) => names_only_settings(value, kept),
-                None => value.is_null() || value.as_object().is_some_and(|o| o.is_empty()),
-            })
-        }
-        _ => true,
-    }
-}
-
 /// `base` with the request's settings laid over it.
 fn laid_over(
     base: &NamespaceSettings,
@@ -511,18 +494,13 @@ fn laid_over(
     let invalid = WriterError::PublicationInvalid;
     let mut value = serde_json::to_value(base).map_err(|_| invalid)?;
     if let Some(request) = request {
+        // A setting this build does not know is refused, never dropped.
+        if !NamespaceSettings::names_only_settings(request) {
+            return Err(invalid);
+        }
         merge(&mut value, request);
     }
     let mut settings: NamespaceSettings = serde_json::from_value(value).map_err(|_| invalid)?;
-    // A setting this build does not know is refused, never dropped.
-    if let Some(request) = request
-        && !names_only_settings(
-            request,
-            &serde_json::to_value(&settings).map_err(|_| invalid)?,
-        )
-    {
-        return Err(invalid);
-    }
     // A request declares the model and dimension of its vectors. The profile
     // that binds them is derived unless the request sends it: a wrong one is
     // refused by the settings' validation, or differs from an existing namespace's.
