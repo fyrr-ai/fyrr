@@ -251,9 +251,9 @@ pub async fn status(config: &Config) -> Result<serde_json::Value> {
     }
     let policy: fyrr_core::publication::PolicyArtifact =
         fyrr_reader::storage::artifact(store.as_ref(), &root, &head.policy).await?;
-    // The chains the committer walks, and those of the sources whose chained
-    // envelopes a publication resolved: their chain breaks when the cursor goes,
-    // whatever is pending.
+    // The chains the committer walks, and every chain a publication applied,
+    // of whatever source, listed in this configuration or not: it breaks when
+    // its cursor goes, whatever is pending.
     let applied_chains = crate::commit::previous_manifest(store.as_ref(), &root, &head)
         .await?
         .map(|manifest| {
@@ -270,9 +270,7 @@ pub async fn status(config: &Config) -> Result<serde_json::Value> {
         .values()
         .chain(&others)
         .flat_map(|e| crate::commit::chains_of(config, e.kind, &e.source_id))
-        .chain(applied_chains.into_iter().filter(|(source, kind)| {
-            *kind != SyncKind::Permissions || crate::commit::synced(config, source)
-        }))
+        .chain(applied_chains)
         .chain(
             (!unreadable.is_empty())
                 .then(|| crate::commit::every_chain(config, &policy))

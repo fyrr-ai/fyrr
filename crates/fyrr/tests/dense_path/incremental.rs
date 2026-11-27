@@ -607,6 +607,35 @@ async fn incremental_an_unreadable_envelope_blocks_only_its_source_on_storage() 
     );
 }
 
+/// `writer status` names a source whose permissions cursor is lost from what
+/// the publication applied, whether its configuration lists the source or not.
+#[tokio::test]
+#[ignore = "real CLI and local storage; scripts/ci"]
+async fn incremental_status_names_a_lost_cursor_of_an_unlisted_source_on_storage() {
+    let (worker, commit, root) = fixture();
+    publish_initial(&worker, &commit, &root);
+    // The committer's configuration does not list `incremental`.
+    let text = std::fs::read_to_string(&commit).unwrap();
+    let block = format!(
+        "[[sources]]\nid='incremental'\ntype='incremental-test'\npermissions='sync'\ndocument_max_bytes='64B'\n[sources.intervals]\npermissions='5m'\nmembers='5m'\n[sources.scope]\nfixture='{}'\n",
+        root.join("input.json").display()
+    );
+    assert!(text.contains(&block));
+    std::fs::write(&commit, text.replace(&block, "")).unwrap();
+    let loaded = fyrr_core::config::load(&worker).unwrap();
+    let (store, ns) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
+    store
+        .delete(&ns.join("cursors").join("incremental-permissions.json"))
+        .await
+        .unwrap();
+    let status = command(&commit, &["writer", "status"]);
+    assert_eq!(
+        status["blocked_sources"],
+        json!(["incremental"]),
+        "{status}"
+    );
+}
+
 /// An unreadable members envelope is named by no chain and could hide a revoke:
 /// the commit and `writer status` fail closed, nothing is published, and once
 /// it is put back the revoke is (#370).
