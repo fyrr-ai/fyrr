@@ -229,19 +229,8 @@ async fn github_sync_silent_content_and_revoke_on_storage() {
         &["--kind", "permissions", "--kind", "members"],
     );
     publish(&commit);
-    // Admission pins an identity generation. The old session must fail closed
-    // when membership changes; a new session then proves the current rights.
-    let rebound = reader.call(
-        "search",
-        json!({"sources":["github"],"query":"fixture query","limit":10}),
-    );
-    assert_eq!(
-        rebound["structuredContent"]["code"],
-        "authorization_unavailable"
-    );
-    assert_eq!(rebound["structuredContent"]["retryable"], true);
-    drop(reader);
-    let mut reader = super::tools::Mcp::open(&worker);
+    // A running session reads the head at every request here and answers
+    // under the published identity: the revoke reaches it without a new session.
     for (tool, request) in [
         (
             "search",

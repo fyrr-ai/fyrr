@@ -116,19 +116,6 @@ impl Mcp {
     pub(super) fn pid(&self) -> u32 {
         self.child.id()
     }
-    /// An admitted subject pins its identity generation. Prove the old
-    /// session fails closed, then bind a new one to the published identity.
-    pub(super) fn rebind(&mut self, config: &Path, source: &str, root: &str) {
-        let denied = self.call("fetch", json!({"source_id":source,"root_id":root}));
-        assert_eq!(denied["isError"], true);
-        assert_eq!(
-            denied["structuredContent"]["code"],
-            "authorization_unavailable"
-        );
-        assert_eq!(denied["structuredContent"]["retryable"], true);
-        *self = Self::open(config);
-    }
-
     pub(super) fn call(&mut self, name: &str, args: Value) -> Value {
         self.next += 1;
         let id = self.next;

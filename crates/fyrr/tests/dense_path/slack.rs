@@ -158,7 +158,8 @@ async fn slack_sync_silent_content_and_revoke_on_storage() {
     fake.call("set_members", json!({"channel":"C001","members":[]}));
     synced(&worker, &["--kind", "permissions", "--kind", "members"]);
     publish(&commit);
-    reader.rebind(&worker, "slack", &root_id);
+    // A running session reads the head at every request here and answers
+    // under the published identity: the revoke reaches it without a new session.
     for (tool, request) in [
         (
             "search",
