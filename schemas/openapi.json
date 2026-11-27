@@ -2039,7 +2039,14 @@
               "lexical_candidates": 200,
               "source_cap": 2,
               "max_documents": 75
-            }
+            },
+            "required": [
+              "dense_weight",
+              "dense_candidates",
+              "lexical_candidates",
+              "source_cap",
+              "max_documents"
+            ]
           },
           "composition": {
             "$ref": "#/components/schemas/Composition",
@@ -2048,7 +2055,12 @@
               "fusion": 50,
               "dense": 0,
               "lexical": 0
-            }
+            },
+            "required": [
+              "fusion",
+              "dense",
+              "lexical"
+            ]
           },
           "fts_positions": {
             "type": "boolean",
@@ -2065,7 +2077,15 @@
               "ngram_min_length": 3,
               "ngram_max_length": 3,
               "prefix_only": false
-            }
+            },
+            "required": [
+              "tokenizer",
+              "ascii_folding",
+              "max_token_length",
+              "ngram_min_length",
+              "ngram_max_length",
+              "prefix_only"
+            ]
           },
           "dense_rq_bits": {
             "type": "integer",

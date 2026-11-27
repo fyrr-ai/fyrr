@@ -108,7 +108,8 @@ namespaces in a new root. A namespace whose stored contracts are of an older
 major than this build writes is refused with `namespace_layout_old`, on S3 too.
 Maintenance and confirmed
 source purge reap abandoned multipart uploads (`name#digits`), protecting
-files younger than ten minutes and namespaces with live source leases;
+files younger than ten minutes and namespaces with live source leases, and
+reaping nothing while a cursor does not parse, since it may hold a live lease;
 purge plans count them as `namespace_staging_files`. Reader mirrors copy immutable files and preserve
 in-flight pins across purge, bounded by `reader.mirror_max_bytes`. A data
 or index file of up to 2 MiB is copied whole on its first read when the

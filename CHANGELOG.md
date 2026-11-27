@@ -82,6 +82,16 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   source; they still do for an unreadable envelope that no chain names, such
   as a members snapshot or a listing. See
   [operations](docs/operations.md#blocked-sources).
+- A cursor that does not parse blocks only its source, as an unreadable
+  envelope does: `fyrr writer status` lists it in `blocked_sources`, the other
+  sources go on publishing, and a purge of the source clears it. Before,
+  `writer commit` and `writer status` failed with `cursor_invalid` for every
+  source, and a purge of the source on local storage failed with
+  `publication_invalid`. See [operations](docs/operations.md#blocked-sources).
+- `fyrr writer status` lists in `blocked_sources` a source whose chain a
+  publication applied and whose cursor is lost, whether the configuration
+  lists the source or not. Before, it did not report a lost permissions cursor
+  of a source that the configuration does not list.
 - A frozen namespace (`read_only`) still takes connector syncs of permissions
   and members, and commits them, so a revoke is published while it is frozen.
   Content, listings, schema changes and API writes stay refused with

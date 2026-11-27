@@ -6538,6 +6538,18 @@ async fn identity_write_api_takes_current_settings_and_refuses_unknown_ones_on_s
     for settings in [
         json!({"fts": {"with_position": true}}),
         json!({"fts_position": true}),
+        // Inside a setting too, at every depth.
+        json!({"write_api": {"text_atribute": "body"}}),
+        json!({"retrieval": {"dense_weigth": 0.3}}),
+        json!({"analyzer": {"max_token_lenght": 20}}),
+        json!({"embedding": {"settings": {"roles": {"query": {"prefx": "q: "}}}}}),
+        // An array is not a struct, though serde would read one as it.
+        json!({"embedding": {"settings": {"roles": [{}, {"prefx": "q: "}]}}}),
+        // A key that no setting has, whatever its value.
+        json!({"typo": {}}),
+        json!({"typo": null}),
+        // An array is no object, nor a stand-in for a `null` member.
+        json!({"write_api": []}),
     ] {
         assert_eq!(
             writer
@@ -6556,7 +6568,7 @@ async fn identity_write_api_takes_current_settings_and_refuses_unknown_ones_on_s
             .post(
                 WRITE_KEY,
                 namespace,
-                &json!({"settings": {"fts_positions": true}, "upserts": upsert})
+                &json!({"settings": {"fts_positions": true, "vectors": {"image": {"dimensions": 16, "multi": false}}}, "upserts": upsert})
             )
             .await,
         (200, json!({"upserted": 1, "deleted": 0}))

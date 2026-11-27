@@ -1,0 +1,548 @@
+#!/usr/bin/env python3
+"""Drive one disposable fyrr instance and record what it did.
+
+  control-fyrr launch [--profile notes|permissions]
+  control-fyrr doctor
+  control-fyrr run LABEL -- COMMAND [ARG...]
+  control-fyrr mcp LABEL TOOL [JSON_ARGUMENTS]
+  control-fyrr http LABEL [--as KEY|none|invalid] METHOD PATH [JSON_BODY]
+  control-fyrr cleanup
+
+`launch` starts toy embeddings, publishes the quickstart documents into fresh
+local storage and starts an HTTP reader. Its files are in
+target/verify-fyrr/runs/ID, its storage and mirrors in /dev/shm.
+Every other command acts on that instance: on $FYRR_VERIFY_RUN, or on the only
+run that exists. `run`, `mcp` and `http` write a transcript of the action and
+its result to target/verify-fyrr/evidence/ID, which `cleanup` keeps.
+"""
+
+import argparse
+import json
+import os
+import re
+import secrets
+import shlex
+import shutil
+import signal
+import socket
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[3]
+# Local storage refuses a path with a symlink in it, and `target` may be one.
+BASE = (ROOT / "target").resolve() / "verify-fyrr"
+RUNS, EVIDENCE = BASE / "runs", BASE / "evidence"
+BINARY = BASE.parent / "debug/fyrr"
+EXAMPLE = ROOT / "examples/quickstart"
+# Storage and mirrors live in memory when the host has it: publishing makes
+# over a hundred fsync calls, and on a disk that builds write to each one can
+# take seconds.
+MEMORY = Path("/dev/shm")
+# The example configuration of each profile, its namespace and the API keys
+# the HTTP reader accepts, each with the reader tokens it acts with.
+PROFILES = {
+    "notes": ("fyrr.toml", "notes", {"me": ["usr:me"]}),
+    "permissions": (
+        "permissions.toml",
+        "quickstart",
+        {"ada": ["grp:engineering"], "grace": ["grp:finance"]},
+    ),
+}
+
+
+def die(message):
+    sys.exit(f"control-fyrr: {message}")
+
+
+def start_time(pid):
+    """The kernel's start time of a process: tells it from a later one that
+    got the same PID."""
+    try:
+        return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[19]
+    except (OSError, IndexError):
+        return None
+
+
+def alive(process):
+    return process is not None and start_time(process["pid"]) == process["started"]
+
+
+class Run:
+    def __init__(self, run_id):
+        self.id = run_id
+        self.dir = RUNS / run_id
+        self.evidence = EVIDENCE / run_id
+        self.state_file = self.dir / "state.json"
+        self.state = (
+            json.loads(self.state_file.read_text()) if self.state_file.exists() else {}
+        )
+
+    def save(self):
+        self.state_file.touch(mode=0o600)
+        self.state_file.write_text(json.dumps(self.state, indent=1))
+
+    def secrets(self):
+        return [self.state["identity_key"], *self.state["keys"].values()]
+
+    def env(self):
+        env = dict(os.environ)
+        env.update(
+            # The binary the instance was launched with, for every later drive.
+            PATH=f"{Path(self.state['binary']).parent}:{env['PATH']}",
+            VIRTUAL_ENV=str(ROOT / "connectors/.venv"),
+            FYRR_CONFIG=str(self.dir / "fyrr.toml"),
+            FYRR_IDENTITY_KEY=self.state["identity_key"],
+            XDG_CACHE_HOME=str(Path(self.state["data"]) / "cache"),
+            FYRR_VERIFY_RUN=self.id,
+            FYRR_VERIFY_DOCS=str(self.dir / "docs"),
+        )
+        for name, secret in self.state["keys"].items():
+            env[f"FYRR_VERIFY_KEY_{name.upper()}"] = secret
+        return env
+
+    def redact(self, text):
+        """No secret of the run enters a transcript or this helper's output."""
+        for secret in self.secrets():
+            text = text.replace(secret, "<redacted>")
+        return text
+
+    def record(self, label, text):
+        """Writes one numbered transcript."""
+        self.evidence.mkdir(parents=True, exist_ok=True)
+        text = self.redact(text)
+        number = len(list(self.evidence.glob("[0-9]*-*.txt"))) + 1
+        slug = re.sub(r"[^a-z0-9]+", "-", label.lower()).strip("-") or "step"
+        path = self.evidence / f"{number:02d}-{slug}.txt"
+        path.write_text(text)
+        print(f"evidence: {path}", file=sys.stderr)
+
+    def command(self, label, argv, check=False):
+        """Runs a command in the instance's environment from the repository
+        root and records the command, both streams and the exit code."""
+        done = subprocess.run(
+            argv, cwd=ROOT, env=self.env(), capture_output=True, text=True, check=False
+        )
+        self.record(
+            label,
+            f"$ {shlex.join(argv)}\nexit code: {done.returncode}\n"
+            f"--- stdout ---\n{done.stdout}--- stderr ---\n{done.stderr}",
+        )
+        if check and done.returncode:
+            die(f"`{shlex.join(argv)}` exited {done.returncode}: {done.stderr.strip()}")
+        return done
+
+    def spawn(self, name, argv, log):
+        process = subprocess.Popen(
+            argv,
+            cwd=self.dir,
+            env=self.env(),
+            stdin=subprocess.DEVNULL,
+            stdout=(self.dir / log).open("w"),
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+        self.state[name] = {"pid": process.pid, "started": start_time(process.pid)}
+        self.save()
+        return process
+
+
+def current():
+    run_id = os.environ.get("FYRR_VERIFY_RUN")
+    if not run_id:
+        runs = sorted(path.parent.name for path in RUNS.glob("*/state.json"))
+        if len(runs) != 1:
+            die(
+                f"set FYRR_VERIFY_RUN to one of {runs}"
+                if runs
+                else "no instance; run launch"
+            )
+        run_id = runs[0]
+    run = Run(run_id)
+    if not run.state:
+        die(f"no instance {run_id}; run launch")
+    return run
+
+
+def get(url, host=None):
+    request = urllib.request.Request(url, headers={"Host": host} if host else {})
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            return response.status, response.read().decode()
+    except urllib.error.HTTPError as error:
+        return error.code, error.read().decode()
+    except OSError:
+        return None, ""
+
+
+def configs(run, profile, endpoint, address):
+    """The example configuration with only its boundaries replaced: storage,
+    the embeddings endpoint and the document folders (private copies, so a
+    journey may edit them). The HTTP reader gets the same file plus its
+    listener and a mirror of its own."""
+    name, _, keys = PROFILES[profile]
+    data = Path(run.state["data"])
+    text = (EXAMPLE / name).read_text()
+    start, end = text.index("[storage]"), text.index("\n# The toy")
+    text = (
+        text[:start]
+        + f'[storage]\nuri = "{(data / "storage").as_uri()}"\n'
+        + text[end:]
+    )
+    for old, new in (
+        ('endpoint = "http://127.0.0.1:8089/v1"', f'endpoint = "{endpoint}"'),
+        ('paths = ["examples/quickstart/', f'paths = ["{run.dir}/docs/'),
+    ):
+        if old not in text:
+            die(f"{name} no longer contains {old}")
+        text = text.replace(old, new)
+    for key, readers in keys.items():
+        text += (
+            f'\n[[identity.api_keys]]\nname = "{key}"\n'
+            f'key = {{ env = "FYRR_VERIFY_KEY_{key.upper()}" }}\nreaders = {json.dumps(readers)}\n'
+        )
+    (run.dir / "fyrr.toml").write_text(text)
+    (run.dir / "fyrr-http.toml").write_text(
+        text + f'\n[reader]\nmirror_path = "{data}/http-mirror"\n'
+        f'[reader.http]\nlisten = "{address}"\npublic_url = "http://{address}/mcp"\n'
+    )
+
+
+def launch(args):
+    if not BINARY.exists():
+        die(
+            f"{BINARY} is missing; build it first: "
+            "mise exec -- bash -c 'source scripts/lib.sh && cargo build --locked -p fyrr'"
+        )
+    _, namespace, keys = PROFILES[args.profile]
+    run = Run(time.strftime("%Y%m%dT%H%M%S") + "-" + secrets.token_hex(2))
+    run.dir.mkdir(parents=True, mode=0o700)
+    shutil.copytree(EXAMPLE / "handbook", run.dir / "docs/handbook")
+    shutil.copytree(EXAMPLE / "payroll", run.dir / "docs/payroll")
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        address = f"127.0.0.1:{probe.getsockname()[1]}"
+    in_memory = MEMORY.is_dir() and os.access(MEMORY, os.W_OK | os.X_OK)
+    data = MEMORY / f"verify-fyrr-{run.id}" if in_memory else run.dir / "data"
+    data.mkdir(mode=0o700)
+    run.state = {
+        "profile": args.profile,
+        "data": str(data),
+        "namespace": namespace,
+        "binary": str(BINARY),
+        "identity_key": secrets.token_hex(32),
+        "keys": {key: "fyrr_key_" + secrets.token_hex(32) for key in keys},
+        "reader_url": f"http://{address}",
+    }
+    run.save()
+    print(
+        f"run {run.id}; if launch fails, run: FYRR_VERIFY_RUN={run.id} control-fyrr cleanup",
+        flush=True,
+    )
+
+    # Port 0: the kernel chooses a free port, announced once the listener is bound.
+    embeddings = run.spawn(
+        "embeddings",
+        [sys.executable, str(EXAMPLE / "toy-embeddings.py"), "0"],
+        "embeddings.log",
+    )
+    for _ in range(200):
+        announcement = (run.dir / "embeddings.log").read_text().strip()
+        if announcement or embeddings.poll() is not None:
+            break
+        time.sleep(0.05)
+    if not announcement.startswith("toy embeddings at "):
+        die("the toy embeddings service did not announce its endpoint")
+    run.state["embeddings"]["endpoint"] = endpoint = announcement.removeprefix(
+        "toy embeddings at "
+    )
+    run.save()
+    configs(run, args.profile, endpoint, address)
+
+    for label, command in (
+        ("config check", ["config", "check"]),
+        ("namespace create", ["writer", "namespace", "create"]),
+        ("keys", ["writer", "keys"]),
+        ("sync", ["writer", "sync"]),
+        ("commit", ["writer", "commit"]),
+        ("reader check", ["reader", "check"]),
+    ):
+        run.command("launch " + label, ["fyrr", *command], check=True)
+
+    reader = run.spawn(
+        "reader",
+        [str(BINARY), "--config", str(run.dir / "fyrr-http.toml"), "reader", "serve"],
+        "reader-http.log",
+    )
+    for _ in range(1200):
+        if get(run.state["reader_url"] + "/readyz")[0] == 200:
+            break
+        if reader.poll() is not None:
+            die("the HTTP reader exited: " + (run.dir / "reader-http.log").read_text())
+        time.sleep(0.05)
+    else:
+        die("the HTTP reader did not answer /readyz with 200 within 60 s")
+    print(
+        f"ready: namespace {namespace}, HTTP reader {run.state['reader_url']}, "
+        f"keys {', '.join(keys)}\nexport FYRR_VERIFY_RUN={run.id}\nevidence: {run.evidence}"
+    )
+
+
+def doctor(_args):
+    run = current()
+    failures = 0
+
+    def report(ok, message):
+        nonlocal failures
+        failures += not ok
+        print(("ok    " if ok else "FAIL  ") + message)
+
+    binary = Path(run.state["binary"])
+    if not binary.exists():
+        print(f"FAIL  binary {binary} is missing: build it, then cleanup and launch")
+        sys.exit(1)
+    version = subprocess.run(
+        [binary, "--version"], capture_output=True, text=True, check=False
+    )
+    report(
+        version.returncode == 0 and "full build" in version.stdout,
+        f"binary {binary}: {version.stdout.strip() or 'does not run'}",
+    )
+    # Cargo's dep-info lists every file the binary was compiled from, so a
+    # changed test or document does not count, and an included file does.
+    dep_info = binary.with_name(binary.name + ".d")
+    if dep_info.exists():
+        listed = re.split(r"(?<!\\) ", dep_info.read_text().split(": ", 1)[1].strip())
+        inputs = [ROOT / "Cargo.toml", ROOT / "Cargo.lock"]
+        inputs += [Path(path.replace("\\ ", " ")) for path in listed]
+        built = binary.stat().st_mtime
+        changed = [
+            str(path)
+            for path in inputs
+            if not path.exists() or path.stat().st_mtime > built
+        ]
+        report(
+            not changed,
+            f"binary is as new as its {len(inputs)} inputs ({dep_info.name})"
+            + (f"; changed since the build: {changed[:3]}" if changed else ""),
+        )
+    else:
+        report(False, f"no {dep_info.name} next to the binary: build it with cargo")
+
+    embeddings, reader = run.state.get("embeddings"), run.state.get("reader")
+    report(
+        alive(embeddings),
+        f"toy embeddings process {embeddings and embeddings['pid']} is ours",
+    )
+    endpoint = (embeddings or {}).get("endpoint", "")
+    report(get(endpoint + "/models")[0] == 200, f"toy embeddings answer at {endpoint}")
+    report(alive(reader), f"HTTP reader process {reader and reader['pid']} is ours")
+    # A rebuild replaces the file; a reader started before it still runs the old code.
+    try:
+        current_build = alive(reader) and os.path.samefile(
+            f"/proc/{reader['pid']}/exe", binary
+        )
+    except OSError:
+        current_build = False
+    report(
+        current_build, "HTTP reader runs the binary on disk, not one a rebuild replaced"
+    )
+    url = run.state["reader_url"]
+    status, body = get(url + "/readyz", url.removeprefix("http://"))
+    report(status == 200, f"HTTP reader {url}/readyz: {status} {body.strip()}")
+    for command in (["config", "check"], ["reader", "check"]):
+        done = subprocess.run(
+            [binary, *command],
+            cwd=ROOT,
+            env=run.env(),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        report(
+            done.returncode == 0, f"fyrr {' '.join(command)}: exit {done.returncode}"
+        )
+    print(
+        f"doctor: run {run.id} ({run.state['profile']}): "
+        + (f"{failures} problem(s)" if failures else "OK")
+    )
+    sys.exit(1 if failures else 0)
+
+
+def run_command(args):
+    if not args.command:
+        die("usage: control-fyrr run LABEL -- COMMAND [ARG...]")
+    run = current()
+    done = run.command(args.label, args.command)
+    sys.stdout.write(run.redact(done.stdout))
+    sys.stderr.write(run.redact(done.stderr))
+    sys.exit(done.returncode)
+
+
+def mcp(args):
+    """One MCP stdio session as a client starts it, in another working
+    directory: initialize, then one tool call."""
+    run = current()
+    arguments = json.loads(args.arguments)
+    elsewhere = run.dir / "elsewhere"
+    elsewhere.mkdir(exist_ok=True)
+    # A file, not a pipe: nobody reads stderr until the session ends.
+    errors = run.dir / f"mcp-{os.getpid()}.stderr"
+    server = subprocess.Popen(
+        ["fyrr", "reader", "serve"],
+        cwd=elsewhere,
+        env=run.env(),
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=errors.open("w"),
+        text=True,
+    )
+    transcript = ["$ (cd elsewhere && fyrr reader serve)   # MCP over stdio"]
+
+    def send(message):
+        line = json.dumps(message)
+        transcript.append("--> " + line)
+        server.stdin.write(line + "\n")
+        server.stdin.flush()
+
+    def answer(request_id):
+        for line in server.stdout:
+            transcript.append("<-- " + line.rstrip("\n"))
+            message = json.loads(line)
+            if message.get("id") == request_id:
+                return message
+        server.wait()
+        transcript.append("--- stderr ---\n" + errors.read_text())
+        run.record(args.label, "\n".join(transcript) + "\n")
+        die(f"the MCP server closed before answering request {request_id}")
+
+    send(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-11-25",
+                "capabilities": {},
+                "clientInfo": {"name": "control-fyrr", "version": "1"},
+            },
+        }
+    )
+    answer(1)
+    send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+    send(
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {"name": args.tool, "arguments": arguments},
+        }
+    )
+    message = answer(2)
+    server.stdin.close()
+    code = server.wait()
+    transcript.append(f"server exit code: {code}\n--- stderr ---\n{errors.read_text()}")
+    run.record(args.label, "\n".join(transcript) + "\n")
+    result = message.get("result", {})
+    failed = "error" in message or result.get("isError") is True
+    print(
+        run.redact(json.dumps(message if failed else result.get("structuredContent")))
+    )
+    sys.exit(1 if failed or code else 0)
+
+
+def http(args):
+    run = current()
+    url = run.state["reader_url"] + args.path
+    key = args.key or next(iter(run.state["keys"]))
+    # /mcp refuses a client that does not accept both; the other routes ignore it.
+    headers = {"Accept": "application/json, text/event-stream"}
+    if args.body:
+        headers["Content-Type"] = "application/json"
+    if key == "invalid":
+        # Well formed, published nowhere.
+        headers["Authorization"] = "Bearer fyrr_key_" + "0" * 64
+    elif key != "none":
+        if key not in run.state["keys"]:
+            die(f"no key {key}; this run has {list(run.state['keys'])}")
+        headers["Authorization"] = "Bearer " + run.state["keys"][key]
+    request = urllib.request.Request(
+        url,
+        data=args.body.encode() if args.body else None,
+        headers=headers,
+        method=args.method,
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=310) as response:
+            status, body = response.status, response.read().decode()
+    except urllib.error.HTTPError as error:
+        status, body = error.code, error.read().decode()
+    except OSError as error:
+        die(f"no answer from {url}: {error}; run doctor")
+    run.record(
+        args.label,
+        f"{args.method} {url}   # as API key: {key}\n{args.body or ''}\n"
+        f"HTTP status: {status}\n--- body ---\n{body}\n",
+    )
+    print(f"HTTP {status}", file=sys.stderr)
+    print(run.redact(body))
+
+
+def cleanup(_args):
+    run = current()
+    for name in ("reader", "embeddings"):
+        process = run.state.get(name)
+        if not alive(process):
+            continue
+        os.kill(process["pid"], signal.SIGTERM)
+        for _ in range(100):
+            if not alive(process):
+                break
+            time.sleep(0.1)
+        else:
+            os.kill(process["pid"], signal.SIGKILL)
+        print(f"stopped {name} ({process['pid']})")
+    # The service logs are evidence too; everything else is scratch.
+    run.evidence.mkdir(parents=True, exist_ok=True)
+    for log in run.dir.glob("*.log"):
+        shutil.copy(log, run.evidence / log.name)
+    shutil.rmtree(run.state["data"], ignore_errors=True)
+    shutil.rmtree(run.dir)
+    print(f"removed {run.dir} and {run.state['data']}\nevidence kept: {run.evidence}")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    commands = parser.add_subparsers(dest="action", required=True)
+    sub = commands.add_parser("launch")
+    sub.add_argument("--profile", choices=PROFILES, default="notes")
+    sub.set_defaults(handler=launch)
+    commands.add_parser("doctor").set_defaults(handler=doctor)
+    sub = commands.add_parser("run")
+    sub.add_argument("label")
+    sub.add_argument("command", nargs=argparse.REMAINDER)
+    sub.set_defaults(handler=run_command)
+    sub = commands.add_parser("mcp")
+    sub.add_argument("label")
+    sub.add_argument("tool", choices=("search", "fetch", "list_filters"))
+    sub.add_argument("arguments", nargs="?", default="{}")
+    sub.set_defaults(handler=mcp)
+    sub = commands.add_parser("http")
+    sub.add_argument("label")
+    sub.add_argument("--as", dest="key")
+    sub.add_argument("method", choices=("GET", "POST"))
+    sub.add_argument("path")
+    sub.add_argument("body", nargs="?")
+    sub.set_defaults(handler=http)
+    commands.add_parser("cleanup").set_defaults(handler=cleanup)
+    args = parser.parse_args()
+    if args.action == "run" and args.command[:1] == ["--"]:
+        args.command = args.command[1:]
+    args.handler(args)
+
+
+if __name__ == "__main__":
+    main()

@@ -266,7 +266,16 @@ fn a_stored_document_names_every_setting() {
         policy["settings"].as_object_mut().unwrap().remove(key);
         assert!(parse::<PolicyArtifact>(&policy).is_err(), "{key}");
     }
-    for (group, member) in [("retrieval", "dense_weight"), ("composition", "fusion")] {
+    // The schema holds a stored document to the same members as the parser.
+    let validator =
+        jsonschema::validator_for(&common::read_json("schemas/policy-artifact.schema.json"))
+            .expect("policy schema");
+    assert!(validator.is_valid(&policy));
+    for (group, member) in [
+        ("retrieval", "dense_weight"),
+        ("composition", "fusion"),
+        ("analyzer", "max_token_length"),
+    ] {
         let mut policy = policy.clone();
         policy["settings"][group]
             .as_object_mut()
@@ -276,6 +285,7 @@ fn a_stored_document_names_every_setting() {
             parse::<PolicyArtifact>(&policy).is_err(),
             "{group}.{member}"
         );
+        assert!(!validator.is_valid(&policy), "schema: {group}.{member}");
     }
 }
 

@@ -251,9 +251,21 @@ pub async fn status(config: &Config) -> Result<serde_json::Value> {
     }
     let policy: fyrr_core::publication::PolicyArtifact =
         fyrr_reader::storage::artifact(store.as_ref(), &root, &head.policy).await?;
-    // The chains the committer walks, and those of the sources whose chained
-    // envelopes a publication resolved: their chain breaks when the cursor goes,
-    // whatever is pending.
+    // The chains the committer walks: the pending count follows them.
+    let walked: BTreeSet<_> = chained
+        .values()
+        .chain(&others)
+        .flat_map(|e| crate::commit::chains_of(e.kind, &e.source_id))
+        .chain(
+            (!unreadable.is_empty())
+                .then(|| crate::commit::every_chain(config, &policy))
+                .into_iter()
+                .flatten(),
+        )
+        .collect();
+    // And every chain a publication applied, of whatever source, listed in
+    // this configuration or not: it breaks when its cursor goes, whatever is
+    // pending, and `blocked_sources` names it.
     let applied_chains = crate::commit::previous_manifest(store.as_ref(), &root, &head)
         .await?
         .map(|manifest| {
@@ -266,21 +278,8 @@ pub async fn status(config: &Config) -> Result<serde_json::Value> {
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    let keys: BTreeSet<_> = chained
-        .values()
-        .chain(&others)
-        .flat_map(|e| crate::commit::chains_of(e.kind, &e.source_id))
-        .chain(applied_chains.into_iter().filter(|(source, kind)| {
-            *kind != SyncKind::Permissions || crate::commit::synced(config, source)
-        }))
-        .chain(
-            (!unreadable.is_empty())
-                .then(|| crate::commit::every_chain(config, &policy))
-                .into_iter()
-                .flatten(),
-        )
-        .collect();
-    let (chains, links, named) = crate::commit::chains(
+    let keys: BTreeSet<_> = walked.iter().cloned().chain(applied_chains).collect();
+    let (all, links, named) = crate::commit::chains(
         config,
         &head,
         &policy,
@@ -291,6 +290,8 @@ pub async fn status(config: &Config) -> Result<serde_json::Value> {
     .await?;
     // One that no chain names fails `writer status`, as it fails the commit.
     crate::commit::attributed(&unreadable, &named)?;
+    let (chains, applied_only): (BTreeMap<_, _>, BTreeMap<_, _>) =
+        all.into_iter().partition(|(key, _)| walked.contains(key));
     let none = BTreeSet::new();
     let facts = crate::commit::Facts {
         applied: &none,
@@ -324,6 +325,7 @@ pub async fn status(config: &Config) -> Result<serde_json::Value> {
     // nothing of its permissions, content or listings until it is whole again.
     let blocked_sources: BTreeSet<&String> = chains
         .iter()
+        .chain(&applied_only)
         .filter(|(_, chain)| matches!(chain, crate::commit::Chain::Broken))
         .map(|((source, _), _)| source)
         .collect();

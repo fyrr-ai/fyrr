@@ -275,10 +275,16 @@ impl Authenticator {
     }
 }
 
-/// The token times at `now`, without leeway: valid up to and including
-/// `exp`, and from `nbf` on.
+/// A token is expired when `exp <= now` (RFC 7519): the one rule for the
+/// verification of a token and for every later check of its subject.
+pub(crate) fn unexpired(exp: i64, now: i64) -> bool {
+    exp > now
+}
+
+/// The token times at `now`, without leeway: valid before `exp`, and from
+/// `nbf` on.
 fn times_valid(exp: i64, nbf: Option<i64>, now: i64) -> bool {
-    exp >= now && nbf.is_none_or(|nbf| nbf <= now)
+    unexpired(exp, now) && nbf.is_none_or(|nbf| nbf <= now)
 }
 
 #[cfg(test)]
@@ -286,7 +292,8 @@ mod time_tests {
     #[test]
     fn token_times_have_no_leeway() {
         let now = 1_000;
-        assert!(super::times_valid(now, None, now));
+        assert!(!super::times_valid(now, None, now));
+        assert!(super::times_valid(now + 1, None, now));
         assert!(!super::times_valid(now - 1, None, now));
         assert!(super::times_valid(now + 600, Some(now), now));
         assert!(!super::times_valid(now + 600, Some(now + 1), now));
