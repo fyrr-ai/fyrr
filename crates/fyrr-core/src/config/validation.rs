@@ -11,7 +11,11 @@ impl LoadedConfig {
         api_key::validate(config, &mut error);
         identity_urls_and_http(config, &mut error);
         patterns(config, &mut error);
-        namespace_settings(&config.namespace, config.embedding.dimensions, &mut error);
+        namespace_settings(
+            &config.namespace.settings,
+            config.embedding.dimensions,
+            &mut error,
+        );
         embedding(config, &mut error);
         ranges(config, &mut error);
         storage(config, &mut error);
@@ -25,7 +29,7 @@ impl LoadedConfig {
         directory(config, &mut error);
         writer_credentials(config, &mut error);
         sources(config, &mut error);
-        if config.namespace.write_api.is_some() && !config.sources.is_empty() {
+        if config.namespace.settings.write_api.is_some() && !config.sources.is_empty() {
             error(
                 "namespace.write_api",
                 "a namespace written through the API takes no [[sources]]".into(),
@@ -51,7 +55,7 @@ fn rerank(config: &Config, error: &mut impl FnMut(&str, String)) {
                 "requires HTTPS or loopback HTTP without credentials, query or fragment".into(),
             );
         }
-        rerank_settings(&rerank.settings(), error);
+        rerank_settings(&rerank.settings, error);
         if !(std::time::Duration::from_millis(1)..=std::time::Duration::from_secs(300))
             .contains(&rerank.deadline.as_duration())
         {
@@ -244,7 +248,7 @@ fn patterns(config: &Config, error: &mut impl FnMut(&str, String)) {
 /// What a namespace is created with: the same bounds for a configuration file
 /// and for the settings a policy artifact records.
 pub(crate) fn namespace_settings(
-    namespace: &NamespaceConfig,
+    namespace: &PersistedSettings,
     embedding_dimensions: u32,
     error: &mut impl FnMut(&str, String),
 ) {
@@ -309,7 +313,7 @@ pub(crate) fn namespace_settings(
     }
 }
 
-fn dense_weight(namespace: &NamespaceConfig, error: &mut impl FnMut(&str, String)) {
+fn dense_weight(namespace: &PersistedSettings, error: &mut impl FnMut(&str, String)) {
     if !namespace.retrieval.dense_weight.is_finite()
         || !(0.0..=1.0).contains(&namespace.retrieval.dense_weight)
     {
@@ -374,7 +378,7 @@ fn embedding(config: &Config, error: &mut impl FnMut(&str, String)) {
     }
 }
 
-fn rescore_depth(namespace: &NamespaceConfig, error: &mut impl FnMut(&str, String)) {
+fn rescore_depth(namespace: &PersistedSettings, error: &mut impl FnMut(&str, String)) {
     match &namespace.retrieval.rescore_depth {
         Some(RescoreDepth::Fixed { candidates }) if !(1..=1200).contains(candidates) => error(
             "namespace.retrieval.rescore_depth",
@@ -399,7 +403,7 @@ fn rescore_depth(namespace: &NamespaceConfig, error: &mut impl FnMut(&str, Strin
     }
 }
 
-fn namespace_ranges(namespace: &NamespaceConfig, error: &mut impl FnMut(&str, String)) {
+fn namespace_ranges(namespace: &PersistedSettings, error: &mut impl FnMut(&str, String)) {
     let ranges = [
         (
             "namespace.retrieval.dense_candidates".into(),
@@ -607,7 +611,7 @@ fn reader(config: &Config, error: &mut impl FnMut(&str, String)) {
     }
 }
 
-fn composition(namespace: &NamespaceConfig, error: &mut impl FnMut(&str, String)) {
+fn composition(namespace: &PersistedSettings, error: &mut impl FnMut(&str, String)) {
     let composition = &namespace.composition;
     if !(1..=RESULT_SLOTS_MAX).contains(&(composition.fusion as u64))
         || composition.dense as u64 >= RESULT_SLOTS_MAX

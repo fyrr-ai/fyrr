@@ -131,7 +131,7 @@ async fn fragment_rows(
     if fragments.is_empty() {
         return Ok(RecordBatch::new_empty(crate::prepare::schema(
             config.embedding.dimensions,
-            config.namespace.dense_element,
+            config.namespace.settings.dense_element,
         )));
     }
     dataset
@@ -164,7 +164,7 @@ async fn write_fragments(
     // Rows with attribute columns and rows without (a document's marker) are
     // written apart: a fragment has one schema.
     let dimensions = config.embedding.dimensions;
-    let element = config.namespace.dense_element;
+    let element = config.namespace.settings.dense_element;
     let built_in = crate::prepare::schema(dimensions, element).fields().len();
     let mut groups: Vec<(arrow_schema::SchemaRef, Vec<RecordBatch>)> = Vec::new();
     for row in rows {
@@ -274,7 +274,7 @@ pub async fn initial_deletes(
         .map(|d| {
             marker_row(
                 config.embedding.dimensions,
-                config.namespace.dense_element,
+                config.namespace.settings.dense_element,
                 &envelope.source_id,
                 &d.root_id,
                 &DocumentState {
@@ -432,7 +432,7 @@ pub async fn permissions(
         if !found {
             let marker = marker_row(
                 config.embedding.dimensions,
-                config.namespace.dense_element,
+                config.namespace.settings.dense_element,
                 &envelope.source_id,
                 &document.root_id,
                 &state,
@@ -563,7 +563,7 @@ pub async fn reconcile(
                 }
                 let estimate = marker_row(
                     config.embedding.dimensions,
-                    config.namespace.dense_element,
+                    config.namespace.settings.dense_element,
                     &envelope.source_id,
                     root,
                     &current,
@@ -603,7 +603,7 @@ pub async fn reconcile(
         ));
         rows.push(marker_row(
             config.embedding.dimensions,
-            config.namespace.dense_element,
+            config.namespace.settings.dense_element,
             &envelope.source_id,
             &root,
             &current,

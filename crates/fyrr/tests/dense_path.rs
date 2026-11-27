@@ -325,7 +325,7 @@ async fn dense_path_and_namespace_contracts(backend: Backend) {
             .iter()
             .any(|i| i.name == "fts_idx" && i.kind == "inverted")
     );
-    assert!(!manifest.fts.with_position);
+    assert!(!manifest.settings.namespace.fts_positions);
     assert!(hits.iter().all(|h| h["source_id"] == "allowed"));
     let mirror_directory = root.join("mirror").join(digest(
         format!(

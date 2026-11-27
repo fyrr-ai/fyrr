@@ -171,7 +171,7 @@ async fn incremental_connector_fields_are_typed_columns_on_storage() {
         "the title is stored once, in its column"
     );
     let (_, manifest) = publication(&worker).await;
-    assert_eq!(manifest.schema_version.to_string(), "5.0");
+    assert_eq!(manifest.schema_version.to_string(), "6.0");
 
     read_fields(
         &worker,
@@ -538,7 +538,7 @@ async fn incremental_read_only_namespace_refuses_syncs_and_commits_what_was_prep
             .await
             .unwrap();
     assert!(policy.read_only);
-    assert_eq!(policy.schema_version.to_string(), "4.0");
+    assert_eq!(policy.schema_version.to_string(), "5.0");
 
     // Thawed, the next sync prepares and commits.
     assert_eq!(

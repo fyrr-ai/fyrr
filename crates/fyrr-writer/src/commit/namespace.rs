@@ -40,24 +40,14 @@ pub(crate) fn configured_identity(config: &Config, generation: u64) -> Result<Id
 /// The settings `config` asks for: what a new namespace is created with, and
 /// what an existing one must already have for a request to repeat its creation.
 pub fn namespace_settings(config: &Config) -> NamespaceSettings {
-    let namespace = &config.namespace;
     NamespaceSettings {
         embedding: identity(&config.embedding),
-        fts: namespace.fts_settings(),
-        dense_rq_bits: namespace.dense_rq_bits,
-        dense_partition_rows: namespace.dense_partition_rows,
-        dense_metric: namespace.dense_metric,
-        dense_element: namespace.dense_element,
-        retrieval: namespace.retrieval.settings(),
-        composition: namespace.composition.settings(),
-        rerank: namespace
+        rerank: config
+            .namespace
             .rerank
             .as_ref()
-            .map(fyrr_core::config::RerankConfig::settings),
-        attributes: namespace.attributes.clone(),
-        attribute_indexes: namespace.attribute_indexes.clone(),
-        vectors: namespace.vectors.clone(),
-        write_api: namespace.write_api.clone(),
+            .map(|rerank| rerank.settings.clone()),
+        namespace: config.namespace.settings.clone(),
     }
 }
 
@@ -672,10 +662,7 @@ mod tests {
         );
         let effective = process.with_settings(&settings).unwrap();
         assert_eq!(namespace_settings(&effective), settings);
-        assert_eq!(
-            effective.namespace.retrieval_digest(),
-            created.namespace.retrieval_digest()
-        );
+        assert_eq!(effective.namespace.settings, created.namespace.settings);
         let rerank = effective.namespace.rerank.as_ref().unwrap();
         assert_eq!(rerank.endpoint, "http://127.0.0.1:9/process");
         assert_eq!(rerank.spend_limit_microusd, 7);

@@ -881,7 +881,7 @@ pub async fn commit_until_stopped(
     let config = &config
         .with_settings(&policy.settings)
         .ok_or(WriterError::ConfigurationInvalid)?;
-    if config.namespace.write_api.is_some() && !config.sources.is_empty() {
+    if config.namespace.settings.write_api.is_some() && !config.sources.is_empty() {
         return Err(WriterError::ApiNamespaceHasSources);
     }
     if group::idle(config, &head, &policy).await? {

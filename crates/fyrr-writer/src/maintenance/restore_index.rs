@@ -565,7 +565,7 @@ mod tests {
         let state = apply::DocumentState::default();
         let batch = apply::marker_row(
             config().embedding.dimensions,
-            config().namespace.dense_element,
+            config().namespace.settings.dense_element,
             "source",
             "root",
             &state,

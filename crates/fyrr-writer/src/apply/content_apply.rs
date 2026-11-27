@@ -31,10 +31,12 @@ pub async fn content(
     // which are taken whole at the end.
     let typed = staged.clone();
     let staged = if envelope.source_id == fyrr_core::connector::API_SOURCE_ID {
-        let built_in =
-            crate::prepare::schema(config.embedding.dimensions, config.namespace.dense_element)
-                .fields()
-                .len();
+        let built_in = crate::prepare::schema(
+            config.embedding.dimensions,
+            config.namespace.settings.dense_element,
+        )
+        .fields()
+        .len();
         staged
             .project(&(0..built_in).collect::<Vec<_>>())
             .map_err(|_| WriterError::ChangedRowsInvalid)?
@@ -160,7 +162,7 @@ pub async fn content(
             next.revision = document.source_revision.clone().or(next.revision);
             output.push(marker_row(
                 config.embedding.dimensions,
-                config.namespace.dense_element,
+                config.namespace.settings.dense_element,
                 &envelope.source_id,
                 &document.root_id,
                 &next,
@@ -220,8 +222,8 @@ pub async fn content(
                     &with_state(&stored.slice(row, 1), &next, &kept)?,
                     patch,
                     revision,
-                    &config.namespace.attributes,
-                    config.namespace.dense_element,
+                    &config.namespace.settings.attributes,
+                    config.namespace.settings.dense_element,
                 )?);
             }
             continue;
@@ -239,7 +241,7 @@ pub async fn content(
             next.content_purged = true;
             output.push(marker_row(
                 config.embedding.dimensions,
-                config.namespace.dense_element,
+                config.namespace.settings.dense_element,
                 &envelope.source_id,
                 &document.root_id,
                 &next,
@@ -276,8 +278,8 @@ pub async fn content(
             &rows,
             &taken,
             &typed,
-            &config.namespace.attributes,
-            &config.namespace.vectors,
+            &config.namespace.settings.attributes,
+            &config.namespace.settings.vectors,
         )?);
     }
     acl_changed |= readers.iter().any(|((root, _), readers)| {
@@ -316,7 +318,8 @@ async fn condition_met(
     if !live {
         return Ok(Some(document.intent == DocumentIntent::Replace));
     }
-    let Some(sql) = fyrr_reader::filter_sql(condition, &config.namespace.attributes) else {
+    let Some(sql) = fyrr_reader::filter_sql(condition, &config.namespace.settings.attributes)
+    else {
         return Ok(None);
     };
     let count = dataset
@@ -447,7 +450,8 @@ async fn matching(
     filter: &fyrr_core::mcp::Filter,
 ) -> Result<std::result::Result<BTreeSet<String>, WriterError>> {
     use fyrr_core::limits::write::MAX_FILTER_WRITE_DOCUMENTS;
-    let Some(filter) = fyrr_reader::filter_sql(filter, &config.namespace.attributes) else {
+    let Some(filter) = fyrr_reader::filter_sql(filter, &config.namespace.settings.attributes)
+    else {
         return Ok(Err(WriterError::FilterInvalid));
     };
     // One document of the API is one record: a row past the bound is a document past it.

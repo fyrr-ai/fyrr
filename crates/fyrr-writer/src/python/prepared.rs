@@ -53,7 +53,7 @@ pub(super) fn prepared_kind(
             &loaded.config,
         ))?
         .ok_or(WriterError::ConfigurationInvalid)?;
-    if config.namespace.write_api.is_some() {
+    if config.namespace.settings.write_api.is_some() {
         return Err(WriterError::ApiNamespaceHasSources);
     }
     let source = config

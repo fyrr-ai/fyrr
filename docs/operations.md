@@ -273,8 +273,8 @@ every source until it is removed or put back
 ## Upgrades
 
 The current configuration schema is `6.0`, the MCP contract is `4.0`, the prepared-envelope and
-rejection contracts are `6.0`, content manifests are `5.0`, serving heads are
-`4.1`, and policy artifacts are `4.0`. Each contract has one major; this build
+rejection contracts are `6.0`, content manifests are `6.0`, serving heads are
+`4.1`, and policy artifacts are `5.0`. Each contract has one major; this build
 refuses every other. Embedding settings are required even
 for the default BGE-M3 model. Republish older namespaces before using this
 build.

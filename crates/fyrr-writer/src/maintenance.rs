@@ -182,6 +182,7 @@ fn largest_model(config: &Config, dimensions: usize) -> usize {
 fn largest_models(config: &Config) -> Vec<(usize, usize)> {
     config
         .namespace
+        .settings
         .vectors
         .values()
         .map(|vector| vector.dimensions as usize)
@@ -207,6 +208,7 @@ fn compaction_fits(config: &Config, rows: u64) -> bool {
 fn max_dimensions(config: &Config) -> usize {
     config
         .namespace
+        .settings
         .vectors
         .values()
         .map(|vector| vector.dimensions)
@@ -245,6 +247,7 @@ fn is_vector_index(config: &Config, name: &str) -> bool {
     name == "vector_idx"
         || config
             .namespace
+            .settings
             .vectors
             .keys()
             .any(|vector| fyrr_core::attributes::vector_index_name(vector) == name)
@@ -294,13 +297,13 @@ pub(crate) fn due(config: &Config, manifest: &ContentManifest) -> bool {
     if manifest.merge_pair_rows.iter().any(|(index, &pair)| {
         pair <= target && !merge_skipped(&config.namespace.name, index, manifest.lance_version)
     }) || fyrr_reader::search::attribute_indexes(
-        &config.namespace.attributes,
-        &config.namespace.attribute_indexes,
+        &config.namespace.settings.attributes,
+        &config.namespace.settings.attribute_indexes,
     )
     .any(|(_, name, _)| !segments.contains_key(&name))
         || stale_analyzers(
-            &config.namespace.attribute_indexes,
-            &manifest.attribute_indexes,
+            &config.namespace.settings.attribute_indexes,
+            &manifest.settings.namespace.attribute_indexes,
         )
         .next()
         .is_some()
@@ -491,7 +494,7 @@ async fn maintain_held(
         let (store, root) = namespace_store(config)?;
         let mut built = commit::previous_manifest(store.as_ref(), &root, &head)
             .await?
-            .map(|manifest| manifest.attribute_indexes)
+            .map(|manifest| manifest.settings.namespace.attribute_indexes)
             .unwrap_or_default();
         let rebuilt = Box::pin(commit::build_attribute_indexes(
             config,
@@ -678,7 +681,7 @@ async fn vector_step(
     let ceiling = recommended_num_partitions(usize::MAX, 1);
     let wanted = recommended_num_partitions(
         crate::narrow_usize(fragments.values().sum()),
-        config.namespace.dense_partition_rows as usize,
+        config.namespace.settings.dense_partition_rows as usize,
     );
     let current = model.total_partitions();
     let mut grow = wanted > current
@@ -703,7 +706,7 @@ async fn vector_step(
             }
         }
         grow = MODEL_GROWTH as u64 * vectors
-            >= (wanted * config.namespace.dense_partition_rows as usize) as u64;
+            >= (wanted * config.namespace.settings.dense_partition_rows as usize) as u64;
     }
     // shortcut: training runs in the step's process and cannot stop at the deadline. It holds
     // the sample, 4,096 × 64 vectors (1.07 GB of 1,024 dimensions); `step_cost` keeps it within
@@ -970,7 +973,7 @@ async fn purge_denied(config: &Config, lease: &LeaseGuard, head: &ServingHead) -
             state.content_purged = true;
             readable.push(apply::marker_row(
                 config.embedding.dimensions,
-                config.namespace.dense_element,
+                config.namespace.settings.dense_element,
                 &source.id,
                 &root,
                 &state,
@@ -1704,8 +1707,8 @@ mod merge_run_tests {
         // vector index with a pair that fits one step is due.
         manifest.maintenance_completed_at = Some(fyrr_core::clock::now());
         manifest.indexes = fyrr_reader::search::attribute_indexes(
-            &config.namespace.attributes,
-            &config.namespace.attribute_indexes,
+            &config.namespace.settings.attributes,
+            &config.namespace.settings.attribute_indexes,
         )
         .map(|(column, name, _)| fyrr_core::publication::IndexIdentity {
             name,
@@ -1715,7 +1718,7 @@ mod merge_run_tests {
             partitions: None,
         })
         .collect();
-        manifest.attribute_indexes.clear();
+        manifest.settings.namespace.attribute_indexes.clear();
         assert!(!due(&config, &manifest));
         manifest.merge_pair_rows.insert("vector_idx".into(), 1);
         assert!(due(&config, &manifest));

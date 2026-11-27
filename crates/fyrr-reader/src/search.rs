@@ -592,29 +592,35 @@ pub async fn verify_indices(
         .load_indices()
         .await
         .map_err(|_| IndexVerificationError::StorageUnavailable)?;
-    let fts_compatible = manifest.fts == config.namespace.fts_settings()
-        && manifest.retrieval_policy_digest == config.namespace.retrieval_digest();
+    let (built, configured) = (&manifest.settings.namespace, &config.namespace.settings);
+    let fts_compatible =
+        built.analyzer == configured.analyzer && built.fts_positions == configured.fts_positions;
     let fragments: Vec<u32> = dataset
         .manifest()
         .fragments
         .iter()
         .map(|f| coverage_fragment(f.id))
         .collect();
-    if !attribute_columns_match(dataset.schema(), &manifest.attributes, &indexes)
-        || !vector_columns_match(
-            dataset.schema(),
-            &manifest.vectors,
-            manifest.dense_element,
-            &indexes,
-        )
-    {
+    if !attribute_columns_match(
+        dataset.schema(),
+        &manifest.settings.namespace.attributes,
+        &indexes,
+    ) || !vector_columns_match(
+        dataset.schema(),
+        &manifest.settings.namespace.vectors,
+        manifest.settings.namespace.dense_element,
+        &indexes,
+    ) {
         return Err(IndexVerificationError::IncompatibleIndex);
     }
     verify_loaded_indices(
         &indexes,
         &fragments,
         fts_compatible,
-        &expected_indexes(&manifest.attributes, &manifest.attribute_indexes),
+        &expected_indexes(
+            &manifest.settings.namespace.attributes,
+            &manifest.settings.namespace.attribute_indexes,
+        ),
         |column, index| async move {
             dataset
                 .open_generic_index(&column, &index.uuid, &NoOpMetricsCollector)

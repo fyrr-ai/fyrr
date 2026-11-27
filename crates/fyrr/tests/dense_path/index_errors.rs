@@ -7,12 +7,17 @@ use super::*;
 async fn a_namespace_keeps_its_own_settings_on_storage() {
     let (config, root, _) = super::tools::fixture();
     let original = fyrr_core::config::load(&config).unwrap().config;
-    assert_eq!(original.namespace.analyzer.language, None);
+    assert_eq!(original.namespace.settings.analyzer.language, None);
     let (head, published) = super::coordination::publication(&config).await;
-    assert_eq!(
-        published.retrieval_policy_digest,
-        original.namespace.retrieval_digest()
-    );
+    let (store, path) = fyrr_reader::storage::namespace_store(&original).unwrap();
+    // The namespace records the settings of the file it was created from, once
+    // in its policy and once in each publication.
+    let policy: fyrr_core::publication::PolicyArtifact =
+        fyrr_reader::storage::artifact(store.as_ref(), &path, &head.policy)
+            .await
+            .unwrap();
+    assert_eq!(policy.settings.namespace, original.namespace.settings);
+    assert_eq!(published.settings, policy.settings);
     let before = write_contract(&head);
     let text = std::fs::read_to_string(&config).unwrap();
     let other = root.join("other-settings.toml");
@@ -27,17 +32,18 @@ async fn a_namespace_keeps_its_own_settings_on_storage() {
     )
     .unwrap();
     let parsed = fyrr_core::config::load(&other).unwrap().config;
-    assert!(parsed.namespace.analyzer.language.is_some());
-    assert_ne!(
-        parsed.namespace.retrieval_digest(),
-        original.namespace.retrieval_digest()
-    );
+    assert!(parsed.namespace.settings.analyzer.language.is_some());
+    assert_ne!(parsed.namespace.settings, original.namespace.settings);
 
     // The reader and the writer take the settings from the namespace.
     let reader = fyrr_reader::search::PreparedReader::open(&parsed)
         .await
         .expect("the namespace is served with its own settings");
     assert_eq!(reader.manifest.publication_id, published.publication_id);
+    assert_eq!(
+        reader.manifest.settings.namespace, original.namespace.settings,
+        "the reader serves the namespace's settings, not the file's"
+    );
     assert_eq!(
         super::coordination::command(&other, &["writer", "verify"])["verified"],
         true
@@ -64,21 +70,24 @@ async fn a_namespace_keeps_its_own_settings_on_storage() {
     );
 
     // A publication that differs from the namespace's recorded settings, in
-    // its analyzer or in its embedding profile of the same size, is an
-    // incompatible index: diagnosed by the reader and preserved by `writer verify`.
-    let (store, path) = fyrr_reader::storage::namespace_store(&original).unwrap();
+    // its analyzer, its retrieval or its embedding profile of the same size, is
+    // an incompatible index: diagnosed by the reader and preserved by `writer verify`.
     let manifest_path = object_store::path::Path::from(format!(
         "{path}/{}",
         head.content.as_ref().unwrap().manifest
     ));
     let mut other_embedding = original.embedding.clone();
     other_embedding.prefix.push_str("other: ");
-    for embedding in [false, true] {
+    for tamper in 0..3 {
         let mut tampered = published.clone();
-        if embedding {
-            tampered.embedding = fyrr_reader::embedding::identity(&other_embedding);
-        } else {
-            tampered.fts.analyzer.ascii_folding = !tampered.fts.analyzer.ascii_folding;
+        let settings = &mut tampered.settings;
+        match tamper {
+            0 => settings.embedding = fyrr_reader::embedding::identity(&other_embedding),
+            1 => {
+                let analyzer = &mut settings.namespace.analyzer;
+                analyzer.ascii_folding = !analyzer.ascii_folding;
+            }
+            _ => settings.namespace.retrieval.dense_weight = 0.25,
         }
         object_store::ObjectStoreExt::put(
             store.as_ref(),
@@ -154,6 +163,8 @@ async fn declared_attributes_are_nullable_columns_with_an_index_each_on_storage(
 
     let (head, manifest) = super::coordination::publication(&config).await;
     let kinds: Vec<_> = manifest
+        .settings
+        .namespace
         .attributes
         .iter()
         .map(|(name, kind)| (name.as_str(), kind.index_kind().unwrap()))
@@ -173,7 +184,7 @@ async fn declared_attributes_are_nullable_columns_with_an_index_each_on_storage(
             ("title", "btree"),
         ]
     );
-    for (name, kind) in &manifest.attributes {
+    for (name, kind) in &manifest.settings.namespace.attributes {
         let index = manifest
             .indexes
             .iter()
@@ -219,7 +230,10 @@ async fn declared_attributes_are_nullable_columns_with_an_index_each_on_storage(
     success(&config, &["writer", "commit"]);
     let (head, later) = super::coordination::publication(&config).await;
     assert_ne!(later.publication_id, manifest.publication_id);
-    assert_eq!(later.attributes, manifest.attributes);
+    assert_eq!(
+        later.settings.namespace.attributes,
+        manifest.settings.namespace.attributes
+    );
     assert_eq!(
         super::coordination::command(&config, &["writer", "verify"])["verified"],
         true
@@ -242,7 +256,7 @@ async fn declared_attributes_are_nullable_columns_with_an_index_each_on_storage(
     let (head, published) = super::coordination::publication(&config).await;
     let (store, path) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
     let mut tampered = published.clone();
-    tampered.attributes.remove("priority");
+    tampered.settings.namespace.attributes.remove("priority");
     object_store::ObjectStoreExt::put(
         store.as_ref(),
         &object_store::path::Path::from(format!("{path}/{}", head.content.unwrap().manifest)),

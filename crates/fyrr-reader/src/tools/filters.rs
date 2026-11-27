@@ -361,11 +361,13 @@ impl PreparedReader {
         // Backticks make the name a column whatever it spells (`null`, `order`).
         let filter = match (tree, present) {
             (None, None) => return Ok(()),
-            (Some(tree), None) => Self::filter_sql(tree, &self.manifest.attributes)?,
+            (Some(tree), None) => {
+                Self::filter_sql(tree, &self.manifest.settings.namespace.attributes)?
+            }
             (None, Some(name)) => format!("`{name}` IS NOT NULL"),
             (Some(tree), Some(name)) => format!(
                 "({}) AND `{name}` IS NOT NULL",
-                Self::filter_sql(tree, &self.manifest.attributes)?
+                Self::filter_sql(tree, &self.manifest.settings.namespace.attributes)?
             ),
         };
         let predicate = format!("({}) AND ({filter})", self.admission_predicate()?);
@@ -443,6 +445,8 @@ impl PreparedReader {
     pub(crate) fn check_full_text(&self, attribute: &str) -> Result<()> {
         let index = self
             .manifest
+            .settings
+            .namespace
             .attribute_indexes
             .get(attribute)
             .filter(|index| index.full_text)
@@ -459,7 +463,7 @@ impl PreparedReader {
     /// The phrase query on the index of `searchable_text`, which needs the
     /// positions the namespace may not store.
     fn phrase_query(&self, phrase: &Phrase) -> Result<FtsQuery> {
-        if !self.manifest.fts.with_position {
+        if !self.manifest.settings.namespace.fts_positions {
             return Err(InvalidArgument);
         }
         Ok(FtsQuery::Phrase(
@@ -499,7 +503,7 @@ impl PreparedReader {
             Some(keys) => keys
                 .iter()
                 .map(|key| {
-                    scalar_type(&key.field, &self.manifest.attributes)?;
+                    scalar_type(&key.field, &self.manifest.settings.namespace.attributes)?;
                     Ok(ordering(&key.field, key.direction == SortDirection::Asc))
                 })
                 .collect::<Result<Vec<_>>>()?,

@@ -1,32 +1,39 @@
 {
-  "schema_version": "5.0",
+  "schema_version": "6.0",
   "namespace": "acme",
   "publication_id": "pub-000042",
   "sequence": 42,
   "previous_publication_id": "pub-000041",
   "lance_version": 121,
   "committed_at": "2026-09-30T10:01:30Z",
-  "embedding": {
-    "model": "BAAI/bge-m3",
-    "dimensions": 1024,
-    "fingerprint": "sha256:153ebedfabc06d487f789189fc0d33b7daa637931185368c4c1d331564ad2187",
-    "settings": {
-      "api_style": "openai-compatible",
-      "prefix": "",
-      "roles": {
-        "document": {},
-        "query": {}
-      },
-      "send_dimensions": false
-    }
-  },
-  "chunk_profile": {
-    "name": "v5-whole-unit",
-    "max_unit_bytes": 16384,
-    "overlap_bytes": 0,
-    "digest": "sha256:daf02912c6aa996b6aaf1d74e9d62b7714dd2291e379f1d826341c090a3271a9"
-  },
-  "fts": {
+  "settings": {
+    "embedding": {
+      "model": "BAAI/bge-m3",
+      "dimensions": 1024,
+      "fingerprint": "sha256:153ebedfabc06d487f789189fc0d33b7daa637931185368c4c1d331564ad2187",
+      "settings": {
+        "api_style": "openai-compatible",
+        "prefix": "",
+        "roles": {
+          "document": {},
+          "query": {}
+        },
+        "send_dimensions": false
+      }
+    },
+    "retrieval": {
+      "dense_weight": 0.5,
+      "dense_candidates": 75,
+      "lexical_candidates": 200,
+      "source_cap": 2,
+      "max_documents": 75
+    },
+    "composition": {
+      "fusion": 50,
+      "dense": 0,
+      "lexical": 0
+    },
+    "fts_positions": false,
     "analyzer": {
       "tokenizer": "simple",
       "language": "english",
@@ -36,11 +43,25 @@
       "ngram_max_length": 3,
       "prefix_only": false
     },
-    "with_position": false
+    "dense_rq_bits": 1,
+    "dense_partition_rows": 550,
+    "dense_metric": "cosine",
+    "dense_element": "f16",
+    "attributes": {
+      "created": "datetime",
+      "priority": "int"
+    },
+    "write_api": {
+      "text_attribute": "text",
+      "open": false
+    }
   },
-  "dense_rq_bits": 1,
-  "dense_partition_rows": 550,
-  "retrieval_policy_digest": "sha256:17fba65c79e337ef6c14fca1ce3a800a69e8812aacee1261bb4283c1102a716b",
+  "chunk_profile": {
+    "name": "v5-whole-unit",
+    "max_unit_bytes": 16384,
+    "overlap_bytes": 0,
+    "digest": "sha256:daf02912c6aa996b6aaf1d74e9d62b7714dd2291e379f1d826341c090a3271a9"
+  },
   "indexes": [
     {
       "name": "vector_idx",

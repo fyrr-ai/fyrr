@@ -71,7 +71,8 @@ fn publication_lineage_refuses_gaps_and_wrong_endpoints() {
 #[test]
 fn a_manifest_and_a_policy_hold_only_valid_attribute_schemas() {
     let mut manifest = common::read_json("fixtures/contracts/content-manifest/manifest.json");
-    manifest["attributes"] = json!({"created": "datetime", "priority": "int", "done": "bool"});
+    manifest["settings"]["attributes"] =
+        json!({"created": "datetime", "priority": "int", "done": "bool"});
     assert!(parse::<ContentManifest>(&manifest).is_ok());
     let mut policy = common::read_json("fixtures/contracts/policy-artifact/valid.json");
     for (name, kind) in [
@@ -81,7 +82,7 @@ fn a_manifest_and_a_policy_hold_only_valid_attribute_schemas() {
         ("a", "decimal"),
     ] {
         let mut invalid = manifest.clone();
-        invalid["attributes"] = json!({ name: kind });
+        invalid["settings"]["attributes"] = json!({ name: kind });
         assert!(parse::<ContentManifest>(&invalid).is_err(), "{name} {kind}");
         policy["settings"]["attributes"] = json!({ name: kind });
         assert!(parse::<PolicyArtifact>(&policy).is_err(), "{name} {kind}");
@@ -94,9 +95,9 @@ fn attribute_index_options_are_read_at_the_one_version() {
     let options = json!({"title": {"index": false, "full_text": true,
         "analyzer": {"tokenizer": "unicode", "language": "german", "ascii_folding": true}}});
     let mut manifest = common::read_json("fixtures/contracts/content-manifest/manifest.json");
-    manifest["attributes"] = json!({"title": "string", "count": "bytes"});
+    manifest["settings"]["attributes"] = json!({"title": "string", "count": "bytes"});
     assert!(parse::<ContentManifest>(&manifest).is_ok());
-    manifest["attribute_indexes"] = options.clone();
+    manifest["settings"]["attribute_indexes"] = options.clone();
     assert!(parse::<ContentManifest>(&manifest).is_ok());
     let mut policy = common::read_json("fixtures/contracts/policy-artifact/valid.json");
     policy["settings"]["attributes"] = json!({"title": "string", "count": "bytes"});
@@ -140,7 +141,7 @@ fn attribute_index_options_are_read_at_the_one_version() {
     ] {
         policy["settings"]["attribute_indexes"] = json!({ name: option });
         assert!(parse::<PolicyArtifact>(&policy).is_err(), "{name} {option}");
-        manifest["attribute_indexes"] = json!({ name: option });
+        manifest["settings"]["attribute_indexes"] = json!({ name: option });
         assert!(
             parse::<ContentManifest>(&manifest).is_err(),
             "{name} {option}"
@@ -157,10 +158,13 @@ fn vector_attributes_are_read_at_the_one_version() {
     let vectors =
         json!({"image": {"dimensions": 512}, "title_vec": {"dimensions": 1024, "from": "title"}});
     let mut manifest = manifest;
-    manifest["attributes"] = json!({"title": "string"});
-    manifest["vectors"] = vectors.clone();
+    manifest["settings"]["attributes"] = json!({"title": "string"});
+    manifest["settings"]["vectors"] = vectors.clone();
     let kept = parse::<ContentManifest>(&manifest).unwrap();
-    assert_eq!(serde_json::to_value(&kept).unwrap()["vectors"], vectors);
+    assert_eq!(
+        serde_json::to_value(&kept).unwrap()["settings"]["vectors"],
+        vectors
+    );
     // A source that is no `string` attribute, a name an attribute has and a
     // dimension the model does not have are refused whatever else is set.
     for bad in [
@@ -170,18 +174,18 @@ fn vector_attributes_are_read_at_the_one_version() {
         json!({"v": {"dimensions": 0}}),
     ] {
         let mut manifest = manifest.clone();
-        manifest["vectors"] = bad.clone();
+        manifest["settings"]["vectors"] = bad.clone();
         assert!(parse::<ContentManifest>(&manifest).is_err(), "{bad}");
     }
     // A multi-vector attribute is kept, and only the cosine metric offers it.
     let mut multi = manifest.clone();
-    multi["vectors"] = json!({"tokens": {"dimensions": 16, "multi": true}});
+    multi["settings"]["vectors"] = json!({"tokens": {"dimensions": 16, "multi": true}});
     let kept = parse::<ContentManifest>(&multi).unwrap();
     assert_eq!(
-        serde_json::to_value(&kept).unwrap()["vectors"],
-        multi["vectors"]
+        serde_json::to_value(&kept).unwrap()["settings"]["vectors"],
+        multi["settings"]["vectors"]
     );
-    multi["dense_metric"] = json!("dot");
+    multi["settings"]["dense_metric"] = json!("dot");
     assert!(parse::<ContentManifest>(&multi).is_err());
     let mut policy = policy;
     policy["settings"]["write_api"] = json!({});
@@ -191,7 +195,7 @@ fn vector_attributes_are_read_at_the_one_version() {
     // Without any, there is no entry.
     let plain = common::read_json("fixtures/contracts/content-manifest/manifest.json");
     let written = serde_json::to_value(parse::<ContentManifest>(&plain).unwrap()).unwrap();
-    assert!(written.get("vectors").is_none());
+    assert!(written["settings"].get("vectors").is_none());
 }
 
 /// Token positions in the full-text index are read at the one version of the
@@ -199,15 +203,15 @@ fn vector_attributes_are_read_at_the_one_version() {
 #[test]
 fn token_positions_are_read_at_the_one_version() {
     let mut manifest = common::read_json("fixtures/contracts/content-manifest/manifest.json");
-    manifest["fts"]["with_position"] = json!(true);
+    manifest["settings"]["fts_positions"] = json!(true);
     assert!(parse::<ContentManifest>(&manifest).is_ok());
     let mut policy = common::read_json("fixtures/contracts/policy-artifact/valid.json");
-    policy["settings"]["fts"]["with_position"] = json!(true);
+    policy["settings"]["fts_positions"] = json!(true);
     assert!(parse::<PolicyArtifact>(&policy).is_ok());
 }
 
 /// A metric other than cosine or a 32-bit element type is read at the one
-/// version of the manifest and of the policy. The defaults are no entry.
+/// version of the manifest and of the policy.
 #[test]
 fn a_vector_metric_and_element_type_are_read_at_the_one_version() {
     let manifest = common::read_json("fixtures/contracts/content-manifest/manifest.json");
@@ -218,9 +222,12 @@ fn a_vector_metric_and_element_type_are_read_at_the_one_version() {
         ("dense_element", "f32"),
     ] {
         let mut manifest = manifest.clone();
-        manifest[key] = json!(value);
+        manifest["settings"][key] = json!(value);
         let kept = parse::<ContentManifest>(&manifest).unwrap();
-        assert_eq!(serde_json::to_value(&kept).unwrap()[key], json!(value));
+        assert_eq!(
+            serde_json::to_value(&kept).unwrap()["settings"][key],
+            json!(value)
+        );
         let mut policy = policy.clone();
         policy["settings"][key] = json!(value);
         assert!(parse::<PolicyArtifact>(&policy).is_ok(), "{key} {value}");
@@ -228,16 +235,48 @@ fn a_vector_metric_and_element_type_are_read_at_the_one_version() {
     // Only the names the pinned index supports are spelled.
     for (key, value) in [("dense_metric", "hamming"), ("dense_element", "f64")] {
         let mut manifest = manifest.clone();
-        manifest[key] = json!(value);
+        manifest["settings"][key] = json!(value);
         assert!(
             parse::<ContentManifest>(&manifest).is_err(),
             "{key} {value}"
         );
     }
-    // The default is no entry at all.
-    let kept = parse::<ContentManifest>(&manifest).unwrap();
-    let written = serde_json::to_value(&kept).unwrap();
-    assert!(written.get("dense_metric").is_none() && written.get("dense_element").is_none());
+}
+
+/// A stored document names every setting that a configuration file may leave
+/// out: this build never fills one with its own default.
+#[test]
+fn a_stored_document_names_every_setting() {
+    let manifest = common::read_json("fixtures/contracts/content-manifest/manifest.json");
+    let policy = common::read_json("fixtures/contracts/policy-artifact/valid.json");
+    for key in [
+        "fts_positions",
+        "analyzer",
+        "dense_rq_bits",
+        "dense_partition_rows",
+        "dense_metric",
+        "dense_element",
+        "retrieval",
+        "composition",
+    ] {
+        let mut manifest = manifest.clone();
+        manifest["settings"].as_object_mut().unwrap().remove(key);
+        assert!(parse::<ContentManifest>(&manifest).is_err(), "{key}");
+        let mut policy = policy.clone();
+        policy["settings"].as_object_mut().unwrap().remove(key);
+        assert!(parse::<PolicyArtifact>(&policy).is_err(), "{key}");
+    }
+    for (group, member) in [("retrieval", "dense_weight"), ("composition", "fusion")] {
+        let mut policy = policy.clone();
+        policy["settings"][group]
+            .as_object_mut()
+            .unwrap()
+            .remove(member);
+        assert!(
+            parse::<PolicyArtifact>(&policy).is_err(),
+            "{group}.{member}"
+        );
+    }
 }
 
 /// A connector namespace has its typed columns; one without them is refused.
@@ -370,7 +409,11 @@ fn add_future_fields(value: &mut Value) {
                 "config_schema",
                 "fixed_grants",
                 "attributes",
+                // Nested settings that a configuration file shares: a minor
+                // adds settings beside them, never inside them.
                 "analyzer",
+                "retrieval",
+                "composition",
             ]
             .contains(&key.as_str())
             {
@@ -756,7 +799,7 @@ fn semantic_violations_are_refused_without_echoing_values() {
     for (file, pointer) in [
         (
             "fixtures/contracts/content-manifest/manifest.json",
-            "/embedding",
+            "/settings/embedding",
         ),
         (
             "fixtures/contracts/prepared-envelope/content.json",
@@ -774,7 +817,7 @@ fn semantic_violations_are_refused_without_echoing_values() {
                 "prefix" => embedding["settings"]["prefix"] = json!(sentinel),
                 _ => embedding["fingerprint"] = json!(format!("sha256:{}", "0".repeat(64))),
             }
-            let error = if pointer == "/embedding" {
+            let error = if pointer == "/settings/embedding" {
                 parse::<ContentManifest>(&invalid).unwrap_err()
             } else {
                 parse::<PreparedEnvelope>(&invalid).unwrap_err()
@@ -782,12 +825,12 @@ fn semantic_violations_are_refused_without_echoing_values() {
             assert!(!error.to_string().contains(sentinel), "{error}");
         }
         let mut old = fixture;
-        old["schema_version"] = json!(if pointer == "/embedding" {
+        old["schema_version"] = json!(if pointer == "/settings/embedding" {
             "2.2"
         } else {
             "4.0"
         });
-        let error = if pointer == "/embedding" {
+        let error = if pointer == "/settings/embedding" {
             parse::<ContentManifest>(&old).unwrap_err()
         } else {
             parse::<PreparedEnvelope>(&old).unwrap_err()

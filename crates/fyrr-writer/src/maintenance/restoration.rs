@@ -283,7 +283,7 @@ pub(super) fn restore_rows(
         }
         output.push(apply::marker_row(
             config.embedding.dimensions,
-            config.namespace.dense_element,
+            config.namespace.settings.dense_element,
             source,
             root,
             &state,
@@ -763,7 +763,7 @@ async fn publish_restored(
         rewinds,
         false,
         // The indexes stand as the restored publication built them.
-        Some(&target.attribute_indexes),
+        Some(&target.settings.namespace.attribute_indexes),
     )
     .await?;
     // Service authorization queued during final publication under this same lease.

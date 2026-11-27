@@ -20,8 +20,8 @@ rejected, and error messages name the key path without quoting a value.
 
 The default `[namespace.retrieval]` policy gives the dense lane weight `0.5`
 and retains `200` lexical candidates and `75` dense candidates per query.
-Dense rescoring stays in `legacy` mode. These settings enter the published
-retrieval-policy digest. They are defaults for a namespace created from this
+Dense rescoring stays in `legacy` mode. These settings are recorded with each
+published version. They are defaults for a namespace created from this
 file: the namespace keeps the settings it was created with, whatever a
 process's file says ([upgrades](operations.md#upgrades)).
 

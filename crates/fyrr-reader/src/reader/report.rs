@@ -40,17 +40,21 @@ impl PreparedReader {
         // refresh took a later generation before the reader moved to the later
         // publication. The schema is one generation: the manifest's.
         let mut settings = self.policy.settings.clone();
-        settings.attributes.clone_from(&manifest.attributes);
         settings
+            .namespace
+            .attributes
+            .clone_from(&manifest.settings.namespace.attributes);
+        settings
+            .namespace
             .attribute_indexes
-            .retain(|name, _| manifest.attributes.contains_key(name));
+            .retain(|name, _| manifest.settings.namespace.attributes.contains_key(name));
         serde_json::to_value(NamespaceReport {
             namespace: manifest.namespace.clone(),
             publication_id: manifest.publication_id.clone(),
-            schema: manifest.attributes.clone(),
+            schema: manifest.settings.namespace.attributes.clone(),
             settings,
-            dense_metric: manifest.dense_metric,
-            dense_element: manifest.dense_element,
+            dense_metric: manifest.settings.namespace.dense_metric,
+            dense_element: manifest.settings.namespace.dense_element,
             read_only,
             rows: stats.rows,
             logical_bytes: stats.logical_bytes,

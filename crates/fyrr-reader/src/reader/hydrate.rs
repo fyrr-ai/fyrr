@@ -78,7 +78,7 @@ impl PreparedReader {
     /// of the namespace but those it excludes. An included name the namespace
     /// does not declare is invalid; `vector` is always one to name.
     pub(super) fn returned_columns(&self, fields: Option<&ReturnFields>) -> Result<Vec<String>> {
-        let declared = &self.manifest.attributes;
+        let declared = &self.manifest.settings.namespace.attributes;
         match fields {
             Some(ReturnFields {
                 include: Some(names),
@@ -110,7 +110,7 @@ impl PreparedReader {
     /// The columns that hold the metadata fields of a connector document: none
     /// in a namespace written through the API.
     pub(crate) fn connector_columns(&self) -> Vec<&'static str> {
-        if self.config.namespace.write_api.is_some() {
+        if self.config.namespace.settings.write_api.is_some() {
             return Vec::new();
         }
         CONNECTOR_COLUMNS.iter().map(|(name, _)| *name).collect()
@@ -161,7 +161,7 @@ impl PreparedReader {
                 } else if name == "vector" {
                     vector_json(array, row)?
                 } else {
-                    let kind = self.manifest.attributes.get(name);
+                    let kind = self.manifest.settings.namespace.attributes.get(name);
                     scalar_json(array, *kind.ok_or(PublicationRowsInvalid)?, row)?
                 };
                 Ok((name.clone(), value))

@@ -55,7 +55,7 @@ fn restore_future_can_move_between_runtime_threads() {
 async fn restore_body_bound_precedes_native_materialization() {
     let batch = apply::marker_row(
         toml_config().embedding.dimensions,
-        toml_config().namespace.dense_element,
+        toml_config().namespace.settings.dense_element,
         "source",
         "root",
         &apply::DocumentState::default(),

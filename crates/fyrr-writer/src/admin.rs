@@ -405,7 +405,7 @@ pub(crate) async fn start(
     stop: Arc<AtomicBool>,
     commits: Arc<crate::write_api::Commits>,
 ) -> Result<Option<tokio::task::JoinHandle<Result<(), WriterError>>>> {
-    if config.namespace.write_api.is_some() && !config.writer.serve.committer {
+    if config.namespace.settings.write_api.is_some() && !config.writer.serve.committer {
         return Err(WriterError::WriteApiNeedsCommitter);
     }
     let Some(admin) = &config.writer.serve.admin else {
@@ -449,6 +449,7 @@ pub(crate) async fn start(
         capacity: Arc::new(Semaphore::new(8)),
         write: config
             .namespace
+            .settings
             .write_api
             .is_some()
             .then(|| crate::write_api::WriteApi::new(commits)),

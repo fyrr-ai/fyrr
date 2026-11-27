@@ -534,35 +534,64 @@ export type ElementType = "string" | "int" | "float" | "bool" | "datetime" | "ui
  */
 export interface NamespaceSettings {
   embedding: EmbeddingIdentity;
-  fts: FtsSettings;
-  /** RaBitQ bits per dimension of the vector index. */
-  dense_rq_bits: number;
-  /** Target rows per partition of the vector index. */
-  dense_partition_rows: number;
-  /** The distance of the vector index and the rescoring; absent: cosine. */
-  dense_metric?: DenseMetric;
-  /** The element type of the stored vectors; absent: 16-bit floats. */
-  dense_element?: DenseElement;
-  retrieval: RetrievalSettings;
-  composition: CompositionSettings;
   rerank?: RerankSettings | null;
+  /** Candidate depths, fusion weight and batched output bounds. */
+  retrieval: RetrievalConfig;
+  /** Document slots: fusion first, then further unique dense and lexical hits. */
+  composition: Composition;
+  /** Token positions in the `searchable_text` index; a `phrase` condition needs them. */
+  fts_positions: boolean;
   /**
-   * The typed attributes the namespace declares. Each is a nullable column;
-   * a request that changes the schema adds attributes and never changes or
-   * removes one.
+   * How the full-text index of `searchable_text` cuts a text into terms: the
+   * tokenizer, the language, the stop words and the other settings of an
+   * attribute's analyzer. The index, the highlights and the excerpts of a hit
+   * all use it. Absent: the `simple` tokenizer, lowercase, tokens under 40 bytes,
+   * no stemming, stop words or folding. Fixed when the namespace is created.
+   */
+  analyzer: Analyzer;
+  /** RaBitQ bits per dimension of the dense vector index. */
+  dense_rq_bits: number;
+  /** Target rows per partition of the dense vector index. */
+  dense_partition_rows: number;
+  /**
+   * The distance the dense index and the rescoring measure, fixed for the
+   * life of the namespace: `cosine`, `squared_l2` or `dot`.
+   */
+  dense_metric: DenseMetric;
+  /**
+   * The element type the vectors are stored in, fixed for the life of the
+   * namespace: `f16` or `f32`.
+   */
+  dense_element: DenseElement;
+  /**
+   * Typed attributes declared for a new namespace: name to `string`, `int`,
+   * `float`, `bool` or `datetime`. Each is a nullable column with its own
+   * index. A request that changes the schema adds attributes and never
+   * changes or removes one.
    */
   attributes?: Record<string, AttributeType>;
   /**
-   * The indexes the attributes are to have where they are not the default.
-   * An index switched on is built by the next maintenance; the manifest
-   * records the ones that are built.
+   * The attributes whose indexes differ from the default (the scalar index
+   * of the attribute's type): `index = false` leaves the attribute to a scan
+   * of the table, `full_text` and `ngram` add a text index to a `string`
+   * (`full_text` also to an array of strings, one document per element),
+   * and `analyzer` sets how the full-text index cuts a text into terms. An
+   * index switched on is built by the next maintenance.
    */
   attribute_indexes?: Record<string, AttributeIndex>;
-  /** The named vector attributes, fixed at creation. */
+  /**
+   * Named vector attributes declared for a new namespace, fixed for its
+   * life: name to `dimensions` and, optionally, the `string` attribute
+   * (`from`) the writer embeds the vector from. Each is a nullable column
+   * with its own vector index. The built-in `vector` is not declared: it
+   * stays the default attribute of every namespace. Needs `write_api`.
+   */
   vectors?: Record<string, VectorAttribute>;
   /**
-   * Present: the namespace is written through the HTTP API and takes no
-   * connector source. Fixed with the rest of the settings.
+   * Present: the writer serves `POST /v1/namespaces/{namespace}/documents`,
+   * and a namespace created from this file or through that route takes its
+   * documents only from the API (no `[[sources]]`). The keys are the
+   * defaults of a new namespace; an existing one keeps its own.
    */
   write_api?: WriteApiSettings | null;
 }
@@ -604,15 +633,64 @@ export interface EmbeddingRole {
   input_type?: string | null;
 }
 
-/** FTS analyzer settings, part of the publication identity. */
-export interface FtsSettings {
+/**
+ * What of a reranker decides results: recorded in the namespace when it is
+ * created. The endpoint, credential, spend caps and deadline stay process
+ * configuration ([`RerankConfig`]).
+ */
+export interface RerankSettings {
+  model: string;
+  /** Authorized composed documents to rerank before the request limit. */
+  candidates: number | bigint;
+  /** Logistic population-z score blend; 1 uses raw reranker order, 0 fusion order. */
+  weight: number;
   /**
-   * How the index of `searchable_text` cuts a text into terms; the highlights
-   * and the excerpts of a hit cut it the same way.
+   * Optional per-candidate text bound in characters: send the window with the
+   * most distinct query terms instead of the whole record. Absent sends the
+   * whole record.
    */
-  analyzer: Analyzer;
-  /** Positional postings, which a phrase condition needs. */
-  with_position: boolean;
+  text_chars?: number | bigint | null;
+}
+
+/** Retrieval policy bound into each publication's ranking identity. */
+export interface RetrievalConfig {
+  /**
+   * Float16 candidate refinement. Unset, it starts at four times the dense
+   * lane depth and, with one-bit codes, grows with the rows the probes inspect.
+   */
+  rescore_depth?: RescoreDepth | null;
+  dense_weight: number;
+  dense_candidates: number | bigint;
+  lexical_candidates: number | bigint;
+  /** Soft cap per composition bucket; zero disables it. */
+  source_cap: number | bigint;
+  /** Total unique documents in a multi-query response. */
+  max_documents: number | bigint;
+}
+
+export interface RescoreDepthFixed {
+  mode: "fixed";
+  candidates: number | bigint;
+}
+
+/**
+ * Expand when the exact distance gap, in the units of the namespace's
+ * metric, at the retained boundary is small.
+ */
+export interface RescoreDepthAdaptive {
+  mode: "adaptive";
+  min_candidates: number | bigint;
+  max_candidates: number | bigint;
+  min_gap: number;
+}
+
+export type RescoreDepth = RescoreDepthFixed | RescoreDepthAdaptive;
+
+/** Operator composition; its values are bound into the retrieval policy identity. */
+export interface Composition {
+  fusion: number | bigint;
+  dense: number | bigint;
+  lexical: number | bigint;
 }
 
 /**
@@ -666,54 +744,6 @@ export type DenseMetric = "cosine" | "squared_l2" | "dot";
  * column; a 32-bit one keeps the numbers the caller sent.
  */
 export type DenseElement = "f16" | "f32";
-
-/** The persisted copy of [`RetrievalConfig`]. */
-export interface RetrievalSettings {
-  rescore_depth?: RescoreSettings | null;
-  dense_weight: number;
-  dense_candidates: number | bigint;
-  lexical_candidates: number | bigint;
-  source_cap: number | bigint;
-  max_documents: number | bigint;
-}
-
-export interface RescoreSettingsFixed {
-  mode: "fixed";
-  candidates: number | bigint;
-}
-
-export interface RescoreSettingsAdaptive {
-  mode: "adaptive";
-  min_candidates: number | bigint;
-  max_candidates: number | bigint;
-  min_gap: number;
-}
-
-/** The persisted copy of [`RescoreDepth`]. */
-export type RescoreSettings = RescoreSettingsFixed | RescoreSettingsAdaptive;
-
-/** The persisted copy of [`Composition`]. */
-export interface CompositionSettings {
-  fusion: number | bigint;
-  dense: number | bigint;
-  lexical: number | bigint;
-}
-
-/**
- * What of a reranker decides results: recorded in the namespace when it is
- * created. The endpoint, credential, spend caps and deadline stay process
- * configuration ([`RerankConfig`]). Persisted types accept the fields a newer
- * minor version adds, unlike their configuration counterparts.
- */
-export interface RerankSettings {
-  model: string;
-  /** Authorized composed documents to rerank before the request limit. */
-  candidates: number | bigint;
-  /** Logistic population-z score blend; 1 uses raw reranker order, 0 fusion order. */
-  weight: number;
-  /** Per-candidate text bound in characters; absent sends the whole record. */
-  text_chars?: number | bigint | null;
-}
 
 /**
  * The indexes an attribute has: the scalar one unless it says otherwise, and a

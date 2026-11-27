@@ -184,10 +184,10 @@ around the query terms (the tokens of the text index when the namespace has
 an analyzer, stemming or folding); `fetch` returns whole documents or a window of one
 record.
 
-Fusion weights, depths, analyzer settings and composition enter one
-retrieval-policy digest that is published with each version. They, the
-embedding profile and the vector index settings are recorded in the
-namespace's policy artifact when it is created and fixed for its life, so
-readers and writers cannot disagree about ranking. The tuning keys are in
+Fusion weights, depths, analyzer settings and composition, the embedding
+profile and the vector index settings are recorded in the namespace's policy
+artifact when it is created and fixed for its life. Each version's manifest
+records the settings it was built with, and a reader refuses a version that
+differs from the policy, so readers and writers cannot disagree about ranking. The tuning keys are in
 [tuning](tuning.md); the tool arguments and outputs are in
 [MCP tools](mcp-tools.md).
