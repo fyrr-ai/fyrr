@@ -303,10 +303,13 @@ impl Scheduler {
                 self.prepare(Trigger::Collect);
                 self.next_check = now + self.interval;
             }
+            // Warming downloads nothing while a request holds a pin of the
+            // mirror (see `prewarm`), including one that outlives its query.
             if !self.handover
                 && !self.dormant
                 && self.preparation.is_none()
                 && self.warming.is_none()
+                && self.context.mirror.requests() == 0
                 && now >= self.next_warm
                 && let Some(reader) = &self.template
                 && reader.generation_state != crate::generation::GenerationState::WarmReady
@@ -659,6 +662,13 @@ impl Scheduler {
                         "telemetry namespace=warmed name={}",
                         self.config.namespace.name
                     ));
+                }
+                // Requests came first: warm again once none holds a pin.
+                Ok(Err(Busy)) => {
+                    #[cfg(test)]
+                    self.context.test_hooks.warming_busy.notify_one();
+                    self.next_warm = Instant::now();
+                    return;
                 }
                 Ok(Err(reason)) => {
                     let capacity = reason == MirrorCapacityExhausted;

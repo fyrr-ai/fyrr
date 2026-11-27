@@ -395,6 +395,12 @@
         "parents": [
           "full:fyrr:test:dense_path/embedding::tools_writer_embedding_512_batches_restart_mcp_recall_and_routing_on_storage"
         ]
+      },
+      "full:fyrr-reader:lib:fyrr_reader/serve::tests::warming_waits_for_a_pin_that_outlives_its_request": {
+        "tier": "full",
+        "parents": [
+          "full:fyrr:test:dense_path/embedding::tools_writer_embedding_512_batches_restart_mcp_recall_and_routing_on_storage"
+        ]
       }
     }
   },

@@ -278,6 +278,10 @@ async fn tools_writer_embedding_512_batches_restart_mcp_recall_and_routing_on_st
             "serve::tests::recall_sampler_cancellation_during_native_scan_reuses_worker",
             1,
         ),
+        (
+            "serve::tests::warming_waits_for_a_pin_that_outlives_its_request",
+            1,
+        ),
     ] {
         let output = Command::new(&binary)
             .args([selection, "--ignored", "--nocapture"])

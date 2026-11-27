@@ -287,3 +287,53 @@ async fn recall_sampler_cancellation_during_native_scan_reuses_worker() {
     ));
     read.release.add_permits(1);
 }
+
+#[tokio::test]
+#[ignore = "real S3 publication supplied by the sampler fixture"]
+async fn warming_waits_for_a_pin_that_outlives_its_request() {
+    let mut config = fyrr_core::config::load(std::path::Path::new(
+        &std::env::var("FYRR_TEST_RECALL_CONFIG").unwrap(),
+    ))
+    .unwrap()
+    .config;
+    // An empty mirror, so that warming has files to download.
+    let mirror = std::env::temp_dir().join(format!("fyrr-warming-pin-{}", std::process::id()));
+    config.reader.mirror_path = Some(mirror.to_string_lossy().into_owned());
+    let reader = PreparedReader::open(&config).await.unwrap();
+    let lease = reader.mirror_pin.clone();
+    let hooks = reader.test_hooks.clone();
+    hooks.cache_warming.enabled.store(true, Ordering::SeqCst);
+    hooks.completion.enabled.store(true, Ordering::SeqCst);
+    let service = start(reader).await.unwrap();
+    let exercise = async {
+        hooks.cache_warming.entered.notified().await;
+        // A request runs, and a pin outlives it, as excerpt work can.
+        let reply = enqueue(&service, ToolCall::Report, false).await;
+        hooks.completion.entered.notified().await;
+        let residue = lease.request().unwrap();
+        hooks.cache_warming.release.add_permits(1);
+        hooks.warming_busy.notified().await;
+        hooks.completion.release.add_permits(1);
+        reply.await.unwrap();
+        assert!(
+            tokio::time::timeout(
+                Duration::from_secs(2),
+                hooks.cache_warming.entered.notified()
+            )
+            .await
+            .is_err(),
+            "warming started again while a pin was held"
+        );
+        drop(residue);
+        hooks.cache_warming.entered.notified().await;
+        hooks.cache_warming.enabled.store(false, Ordering::SeqCst);
+        hooks.cache_warming.release.add_permits(1);
+        while service.publication().await["warm_ready"] != true {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(45), exercise)
+        .await
+        .unwrap();
+    let _ = std::fs::remove_dir_all(mirror);
+}

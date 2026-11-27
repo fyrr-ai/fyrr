@@ -223,6 +223,7 @@ pub(crate) struct TestHooks {
     pub(crate) filter_scan: TestGate,
     pub(crate) admission_probe: std::sync::Mutex<Option<AdmissionProbe>>,
     pub(crate) cache_warming: TestGate,
+    pub(crate) warming_busy: tokio::sync::Notify,
     pub(crate) cleanup: TestGate,
 }
 
