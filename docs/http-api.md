@@ -151,7 +151,9 @@ role whose `namespace_prefix` allows the namespace. The CLI does the same:
 While the namespace is frozen it stays readable, and:
 
 - a document write is `409 namespace_read_only`;
-- a connector sync fails with `namespace_read_only`, whatever its kind;
+- a connector sync of content or a listing fails with `namespace_read_only`;
+- a connector sync of permissions or members still runs and is committed, so
+  a revoke is published while the namespace is frozen;
 - maintenance, retiring and purging a source, a restore and the switch itself
   still work.
 

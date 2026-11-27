@@ -264,12 +264,17 @@ pub async fn set_read_only_held(
     Ok(true)
 }
 
-/// Refuses a write into a read-only namespace. It reads the published head
-/// each time: a writer calls it as its envelope is about to become durable,
-/// under its cursor lease, so a switch published since the request was
-/// accepted is honoured. An envelope that was durable before the switch is
-/// still committed.
-pub(crate) async fn ensure_writable(config: &Config) -> Result<()> {
+/// Refuses a write of `kind` into a read-only namespace: content and
+/// listings are frozen; permissions and members pass, so that a revoke is
+/// published whatever the switch (owner decision, 2026-11-23). It reads the
+/// published head each time: a writer calls it as its envelope is about to
+/// become durable, under its cursor lease, so a switch published since the
+/// request was accepted is honoured. An envelope that was durable before the
+/// switch is still committed.
+pub(crate) async fn ensure_writable(config: &Config, kind: SyncKind) -> Result<()> {
+    if kind.is_authorization() {
+        return Ok(());
+    }
     let (store, root) = namespace_store(config)?;
     let head = fyrr_reader::storage::optional_head(config)
         .await?
