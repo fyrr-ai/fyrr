@@ -257,9 +257,10 @@ applied (an envelope of it was deleted), or the cursor is missing while the log
 holds envelopes it chained, the committer blocks the source: a broken content
 chain holds its content; a broken permissions chain holds its permissions,
 content and listings, so no revocation is skipped. The other sources go on.
-`fyrr writer status` lists it in `blocked_sources`, whether the configuration
-lists the source or not, and the committer logs `telemetry chain=blocked
-source=SOURCE_ID kind=KIND`.
+`fyrr writer status` lists it in `blocked_sources`, and the committer logs
+`telemetry chain=blocked source=SOURCE_ID kind=KIND`. `fyrr writer status`
+also lists a source that the configuration does not list when a chain of it
+is broken.
 
 A lost content cursor (of a connector, or `cursors/_api-content.json`) heals
 itself: the next content read or write makes a new cursor, under the
