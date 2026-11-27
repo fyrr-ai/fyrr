@@ -711,6 +711,52 @@ async fn incremental_a_purge_with_an_invalid_cursor_deletes_its_unreadable_envel
     assert!(source_roots(&worker, "incremental").await.is_empty());
 }
 
+/// `writer status` names a source whose permissions cursor is lost from what
+/// the publication applied, whether its configuration lists the source or not,
+/// and counts its pending envelopes as the committer does.
+#[tokio::test]
+#[ignore = "real CLI and local storage; scripts/ci"]
+async fn incremental_status_names_a_lost_cursor_of_an_unlisted_source_on_storage() {
+    let (worker, commit, root) = fixture();
+    publish_initial(&worker, &commit, &root);
+    // The committer's configuration does not list `incremental`.
+    let text = std::fs::read_to_string(&commit).unwrap();
+    let block = format!(
+        "[[sources]]\nid='incremental'\ntype='incremental-test'\npermissions='sync'\ndocument_max_bytes='64B'\n[sources.intervals]\npermissions='5m'\nmembers='5m'\n[sources.scope]\nfixture='{}'\n",
+        root.join("input.json").display()
+    );
+    assert!(text.contains(&block));
+    std::fs::write(&commit, text.replace(&block, "")).unwrap();
+    let loaded = fyrr_core::config::load(&worker).unwrap();
+    let (store, ns) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
+    store
+        .delete(&ns.join("cursors").join("incremental-permissions.json"))
+        .await
+        .unwrap();
+    // A content envelope of it, which the committer does not hold on that
+    // chain, counts as pending.
+    input(
+        &root,
+        json!({"epoch":2,"content":[[doc("c","r1","fixture document 2")]]}),
+    );
+    worker_sync(&worker, &["incremental", "--kind", "content"]);
+    let status = command(&commit, &["writer", "status"]);
+    assert_eq!(
+        status["blocked_sources"],
+        json!(["incremental"]),
+        "{status}"
+    );
+    assert_eq!(status["pending_envelopes"], 1, "{status}");
+    publish(&commit);
+    let status = command(&commit, &["writer", "status"]);
+    assert_eq!(status["pending_envelopes"], 0, "{status}");
+    assert_eq!(
+        status["blocked_sources"],
+        json!(["incremental"]),
+        "{status}"
+    );
+}
+
 /// An unreadable members envelope is named by no chain and could hide a revoke:
 /// the commit and `writer status` fail closed, nothing is published, and once
 /// it is put back the revoke is (#370).
