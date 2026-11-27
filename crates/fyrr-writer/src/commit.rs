@@ -196,10 +196,12 @@ pub(crate) async fn named_by(
     let source = source.to_owned();
     let mut named = BTreeSet::new();
     for kind in [SyncKind::Content, SyncKind::Permissions] {
-        let last = crate::sync_lease::CursorLease::peek(config, &source, kind)
-            .await?
-            .and_then(|state| state.last)
-            .map(|last| last.id);
+        // A cursor that does not parse names nothing: the purge deletes it.
+        let last = match crate::sync_lease::CursorLease::peek(config, &source, kind).await {
+            Ok(cursor) => cursor.and_then(|state| state.last).map(|last| last.id),
+            Err(WriterError::CursorInvalid) => None,
+            Err(error) => return Err(error),
+        };
         let applied = manifest
             .as_ref()
             .and_then(|m| m.chain_applied.get(&source)?.get(&kind).cloned());

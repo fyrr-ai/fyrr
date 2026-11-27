@@ -614,6 +614,8 @@ async fn incremental_an_unreadable_envelope_blocks_only_its_source_on_storage() 
 async fn incremental_an_invalid_cursor_blocks_only_its_source_on_storage() {
     let (worker, commit, root) = fixture();
     publish_initial(&worker, &commit, &root);
+    let rights = row_readers(&rows(&worker).await, "a");
+    assert!(!rights.is_empty(), "`a` is readable before the revoke");
     input(
         &root,
         json!({"epoch":2,"permissions":[[{"id":"a","revision":"p2","readers":[]},{"id":"b","revision":"p1","readers":["grp:group"]}]]}),
@@ -650,9 +652,10 @@ async fn incremental_an_invalid_cursor_blocks_only_its_source_on_storage() {
         json!(["incremental"]),
         "{status}"
     );
-    assert!(
-        !row_readers(&rows(&worker).await, "b").is_empty(),
-        "the blocked source keeps its rights"
+    assert_eq!(
+        row_readers(&rows(&worker).await, "a"),
+        rights,
+        "the blocked revoke of `a` is not published"
     );
     let purged = command(
         &commit,
@@ -662,6 +665,50 @@ async fn incremental_an_invalid_cursor_blocks_only_its_source_on_storage() {
     publish(&commit);
     let status = command(&commit, &["writer", "status"]);
     assert_eq!(status["blocked_sources"], json!([]), "{status}");
+}
+
+/// A purge of a source whose permissions cursor does not parse deletes the
+/// unreadable envelope that its content chain names, and the namespace commits.
+#[tokio::test]
+#[ignore = "real CLI and local storage; scripts/ci"]
+async fn incremental_a_purge_with_an_invalid_cursor_deletes_its_unreadable_envelope_on_storage() {
+    let (worker, commit, root) = fixture();
+    publish_initial(&worker, &commit, &root);
+    input(
+        &root,
+        json!({"epoch":2,"content":[[doc("c","r1","fixture document 2")]]}),
+    );
+    worker_sync(&worker, &["incremental", "--kind", "content"]);
+    let last = cursor_of(&worker, SyncKind::Content).await.last.unwrap();
+    let loaded = fyrr_core::config::load(&worker).unwrap();
+    let (store, ns) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
+    let envelope = ns
+        .clone()
+        .join("envelopes")
+        .join(format!("{}.json", last.id));
+    for path in [
+        envelope.clone(),
+        ns.join("cursors").join("incremental-permissions.json"),
+    ] {
+        let bytes = store.get(&path).await.unwrap().bytes().await.unwrap();
+        store
+            .put(&path, bytes.slice(..bytes.len() / 2).into())
+            .await
+            .unwrap();
+    }
+    let purged = command(
+        &commit,
+        &["writer", "source", "purge", "incremental", "--confirm"],
+    );
+    assert_eq!(purged["purged"], true, "{purged}");
+    assert!(
+        store.head(&envelope).await.is_err(),
+        "the unreadable envelope is deleted"
+    );
+    publish(&commit);
+    let status = command(&commit, &["writer", "status"]);
+    assert_eq!(status["blocked_sources"], json!([]), "{status}");
+    assert!(source_roots(&worker, "incremental").await.is_empty());
 }
 
 /// An unreadable members envelope is named by no chain and could hide a revoke:
