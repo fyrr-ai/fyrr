@@ -171,7 +171,7 @@ async fn incremental_connector_fields_are_typed_columns_on_storage() {
         "the title is stored once, in its column"
     );
     let (_, manifest) = publication(&worker).await;
-    assert_eq!(manifest.schema_version.to_string(), "5.0");
+    assert_eq!(manifest.schema_version.to_string(), "6.0");
 
     read_fields(
         &worker,
@@ -538,7 +538,7 @@ async fn incremental_read_only_namespace_refuses_syncs_and_commits_what_was_prep
             .await
             .unwrap();
     assert!(policy.read_only);
-    assert_eq!(policy.schema_version.to_string(), "4.0");
+    assert_eq!(policy.schema_version.to_string(), "5.0");
 
     // Thawed, the next sync prepares and commits.
     assert_eq!(
@@ -2445,6 +2445,116 @@ async fn incremental_permission_read_whose_rewritten_rows_are_over_a_group_publi
     assert!(row_readers(&batch, "a").is_empty() && row_readers(&batch, "b").is_empty());
 }
 
+/// A content change writes a root over a group in steps too: a replacement of
+/// `a` whose rows are over the bytes of the committer's group, its files
+/// within them, publishes in one publication.
+#[tokio::test]
+#[ignore = "real CLI and local storage; scripts/ci"]
+async fn incremental_a_replacement_of_a_root_over_a_group_publishes_in_steps_on_storage() {
+    let (worker, commit, root) = fixture();
+    publish_initial(&worker, &commit, &root);
+    large_documents(&worker);
+    small_group(&commit);
+    replace_a(&worker, &commit, &root, 2, "r2", 'A').await;
+}
+
+/// `writer restore` writes a root over a group in steps too: back to a
+/// replacement of `a`, whose rights changed since, its rows over the bytes of
+/// the group the committer has by then, in one publication.
+#[tokio::test]
+#[ignore = "real CLI and local storage; scripts/ci"]
+async fn incremental_a_restore_of_a_root_over_a_group_publishes_in_steps_on_storage() {
+    let (worker, commit, root) = fixture();
+    publish_initial(&worker, &commit, &root);
+    large_documents(&worker);
+    large_documents(&commit);
+    let target = replace_a(&worker, &commit, &root, 2, "r2", 'A').await;
+    replace_a(&worker, &commit, &root, 3, "r3", 'C').await;
+    // The rights of `a` change after the target: a restore rewrites its rows.
+    input(
+        &root,
+        json!({"epoch":4,"permissions":[[{"id":"a","revision":"p2","readers":["grp:group","grp:other"]}]]}),
+    );
+    worker_sync(&worker, &["incremental", "--kind", "permissions"]);
+    publish(&commit);
+    let text = std::fs::read_to_string(&commit)
+        .unwrap()
+        .replace("[writer]\ndocument_max_bytes='512KiB'\nenvelope_max_bytes='1MiB'\n[writer.commit]\ngroup_max_bytes='1MiB'\n", "")
+        .replace("document_max_bytes='512KiB'", "document_max_bytes='64B'");
+    std::fs::write(&commit, text).unwrap();
+    small_group(&commit);
+    let before = publication(&commit).await.1.sequence;
+    command(&commit, &["writer", "restore", &target]);
+    assert_eq!(publication(&commit).await.1.sequence, before + 1);
+    assert_eq!(revisions(&rows(&worker).await, "a"), ["r2"; 25]);
+}
+
+/// Lets `config` prepare documents of 400,000 characters, whose files are small
+/// (the text is one letter) and whose rows are over 256 KiB.
+fn large_documents(config: &Path) {
+    let text = std::fs::read_to_string(config)
+        .unwrap()
+        .replace("document_max_bytes='64B'", "document_max_bytes='512KiB'")
+        .replace(
+            "[reader]",
+            "[writer]\ndocument_max_bytes='512KiB'\nenvelope_max_bytes='1MiB'\n[writer.commit]\ngroup_max_bytes='1MiB'\n[reader]",
+        );
+    std::fs::write(config, text).unwrap();
+}
+
+/// Gives the committer of `config` a group of 256 KiB.
+fn small_group(config: &Path) {
+    let text = std::fs::read_to_string(config).unwrap().replace(
+        "[reader]",
+        "[writer]\ndocument_max_bytes='64KiB'\nenvelope_max_bytes='256KiB'\n[writer.commit]\ngroup_max_bytes='256KiB'\n[reader]",
+    );
+    std::fs::write(config, text).unwrap();
+}
+
+/// Replaces `a` at `revision` with 400,000 `letter`s, 25 records, in one
+/// publication; gives its ID.
+async fn replace_a(
+    worker: &Path,
+    commit: &Path,
+    root: &FixtureRoot,
+    epoch: u64,
+    revision: &str,
+    letter: char,
+) -> String {
+    let text = letter.to_string().repeat(400_000);
+    let vector = root.embedding.vector("fixture query");
+    for chunk in fyrr_writer::chunk::chunks(&text) {
+        root.embedding.insert_both(chunk, vector.clone());
+    }
+    input(
+        root,
+        json!({"epoch":epoch,"content":[[doc("a",revision,&text)]]}),
+    );
+    worker_sync(worker, &["incremental", "--kind", "content"]);
+    let before = publication(commit).await.1.sequence;
+    publish(commit);
+    let (_, manifest) = publication(commit).await;
+    assert_eq!(manifest.sequence, before + 1, "one publication");
+    assert_eq!(revisions(&rows(worker).await, "a"), [revision; 25]);
+    manifest.publication_id
+}
+
+/// The revision of each row of `root`.
+fn revisions(batch: &arrow_array::RecordBatch, root: &str) -> Vec<String> {
+    let revisions = batch
+        .column_by_name("source_revision")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .unwrap();
+    roots(batch)
+        .iter()
+        .enumerate()
+        .filter(|(_, id)| *id == root)
+        .map(|(row, _)| revisions.value(row).to_owned())
+        .collect()
+}
+
 /// A source of `a` and `b`, one row of `chars` characters each, read by
 /// `grp:group`, published once, its documents up to `document_max`.
 async fn published_large_rows(chars: usize, document_max: &str) -> (PathBuf, PathBuf, FixtureRoot) {
@@ -3349,19 +3459,13 @@ async fn incremental_copy_clears_the_chain_of_the_cursors_on_storage() {
             .last
             .is_some()
     );
-    assert!(
-        !publication(&commit)
-            .await
-            .1
-            .authorization_applied
-            .is_empty()
-    );
+    assert!(!publication(&commit).await.1.chain_applied.is_empty());
     let to = super::namespace_copy::elsewhere(&worker, "chain-copy", None);
     super::namespace_copy::copied(&worker, &to);
     let copied = cursor_of(&to, SyncKind::Permissions).await;
     assert!(copied.last.is_none() && copied.cursor.is_none());
     assert!(copied.sequence > 0, "the numeric sequence is kept");
-    assert!(publication(&to).await.1.authorization_applied.is_empty());
+    assert!(publication(&to).await.1.chain_applied.is_empty());
     let _ = root;
 }
 
@@ -3532,13 +3636,7 @@ async fn incremental_content_waits_for_a_confirmed_revoke_before_any_envelope_wa
         &["incremental", "--kind", "content", "--kind", "permissions"],
     );
     let revoke = permission_envelopes(&worker).await.pop().unwrap();
-    assert!(
-        publication(&commit)
-            .await
-            .1
-            .authorization_applied
-            .is_empty()
-    );
+    assert!(publication(&commit).await.1.chain_applied.is_empty());
     let loaded = fyrr_core::config::load(&worker).unwrap();
     let (store, ns) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
     let path = ns
@@ -4729,7 +4827,7 @@ impl Run {
             Some(_) => publication(&self.commit)
                 .await
                 .1
-                .authorization_applied
+                .chain_applied
                 .get("incremental")
                 .cloned(),
             None => None,
@@ -4953,7 +5051,8 @@ async fn schedule(seed: u64, genesis: bool, steps: &[Step], purge: bool) {
 /// Bounded schedules of reads that succeed, fail, crash or are refused, of lease
 /// takeovers with late puts, of cleanup after the clock passes the age of an
 /// envelope, of copy and of purge, over the real worker, committer and reader
-/// (#325). A failure prints its seed and trace.
+/// (#325); and the same faults of the write API's content (#331). A failure
+/// prints its seed and trace.
 #[tokio::test]
 #[ignore = "real CLI and local storage; scripts/ci"]
 async fn incremental_scheduled_reads_faults_cleanup_and_copy_keep_the_rights_exact_on_storage() {
@@ -4962,6 +5061,12 @@ async fn incremental_scheduled_reads_faults_cleanup_and_copy_keep_the_rights_exa
     }
     for (seed, purge) in SCHEDULES {
         schedule(seed, seed % 2 == 1, &dealt(seed, 6), purge).await;
+    }
+    for (seed, steps) in API_SCRIPTS {
+        api_schedule(seed, steps).await;
+    }
+    for seed in API_SCHEDULES {
+        api_schedule(seed, &api_dealt(seed, 5)).await;
     }
 }
 
@@ -4985,3 +5090,394 @@ const SCRIPTS: [(u64, bool, &[Step], bool); 8] = [
 ];
 
 const SCHEDULES: [(u64, bool); 4] = [(2, false), (3, false), (4, false), (5, true)];
+
+// ---- The write API in the schedule test (#331) ---------------------------------
+//
+// The content of the write API is confirmed by its cursor, as permissions are:
+// an envelope that no cursor write confirmed never publishes, and the next write
+// takes its sequence under a new lease generation.
+
+#[derive(Clone, Copy, Debug)]
+enum ApiStep {
+    Write,
+    /// A write whose envelope is put, and whose process dies before the cursor
+    /// write that confirms it.
+    CrashAfterPut,
+    /// An envelope of 0.1 at the next sequence, without a lease generation.
+    Debris,
+    Takeover,
+    AgeAndClean,
+}
+
+const API_STEPS: [(ApiStep, u64); 5] = [
+    (ApiStep::Write, 3),
+    (ApiStep::CrashAfterPut, 2),
+    (ApiStep::Debris, 1),
+    (ApiStep::Takeover, 1),
+    (ApiStep::AgeAndClean, 1),
+];
+
+/// The sequences each fault needs, as one short schedule each.
+#[rustfmt::skip]
+const API_SCRIPTS: [(u64, &[ApiStep]); 3] = [
+    // A write that died before its cursor write, then the one that takes its sequence.
+    (201, &[ApiStep::CrashAfterPut, ApiStep::Write, ApiStep::CrashAfterPut, ApiStep::CrashAfterPut, ApiStep::Write]),
+    // An envelope at the ID the next write had before lease generations.
+    (202, &[ApiStep::Debris, ApiStep::Write, ApiStep::AgeAndClean, ApiStep::Write]),
+    // A lease taken and given back around a crash, and cleanup of what it left.
+    (203, &[ApiStep::Takeover, ApiStep::CrashAfterPut, ApiStep::Takeover, ApiStep::Write, ApiStep::AgeAndClean]),
+];
+
+const API_SCHEDULES: [u64; 2] = [6, 7];
+
+fn api_dealt(seed: u64, length: usize) -> Vec<ApiStep> {
+    let mut dice = Dice(seed);
+    let total: u64 = API_STEPS.iter().map(|(_, weight)| weight).sum();
+    (0..length)
+        .map(|_| {
+            let mut pick = dice.below(total);
+            API_STEPS
+                .iter()
+                .find(|(_, weight)| {
+                    let hit = pick < *weight;
+                    pick = pick.saturating_sub(*weight);
+                    hit
+                })
+                .map(|(step, _)| *step)
+                .unwrap()
+        })
+        .collect()
+}
+
+/// The texts the writes of a schedule state, one each, embedded beforehand.
+const API_TEXTS: usize = 24;
+
+struct ApiRun {
+    seed: u64,
+    trace: Vec<String>,
+    config: PathBuf,
+    root: FixtureRoot,
+    address: std::net::SocketAddr,
+    writer: Option<super::write_api::Writer>,
+    texts: usize,
+    /// The texts of `d` that an answered write stated, oldest first.
+    answered: Vec<String>,
+    /// The texts of writes that died before their cursor write: never visible.
+    lost: Vec<String>,
+    checked: u64,
+}
+
+impl Drop for ApiRun {
+    #[allow(clippy::print_stderr)]
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            eprintln!(
+                "write API schedule seed {} failed; trace:\n  {}",
+                self.seed,
+                self.trace.join("\n  ")
+            );
+        }
+    }
+}
+
+fn api_text(n: usize) -> String {
+    format!("schedule text {n}")
+}
+
+impl ApiRun {
+    fn next_text(&mut self) -> String {
+        self.texts += 1;
+        assert!(
+            self.texts <= API_TEXTS,
+            "the schedule writes more than it embedded"
+        );
+        api_text(self.texts)
+    }
+
+    fn writer(&self) -> &super::write_api::Writer {
+        self.writer.as_ref().unwrap()
+    }
+
+    async fn cursor(&self) -> fyrr_core::connector::CursorState {
+        let loaded = fyrr_core::config::load(&self.config).unwrap();
+        let (store, ns) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
+        fyrr_reader::storage::read_contract(
+            store.as_ref(),
+            &ns.join("cursors").join("_api-content.json"),
+        )
+        .await
+        .unwrap()
+    }
+
+    async fn write(&mut self) {
+        let text = self.next_text();
+        self.trace.push(format!("write {text}"));
+        let answer = self
+            .writer()
+            .post(
+                super::write_api::WRITE_KEY,
+                "dense-fixture",
+                &json!({"upserts": [{"id": "d", "text": &text}]}),
+            )
+            .await;
+        assert_eq!(answer, (200, json!({"upserted": 1, "deleted": 0})));
+        self.answered.push(text);
+        self.check().await;
+    }
+
+    async fn step(&mut self, step: ApiStep) {
+        let loaded = fyrr_core::config::load(&self.config).unwrap();
+        match step {
+            ApiStep::Write => self.write().await,
+            ApiStep::CrashAfterPut => {
+                let text = self.next_text();
+                self.trace
+                    .push(format!("crash_after_put_before_cursor {text}"));
+                // The committer waits while the namespace lease is held: the
+                // envelope is put and confirmed, and nothing publishes it.
+                let lease = loop {
+                    match fyrr_writer::lease::LeaseGuard::acquire(&loaded.config).await {
+                        Ok(lease) => break lease,
+                        Err(_) => tokio::time::sleep(std::time::Duration::from_millis(50)).await,
+                    }
+                };
+                let before = self.cursor().await;
+                let body = json!({"upserts": [{"id": "d", "text": &text}]});
+                let request =
+                    self.writer()
+                        .post(super::write_api::WRITE_KEY, "dense-fixture", &body);
+                let confirmed = async {
+                    while self.cursor().await.sequence == before.sequence {
+                        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                    }
+                };
+                tokio::select! {
+                    answer = request => panic!("a write was answered under a held lease: {answer:?}"),
+                    () = confirmed => {}
+                }
+                // The cursor write never happened: the cursor is as before.
+                let cursor = loop {
+                    match fyrr_writer::sync_lease::CursorLease::acquire(
+                        &loaded.config,
+                        fyrr_core::connector::API_SOURCE_ID,
+                        SyncKind::Content,
+                    )
+                    .await
+                    {
+                        Ok(cursor) => break cursor,
+                        Err(_) => tokio::time::sleep(std::time::Duration::from_millis(20)).await,
+                    }
+                };
+                let mut state = cursor.state().await.unwrap();
+                state.sequence = before.sequence;
+                state.last = before.last;
+                cursor.write(state).await.unwrap();
+                cursor.release().await.unwrap();
+                lease.release().await.unwrap();
+                self.lost.push(text);
+            }
+            ApiStep::Debris => {
+                self.trace
+                    .push("envelope_of_0.1_without_its_lease_generation".into());
+                let cursor = self.cursor().await;
+                let (store, ns) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
+                let last = cursor.last.as_ref().unwrap();
+                let mut envelope: PreparedEnvelope = fyrr_reader::storage::read_contract(
+                    store.as_ref(),
+                    &ns.clone()
+                        .join("envelopes")
+                        .join(format!("{}.json", last.id)),
+                )
+                .await
+                .unwrap();
+                envelope.sequence = cursor.sequence + 1;
+                envelope.envelope_id = fyrr_core::envelope::envelope_id(
+                    &loaded.config.namespace.name,
+                    fyrr_core::connector::API_SOURCE_ID,
+                    SyncKind::Content,
+                    envelope.sequence,
+                    cursor.rejection_generation,
+                    cursor.cursor.as_deref(),
+                );
+                envelope.lease_generation = 0;
+                envelope.previous = None;
+                envelope.created_at = fyrr_core::clock::now();
+                store
+                    .put(
+                        &ns.join("envelopes")
+                            .join(format!("{}.json", envelope.envelope_id)),
+                        write_contract(&envelope).into(),
+                    )
+                    .await
+                    .unwrap();
+            }
+            ApiStep::Takeover => {
+                self.trace.push("lease_takeover".into());
+                let cursor = fyrr_writer::sync_lease::CursorLease::acquire(
+                    &loaded.config,
+                    fyrr_core::connector::API_SOURCE_ID,
+                    SyncKind::Content,
+                )
+                .await
+                .unwrap();
+                cursor.release().await.unwrap();
+            }
+            ApiStep::AgeAndClean => {
+                self.trace
+                    .push("clock_passes_max_envelope_age_then_cleanup".into());
+                self.writer = None;
+                fyrr_core::clock::advance(std::time::Duration::from_secs(4 * 86_400)).unwrap();
+                command(&self.config, &["writer", "maintain"]);
+                // What no cursor confirmed is gone; what the chain holds stays.
+                let head = fyrr_reader::storage::optional_head(&loaded.config)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                let (applied, rejected) = fyrr_writer::commit::published_ids(&loaded.config, &head)
+                    .await
+                    .unwrap();
+                let (store, ns) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
+                let listed: Vec<_> = futures::TryStreamExt::try_collect::<Vec<_>>(
+                    object_store::ObjectStore::list(store.as_ref(), Some(&ns.join("envelopes"))),
+                )
+                .await
+                .unwrap();
+                for object in listed {
+                    let envelope: PreparedEnvelope =
+                        fyrr_reader::storage::read_contract(store.as_ref(), &object.location)
+                            .await
+                            .unwrap();
+                    assert!(
+                        applied.contains(&envelope.envelope_id)
+                            || rejected.contains(&envelope.envelope_id),
+                        "cleanup kept {}, which no cursor confirmed",
+                        envelope.envelope_id
+                    );
+                }
+                self.writer = Some(
+                    super::write_api::Writer::start(&self.config, &self.root, self.address).await,
+                );
+                self.check().await;
+            }
+        }
+    }
+
+    /// The invariants after a publication.
+    async fn check(&mut self) {
+        let loaded = fyrr_core::config::load(&self.config).unwrap();
+        let head = fyrr_reader::storage::optional_head(&loaded.config)
+            .await
+            .unwrap()
+            .unwrap();
+        let content = head.content.clone().unwrap();
+        let (store, ns) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
+        // 1. Every publication since the last check shows a text that an answered
+        // write stated, never an older one than before nor a lost one.
+        let mut chain =
+            fyrr_reader::storage::manifest_chain(store.clone(), ns.clone(), Some(content.manifest));
+        let mut versions = Vec::new();
+        while let Some(manifest) = futures::TryStreamExt::try_next(&mut chain).await.unwrap() {
+            if manifest.sequence <= self.checked {
+                break;
+            }
+            versions.push(manifest.lance_version);
+        }
+        for version in versions.into_iter().rev() {
+            let batch =
+                source_rows_at(&self.config, fyrr_core::connector::API_SOURCE_ID, version).await;
+            // The publication that created the namespace holds no document.
+            let Some(row) = roots(&batch).iter().position(|id| id == "d") else {
+                continue;
+            };
+            let text = fyrr_writer::apply::strings(&batch, "searchable_text")
+                .unwrap()
+                .value(row)
+                .to_owned();
+            assert!(
+                !self.lost.contains(&text),
+                "a write no cursor confirmed published: {text}"
+            );
+            assert!(
+                self.answered.contains(&text),
+                "the text {text} is no write's"
+            );
+        }
+        self.checked = content.sequence;
+        let batch = source_rows_at(
+            &self.config,
+            fyrr_core::connector::API_SOURCE_ID,
+            content.lance_version,
+        )
+        .await;
+        let row = roots(&batch).iter().position(|id| id == "d").unwrap();
+        assert_eq!(
+            fyrr_writer::apply::strings(&batch, "searchable_text")
+                .unwrap()
+                .value(row),
+            self.answered.last().unwrap(),
+            "the newest answered write is published"
+        );
+        // 2. Every link of the chain from the cursor back to what was applied is
+        // in the log.
+        let applied = publication(&self.config)
+            .await
+            .1
+            .chain_applied
+            .get(fyrr_core::connector::API_SOURCE_ID)
+            .cloned();
+        let mut next = self.cursor().await.last.map(|last| last.id);
+        while let Some(id) = next.take() {
+            if applied.as_ref() == Some(&id) {
+                break;
+            }
+            let link: PreparedEnvelope = fyrr_reader::storage::read_contract(
+                store.as_ref(),
+                &ns.clone().join("envelopes").join(format!("{id}.json")),
+            )
+            .await
+            .unwrap_or_else(|_| panic!("the link {id} of the chain is not in the log"));
+            next = link.previous;
+        }
+        // 3. `writer status` counts what the committer has pending: nothing, as
+        // what no cursor confirmed is not.
+        let pending = fyrr_writer::commit::pending(&loaded.config, &head)
+            .await
+            .unwrap()
+            .len();
+        assert_eq!(pending, 0, "an answered write leaves nothing pending");
+        let status = command(&self.config, &["writer", "status"]);
+        assert_eq!(status["pending_envelopes"].as_u64(), Some(0));
+    }
+}
+
+async fn api_schedule(seed: u64, steps: &[ApiStep]) {
+    let (config, root) = setup_on(Backend::Local);
+    let address = free_address();
+    super::write_api::configure(&config, &address, "open = true");
+    let texts: Vec<String> = (1..=API_TEXTS).map(api_text).collect();
+    super::write_api::embed(&root, &texts.iter().map(String::as_str).collect::<Vec<_>>());
+    let writer = super::write_api::Writer::start(&config, &root, address).await;
+    let mut run = ApiRun {
+        seed,
+        trace: Vec::new(),
+        config,
+        root,
+        address,
+        writer: Some(writer),
+        texts: 0,
+        answered: Vec::new(),
+        lost: Vec::new(),
+        checked: 0,
+    };
+    // A namespace that is published has had a write.
+    run.write().await;
+    for step in steps {
+        run.step(*step).await;
+    }
+    // Once the faults stop, a write publishes.
+    run.write().await;
+    run.writer = None;
+    let storage = super::namespace_copy::storage_of(&run.config);
+    std::fs::remove_dir_all(storage).unwrap();
+    std::fs::remove_dir_all(&*run.root).unwrap();
+}

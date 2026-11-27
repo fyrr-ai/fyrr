@@ -51,35 +51,6 @@ fn restore_future_can_move_between_runtime_threads() {
     requires_send(restore(&config, None));
 }
 
-#[tokio::test]
-async fn restore_body_bound_precedes_native_materialization() {
-    let batch = apply::marker_row(
-        toml_config().embedding.dimensions,
-        toml_config().namespace.dense_element,
-        "source",
-        "root",
-        &apply::DocumentState::default(),
-    )
-    .unwrap();
-    let schema = batch.schema();
-    let dataset = Dataset::write(
-        arrow_array::RecordBatchIterator::new([Ok(batch)], schema),
-        &format!(
-            "memory://restore-body-{}",
-            fyrr_core::clock::now().timestamp_nanos_opt().unwrap()
-        ),
-        None,
-    )
-    .await
-    .unwrap();
-    let mut config = toml_config();
-    config.writer.commit.group_max_bytes = "80KiB".parse().unwrap();
-    let mut reads = 0;
-    let result = restore_bodies(&config, &dataset, &[0; 40], &mut reads, None).await;
-    assert_eq!(result.unwrap_err(), WriterError::EnvelopeBoundsInvalid);
-    assert_eq!(reads, 0, "an oversized root must fail before any body take");
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "real CLI and RustFS fixture supplied by dense_path"]
 async fn restore_drains_restarts_and_caps_attempts_on_storage() {
@@ -379,15 +350,6 @@ async fn restore_drains_restarts_and_caps_attempts_on_storage() {
         current.latest_version_id().await.unwrap(),
         current.version().version,
         "authorization drains recovered every private suffix"
-    );
-    let mut tiny = config.clone();
-    tiny.writer.commit.group_max_rows = 1;
-    assert_eq!(
-        restore_read(&tiny, &current, "incremental", &["restore-0".into()], false)
-            .await
-            .unwrap_err(),
-        WriterError::EnvelopeBoundsInvalid,
-        "a complete two-row root cannot fit a one-row group"
     );
 }
 

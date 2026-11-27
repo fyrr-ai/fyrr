@@ -147,18 +147,31 @@ pub struct Config {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct NamespaceConfig {
+    /// Namespace ID: lowercase letters, digits and `-`, at most 63 bytes.
+    #[schemars(regex(pattern = NAMESPACE_PATTERN))]
+    pub name: String,
     /// Optional hosted reranker. Its calls occupy a reader concurrency slot.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rerank: Option<RerankConfig>,
+    #[serde(flatten)]
+    pub settings: PersistedSettings,
+}
+
+/// The settings a namespace is created with and keeps: the keys of `[namespace]`
+/// that the policy artifact records, besides the reranker. A setting added here
+/// is read from the file, stored, restored and validated without any other change.
+/// Persisted types accept the fields a newer minor version adds, so this type
+/// does not deny unknown fields; [`NamespaceConfig`] does for the file. A file
+/// may leave a setting out for its default; a stored document may not
+/// (`NamespaceSettings::check_complete`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct PersistedSettings {
     /// Candidate depths, fusion weight and batched output bounds.
     #[serde(default)]
     pub retrieval: RetrievalConfig,
     /// Document slots: fusion first, then further unique dense and lexical hits.
     #[serde(default)]
     pub composition: Composition,
-    /// Namespace ID: lowercase letters, digits and `-`, at most 63 bytes.
-    #[schemars(regex(pattern = NAMESPACE_PATTERN))]
-    pub name: String,
     /// Token positions in the `searchable_text` index; a `phrase` condition needs them.
     #[serde(default)]
     pub fts_positions: bool,
@@ -187,15 +200,17 @@ pub struct NamespaceConfig {
     pub dense_element: DenseElement,
     /// Typed attributes declared for a new namespace: name to `string`, `int`,
     /// `float`, `bool` or `datetime`. Each is a nullable column with its own
-    /// index.
-    #[serde(default)]
+    /// index. A request that changes the schema adds attributes and never
+    /// changes or removes one.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub attributes: crate::attributes::AttributeSchema,
     /// The attributes whose indexes differ from the default (the scalar index
     /// of the attribute's type): `index = false` leaves the attribute to a scan
     /// of the table, `full_text` and `ngram` add a text index to a `string`
     /// (`full_text` also to an array of strings, one document per element),
-    /// and `analyzer` sets how the full-text index cuts a text into terms.
-    #[serde(default)]
+    /// and `analyzer` sets how the full-text index cuts a text into terms. An
+    /// index switched on is built by the next maintenance.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub attribute_indexes: crate::attributes::AttributeIndexes,
     /// Named vector attributes declared for a new namespace, fixed for its
     /// life: name to `dimensions` and, optionally, the `string` attribute
@@ -210,6 +225,17 @@ pub struct NamespaceConfig {
     /// defaults of a new namespace; an existing one keeps its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub write_api: Option<WriteApiSettings>,
+}
+
+impl PersistedSettings {
+    /// The settings of a file that sets none, as JSON: the names a stored
+    /// document must carry.
+    pub(crate) fn defaults() -> serde_json::Map<String, serde_json::Value> {
+        match serde_json::from_value::<Self>(serde_json::json!({})).map(serde_json::to_value) {
+            Ok(Ok(serde_json::Value::Object(settings))) => settings,
+            _ => unreachable!("every setting has a default and serializes"),
+        }
+    }
 }
 
 /// How a namespace written through the HTTP API stores and shows its rows. Fixed
@@ -240,17 +266,13 @@ fn default_text_attribute() -> String {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RerankConfig {
+    /// What of the reranker decides results: recorded in the namespace.
+    #[serde(flatten)]
+    pub settings: RerankSettings,
     /// Complete HTTPS endpoint (loopback HTTP is allowed for a local provider).
     pub endpoint: String,
-    pub model: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_key: Option<SecretRef>,
-    /// Authorized composed documents to rerank before the request limit.
-    #[schemars(range(min = 1, max = RESULT_SLOTS_MAX))]
-    pub candidates: usize,
-    /// Logistic population-z score blend; 1 uses raw reranker order, 0 fusion order.
-    #[schemars(range(min = 0, max = 1))]
-    pub weight: f64,
     /// One deadline for preparation and every provider call in a search batch.
     pub deadline: ConfigDuration,
     /// Shared process-lifetime namespace cap, in millionths of a US dollar.
@@ -261,18 +283,11 @@ pub struct RerankConfig {
     /// This amount is reserved before each dispatch; no provider invoice is trusted.
     #[schemars(range(min = 1))]
     pub max_call_cost_microusd: u64,
-    /// Optional per-candidate text bound in characters: send the window with the
-    /// most distinct query terms instead of the whole record. Absent sends the
-    /// whole record (and keeps the policy digest unchanged).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(range(min = RERANK_TEXT_CHARS_MIN, max = RERANK_TEXT_CHARS_MAX))]
-    pub text_chars: Option<usize>,
 }
 
 /// What of a reranker decides results: recorded in the namespace when it is
 /// created. The endpoint, credential, spend caps and deadline stay process
-/// configuration ([`RerankConfig`]). Persisted types accept the fields a newer
-/// minor version adds, unlike their configuration counterparts.
+/// configuration ([`RerankConfig`]).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct RerankSettings {
     pub model: String,
@@ -282,138 +297,12 @@ pub struct RerankSettings {
     /// Logistic population-z score blend; 1 uses raw reranker order, 0 fusion order.
     #[schemars(range(min = 0, max = 1))]
     pub weight: f64,
-    /// Per-candidate text bound in characters; absent sends the whole record.
+    /// Optional per-candidate text bound in characters: send the window with the
+    /// most distinct query terms instead of the whole record. Absent sends the
+    /// whole record.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(range(min = RERANK_TEXT_CHARS_MIN, max = RERANK_TEXT_CHARS_MAX))]
     pub text_chars: Option<usize>,
-}
-impl RerankConfig {
-    pub fn settings(&self) -> RerankSettings {
-        RerankSettings {
-            model: self.model.clone(),
-            candidates: self.candidates,
-            weight: self.weight,
-            text_chars: self.text_chars,
-        }
-    }
-    /// This configuration with the namespace's reranker settings.
-    fn with_settings(&self, settings: &RerankSettings) -> Self {
-        Self {
-            model: settings.model.clone(),
-            candidates: settings.candidates,
-            weight: settings.weight,
-            text_chars: settings.text_chars,
-            ..self.clone()
-        }
-    }
-}
-
-/// The persisted copy of [`RescoreDepth`].
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "mode", rename_all = "snake_case")]
-pub enum RescoreSettings {
-    Fixed {
-        candidates: usize,
-    },
-    Adaptive {
-        min_candidates: usize,
-        max_candidates: usize,
-        min_gap: f64,
-    },
-}
-impl From<&RescoreDepth> for RescoreSettings {
-    fn from(depth: &RescoreDepth) -> Self {
-        match *depth {
-            RescoreDepth::Fixed { candidates } => Self::Fixed { candidates },
-            RescoreDepth::Adaptive {
-                min_candidates,
-                max_candidates,
-                min_gap,
-            } => Self::Adaptive {
-                min_candidates,
-                max_candidates,
-                min_gap,
-            },
-        }
-    }
-}
-impl From<&RescoreSettings> for RescoreDepth {
-    fn from(settings: &RescoreSettings) -> Self {
-        match *settings {
-            RescoreSettings::Fixed { candidates } => Self::Fixed { candidates },
-            RescoreSettings::Adaptive {
-                min_candidates,
-                max_candidates,
-                min_gap,
-            } => Self::Adaptive {
-                min_candidates,
-                max_candidates,
-                min_gap,
-            },
-        }
-    }
-}
-
-/// The persisted copy of [`RetrievalConfig`].
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-pub struct RetrievalSettings {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub rescore_depth: Option<RescoreSettings>,
-    pub dense_weight: f64,
-    pub dense_candidates: usize,
-    pub lexical_candidates: usize,
-    pub source_cap: usize,
-    pub max_documents: usize,
-}
-impl RetrievalConfig {
-    pub fn settings(&self) -> RetrievalSettings {
-        RetrievalSettings {
-            rescore_depth: self.rescore_depth.as_ref().map(Into::into),
-            dense_weight: self.dense_weight,
-            dense_candidates: self.dense_candidates,
-            lexical_candidates: self.lexical_candidates,
-            source_cap: self.source_cap,
-            max_documents: self.max_documents,
-        }
-    }
-}
-impl From<&RetrievalSettings> for RetrievalConfig {
-    fn from(settings: &RetrievalSettings) -> Self {
-        Self {
-            rescore_depth: settings.rescore_depth.as_ref().map(Into::into),
-            dense_weight: settings.dense_weight,
-            dense_candidates: settings.dense_candidates,
-            lexical_candidates: settings.lexical_candidates,
-            source_cap: settings.source_cap,
-            max_documents: settings.max_documents,
-        }
-    }
-}
-
-/// The persisted copy of [`Composition`].
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct CompositionSettings {
-    pub fusion: usize,
-    pub dense: usize,
-    pub lexical: usize,
-}
-impl Composition {
-    pub fn settings(&self) -> CompositionSettings {
-        CompositionSettings {
-            fusion: self.fusion,
-            dense: self.dense,
-            lexical: self.lexical,
-        }
-    }
-}
-impl From<&CompositionSettings> for Composition {
-    fn from(settings: &CompositionSettings) -> Self {
-        Self {
-            fusion: settings.fusion,
-            dense: settings.dense,
-            lexical: settings.lexical,
-        }
-    }
 }
 
 /// Retrieval policy bound into each publication's ranking identity.
@@ -530,39 +419,6 @@ impl Default for Composition {
         }
     }
 }
-impl NamespaceConfig {
-    /// Canonical analyzer settings shared by publication and admission.
-    pub fn fts_settings(&self) -> crate::publication::FtsSettings {
-        crate::publication::FtsSettings {
-            analyzer: self.analyzer.clone(),
-            with_position: self.fts_positions,
-        }
-    }
-    /// Includes fixed lane weights, candidate bounds, source cap, P1 and composition.
-    pub fn retrieval_digest(&self) -> String {
-        let mut policy = vec![
-            serde_json::json!(
-                "slice2:cosine:ivf-rq1:f16:550:training256:logistic-z:population:lex.75:dense.25:source2-soft-per-bucket:lex50:dense75:p1:1200:phrase0"
-            ),
-            serde_json::json!(self.fts_settings()),
-            serde_json::json!(self.composition),
-            serde_json::json!({"retrieval_v1": self.retrieval}),
-        ];
-        if let Some(rerank) = &self.rerank {
-            policy.push(serde_json::json!({"rerank_v2": rerank.settings()}));
-        }
-        // The fixed string above names the metric and element type of every
-        // namespace that records none: cosine and f16.
-        if !self.dense_metric.is_default() || !self.dense_element.is_default() {
-            policy.push(serde_json::json!({"dense_v1": [self.dense_metric, self.dense_element]}));
-        }
-        if !self.vectors.is_empty() {
-            policy.push(serde_json::json!({"vectors_v1": self.vectors}));
-        }
-        crate::limits::digest(serde_json::Value::Array(policy).to_string().as_bytes())
-    }
-}
-
 /// The durable truth: S3 (or S3-compatible) storage, or a local directory
 /// for single-host use. The other keys configure S3 access only.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -1541,16 +1397,18 @@ pub fn parse(text: &str) -> Result<LoadedConfig, Issue> {
 fn derive_defaults(config: &mut Config, raw: &toml::Table) {
     // A namespace fed by connectors stores their metadata fields as columns,
     // and a query can rank by the title: it has a full-text index.
-    if config.namespace.write_api.is_none() {
+    if config.namespace.settings.write_api.is_none() {
         for (name, kind) in crate::attributes::CONNECTOR_COLUMNS {
             config
                 .namespace
+                .settings
                 .attributes
                 .entry(name.into())
                 .or_insert(kind);
         }
         config
             .namespace
+            .settings
             .attribute_indexes
             .entry("title".into())
             .or_insert_with(|| crate::attributes::AttributeIndex {
@@ -1641,23 +1499,12 @@ impl Config {
             document: role(&embedding.settings.roles.document),
             query: role(&embedding.settings.roles.query),
         };
-        let namespace = &mut config.namespace;
-        namespace.fts_positions = settings.fts.with_position;
-        namespace.analyzer.clone_from(&settings.fts.analyzer);
-        namespace.dense_rq_bits = settings.dense_rq_bits;
-        namespace.dense_partition_rows = settings.dense_partition_rows;
-        namespace.dense_metric = settings.dense_metric;
-        namespace.dense_element = settings.dense_element;
-        namespace.attributes.clone_from(&settings.attributes);
-        namespace
-            .attribute_indexes
-            .clone_from(&settings.attribute_indexes);
-        namespace.vectors.clone_from(&settings.vectors);
-        namespace.write_api.clone_from(&settings.write_api);
-        namespace.retrieval = (&settings.retrieval).into();
-        namespace.composition = (&settings.composition).into();
-        namespace.rerank = match (&settings.rerank, &self.namespace.rerank) {
-            (Some(settings), Some(process)) => Some(process.with_settings(settings)),
+        config.namespace.settings.clone_from(&settings.namespace);
+        config.namespace.rerank = match (&settings.rerank, &self.namespace.rerank) {
+            (Some(settings), Some(process)) => Some(RerankConfig {
+                settings: settings.clone(),
+                ..process.clone()
+            }),
             (Some(_), None) => return None,
             (None, _) => None,
         };

@@ -13,7 +13,13 @@ use std::collections::{BTreeMap, BTreeSet};
 fn kind(reader: &PreparedReader, name: &str) -> Option<AttributeType> {
     match name {
         "updated_at" => Some(AttributeType::Datetime),
-        name => reader.manifest.attributes.get(name).copied(),
+        name => reader
+            .manifest
+            .settings
+            .namespace
+            .attributes
+            .get(name)
+            .copied(),
     }
 }
 

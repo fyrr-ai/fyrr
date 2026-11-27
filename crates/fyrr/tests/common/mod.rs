@@ -175,7 +175,29 @@ impl Sandbox {
     }
 
     /// Runs another binary of this package inside the sandbox.
-    pub fn run_command<I, S>(&self, mut command: Command, args: I, env: &[(&str, &str)]) -> Output
+    pub fn run_command<I, S>(&self, command: Command, args: I, env: &[(&str, &str)]) -> Output
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        self.sandboxed(command, args, env)
+            .output()
+            .expect("run fyrr")
+    }
+
+    /// A long-running `fyrr` in the sandbox, as `configured` runs it; the
+    /// caller starts it and owns its output.
+    pub fn configured_command<I, S>(&self, config: &Path, args: I) -> Command
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        let mut all = vec![OsString::from("--config"), config.as_os_str().to_owned()];
+        all.extend(args.into_iter().map(|arg| arg.as_ref().to_owned()));
+        self.sandboxed(fyrr(), all, &[])
+    }
+
+    fn sandboxed<I, S>(&self, mut command: Command, args: I, env: &[(&str, &str)]) -> Command
     where
         I: IntoIterator<Item = S>,
         S: AsRef<OsStr>,
@@ -196,7 +218,7 @@ impl Sandbox {
         for (key, value) in env {
             command.env(key, value);
         }
-        command.output().expect("run fyrr")
+        command
     }
 
     /// Every file under the run directory.

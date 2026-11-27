@@ -252,13 +252,7 @@ impl Index {
             .map_err(|_| ERROR)
     }
 
-    pub(super) fn rows(
-        &self,
-        config: &Config,
-        side: i64,
-        source: &str,
-        root: &str,
-    ) -> Result<Vec<Row>> {
+    pub(super) fn rows(&self, side: i64, source: &str, root: &str) -> Result<Vec<Row>> {
         let mut statement = self
             .db
             .prepare_cached(
@@ -268,18 +262,11 @@ impl Index {
         let mut cursor = statement
             .query(params![side, source, root])
             .map_err(|_| ERROR)?;
+        // The metadata of a root, without its text and vectors, is held whole:
+        // a root has at most the rows of an envelope.
         let mut output = Vec::new();
-        let mut bytes = apply::ROW_OVERHEAD_BYTES;
         while let Some(row) = cursor.next().map_err(|_| ERROR)? {
             let value: Vec<u8> = row.get(0).map_err(|_| ERROR)?;
-            bytes = bytes
-                .checked_add(value.len() as u64)
-                .ok_or(WriterError::EnvelopeBoundsInvalid)?;
-            if output.len() as u64 >= config.writer.commit.group_max_rows
-                || bytes > config.writer.commit.group_max_bytes.as_u64()
-            {
-                return Err(WriterError::EnvelopeBoundsInvalid);
-            }
             output.push(
                 serde_json::from_slice(&value).map_err(|_| WriterError::DocumentStateInvalid)?,
             );
@@ -287,14 +274,9 @@ impl Index {
         Ok(output)
     }
 
-    pub(super) fn authority(
-        &self,
-        config: &Config,
-        source: &str,
-        root: &str,
-    ) -> Result<RestoreAuthority> {
+    pub(super) fn authority(&self, source: &str, root: &str) -> Result<RestoreAuthority> {
         let mut result = RestoreAuthority::default();
-        for row in self.rows(config, 0, source, root)? {
+        for row in self.rows(0, source, root)? {
             if result.states.get(root).is_some_and(|s| *s != row.state) {
                 return Err(WriterError::DocumentStateInvalid);
             }
@@ -375,7 +357,7 @@ impl Index {
                 if self.retired.contains(source) {
                     return Err(WriterError::RestoreVerificationFailed);
                 }
-                let authority = self.authority(config, source, root)?;
+                let authority = self.authority(source, root)?;
                 restore_verify(source, &[batch.slice(row, 1)], &authority)?;
             }
             restore_deadline(config, start)?;
@@ -565,7 +547,7 @@ mod tests {
         let state = apply::DocumentState::default();
         let batch = apply::marker_row(
             config().embedding.dimensions,
-            config().namespace.dense_element,
+            config().namespace.settings.dense_element,
             "source",
             "root",
             &state,
@@ -634,8 +616,7 @@ mod tests {
                 params![encoded],
             )
             .unwrap();
-        let config = fyrr_core::config::parse("[namespace]\nname='restore-test'\n[storage]\nuri='s3://restore-test'\n[embedding]\nendpoint='http://127.0.0.1:9/v1'\n").unwrap().config;
-        let loaded = index.rows(&config, 0, "source", "root").unwrap();
+        let loaded = index.rows(0, "source", "root").unwrap();
         assert_eq!(loaded[0].address, 42);
         assert_eq!(loaded[0].state, state);
     }
@@ -847,7 +828,7 @@ mod tests {
                     break;
                 }
                 for (source, root) in &roots {
-                    count += index.rows(&config, 0, source, root).unwrap().len();
+                    count += index.rows(0, source, root).unwrap().len();
                 }
                 after = roots.last().unwrap().clone();
             }

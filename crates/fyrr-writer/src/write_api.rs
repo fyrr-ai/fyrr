@@ -25,7 +25,6 @@ use fyrr_core::connector::{
 };
 use fyrr_core::envelope::{
     BaseHead, DocumentIntent, DocumentPatch, EnvelopeDocument, FilterPatch, FilterWrites,
-    envelope_id,
 };
 use fyrr_core::http_api::WriteResponse;
 use fyrr_core::identity::ApiKeysArtifact;
@@ -351,7 +350,8 @@ async fn accept(api: &WriteApi, config: &Config, request: Request) -> Result<Res
         .strip_prefix("/v1/namespaces/")
         .and_then(|rest| rest.strip_suffix("/documents"))
         .filter(|name| is_namespace_name(name));
-    let Some(namespace) = namespace.filter(|_| config.namespace.write_api.is_some()) else {
+    let Some(namespace) = namespace.filter(|_| config.namespace.settings.write_api.is_some())
+    else {
         return Err(ApiError(404, "not_found"));
     };
     if request.method() != axum::http::Method::POST {
@@ -494,6 +494,10 @@ fn laid_over(
     let invalid = WriterError::PublicationInvalid;
     let mut value = serde_json::to_value(base).map_err(|_| invalid)?;
     if let Some(request) = request {
+        // A setting this build does not know is refused, never dropped.
+        if !NamespaceSettings::names_only_settings(request) {
+            return Err(invalid);
+        }
         merge(&mut value, request);
     }
     let mut settings: NamespaceSettings = serde_json::from_value(value).map_err(|_| invalid)?;
@@ -507,11 +511,12 @@ fn laid_over(
             .fingerprint(&embedding.model, embedding.dimensions);
     }
     // A request cannot make a namespace that the API does not write.
-    if settings.write_api.is_none() {
+    if settings.namespace.write_api.is_none() {
         return Err(invalid);
     }
     // An option that is the default is not an entry: a schema has one spelling.
     settings
+        .namespace
         .attribute_indexes
         .retain(|_, options| *options != fyrr_core::attributes::AttributeIndex::default());
     Ok(settings)
@@ -534,7 +539,9 @@ fn changed_schema(
     }
     let next = laid_over(current, request)?;
     crate::commit::check_schema_change(current, &next)?;
-    if next != *current && (next.validate().is_err() || next.attributes.contains_key("id")) {
+    if next != *current
+        && (next.validate().is_err() || next.namespace.attributes.contains_key("id"))
+    {
         return Err(WriterError::PublicationInvalid);
     }
     Ok(next)
@@ -550,7 +557,10 @@ async fn attribute_order(
 ) -> Result<Vec<String>, ApiError> {
     // The vector attributes are columns of the table too, after the typed ones
     // it was created with.
-    let (attributes, vectors) = (&config.namespace.attributes, &config.namespace.vectors);
+    let (attributes, vectors) = (
+        &config.namespace.settings.attributes,
+        &config.namespace.settings.vectors,
+    );
     let declared = |name: &String| attributes.contains_key(name) || vectors.contains_key(name);
     let mut order = Vec::new();
     if let Some(head) =
@@ -620,8 +630,12 @@ fn vector_in(value: Value, dimensions: u32, config: &Config) -> Result<Vec<f32>,
             .map(|n| n.as_f64().map(|n| n as f32))
             .collect::<Option<Vec<_>>>()
             .filter(|vector| {
-                fyrr_reader::embedding::validate(vector, dimensions, config.namespace.dense_element)
-                    .is_ok()
+                fyrr_reader::embedding::validate(
+                    vector,
+                    dimensions,
+                    config.namespace.settings.dense_element,
+                )
+                .is_ok()
             })
             .ok_or(ApiError(400, "vector_invalid")),
         _ => Err(ApiError(400, "vector_invalid")),
@@ -673,7 +687,11 @@ fn checked_patches(
             return Err(ApiError(400, "duplicate_id"));
         }
         let patch = patch_values(row, config, text_key)?;
-        conditions.bind(&id, Some(&patch.attributes), &config.namespace.attributes)?;
+        conditions.bind(
+            &id,
+            Some(&patch.attributes),
+            &config.namespace.settings.attributes,
+        )?;
         patches.push((id, patch));
     }
     Ok(patches)
@@ -688,6 +706,7 @@ fn patch_values(
 ) -> Result<DocumentPatch, ApiError> {
     let open = config
         .namespace
+        .settings
         .write_api
         .as_ref()
         .is_some_and(|api| api.open);
@@ -741,7 +760,7 @@ fn patch_values(
     // a patch brings none, and one that changes the attribute a vector was
     // embedded from would leave the two disagreeing.
     for name in row.keys() {
-        let vectors = &config.namespace.vectors;
+        let vectors = &config.namespace.settings.vectors;
         if vectors.contains_key(name) {
             return Err(ApiError(400, "vector_not_patchable"));
         }
@@ -749,7 +768,7 @@ fn patch_values(
             return Err(ApiError(400, "text_not_patchable"));
         }
     }
-    let mut schema = config.namespace.attributes.clone();
+    let mut schema = config.namespace.settings.attributes.clone();
     for (name, value) in &row {
         if !schema.contains_key(name) {
             return Err(ApiError(400, "attribute_undeclared"));
@@ -775,7 +794,7 @@ fn checked_filter_writes(
     text_key: &str,
 ) -> Result<Option<FilterWrites>, ApiError> {
     let compiles = |filter: &Filter| {
-        fyrr_reader::filter_sql(filter, &config.namespace.attributes)
+        fyrr_reader::filter_sql(filter, &config.namespace.settings.attributes)
             .map(drop)
             .ok_or(ApiError(400, "filter_invalid"))
     };
@@ -851,7 +870,7 @@ fn checked(
     text_key: &str,
     order: Vec<String>,
 ) -> Result<Checked, ApiError> {
-    let attributes = &config.namespace.attributes;
+    let attributes = &config.namespace.settings.attributes;
     let mut conditions = Conditions {
         given: std::mem::take(&mut body.conditions),
         bound: BTreeMap::new(),
@@ -863,7 +882,7 @@ fn checked(
         }
     }
     let mut rows = Vec::with_capacity(body.upserts.0.len());
-    let vectors = &config.namespace.vectors;
+    let vectors = &config.namespace.settings.vectors;
     // One column of rows for each vector attribute, in name order.
     let mut named: Vec<Vec<Option<Vec<f32>>>> = vec![Vec::new(); vectors.len()];
     let mut columns = crate::prepare::AttributeColumns::new(
@@ -966,7 +985,7 @@ fn checked(
             }
         })
         .sum();
-    if numbers.saturating_mul(config.namespace.dense_element.bytes())
+    if numbers.saturating_mul(config.namespace.settings.dense_element.bytes())
         > config.writer.commit.group_max_bytes.as_u64()
     {
         return Err(ApiError(413, "request_too_large"));
@@ -977,7 +996,7 @@ fn checked(
         (
             name.clone(),
             crate::prepare::named_vector_column(
-                config.namespace.dense_element,
+                config.namespace.settings.dense_element,
                 spec,
                 column.iter().map(Option::as_deref),
             ),
@@ -1000,6 +1019,7 @@ fn changes(
 ) -> Result<Vec<ContentChange>, ApiError> {
     let open = config
         .namespace
+        .settings
         .write_api
         .as_ref()
         .is_some_and(|api| api.open);
@@ -1120,12 +1140,18 @@ fn add_inferred<'a>(
         change_schema_waiting(process, &head.incarnation, |current| {
             let mut next = current.clone();
             for (name, kind) in added {
-                if next.attributes.entry(name.clone()).or_insert(*kind) != kind {
+                if next
+                    .namespace
+                    .attributes
+                    .entry(name.clone())
+                    .or_insert(*kind)
+                    != kind
+                {
                     return Err(WriterError::AttributeTypeChange);
                 }
             }
             // Another request may have filled the schema meanwhile.
-            if next.attributes.len() > fyrr_core::limits::schema::MAX_ATTRIBUTES {
+            if next.namespace.attributes.len() > fyrr_core::limits::schema::MAX_ATTRIBUTES {
                 return Err(WriterError::PublicationInvalid);
             }
             Ok(next)
@@ -1204,10 +1230,11 @@ fn inferred_attributes(
     settings: &NamespaceSettings,
 ) -> Result<AttributeSchema, ApiError> {
     let text_key = settings
+        .namespace
         .write_api
         .as_ref()
         .map_or("text", |api| api.text_attribute.as_str());
-    let mut schema = settings.attributes.clone();
+    let mut schema = settings.namespace.attributes.clone();
     let infer = |schema: &mut AttributeSchema, name: &str, value: &Value| {
         fyrr_core::attributes::resolve(schema, name, value)
             .map(drop)
@@ -1216,7 +1243,7 @@ fn inferred_attributes(
     let undeclared = |schema: &AttributeSchema, name: &str| {
         !matches!(name, "id" | "readers" | "vector")
             && name != text_key
-            && !settings.vectors.contains_key(name)
+            && !settings.namespace.vectors.contains_key(name)
             && !schema.contains_key(name)
     };
     for raw in body.upserts.0.iter().chain(&body.patches.0) {
@@ -1236,7 +1263,7 @@ fn inferred_attributes(
             }
         }
     }
-    schema.retain(|name, _| !settings.attributes.contains_key(name));
+    schema.retain(|name, _| !settings.namespace.attributes.contains_key(name));
     Ok(schema)
 }
 
@@ -1282,7 +1309,7 @@ async fn execute(
     // Nothing is created or changed by a refused request.
     let mut settings = match &existing {
         Some((_, policy)) => {
-            if policy.settings.write_api.is_none() {
+            if policy.settings.namespace.write_api.is_none() {
                 return Err(ApiError(409, "namespace_not_writable"));
             }
             changed_schema(&policy.settings, requested.as_ref())?
@@ -1296,9 +1323,10 @@ async fn execute(
             // configuration before anything is built from them; `id` is the key
             // of a row in the request.
             if settings.validate().is_err()
-                || settings.attributes.contains_key("id")
-                || settings.vectors.contains_key("id")
+                || settings.namespace.attributes.contains_key("id")
+                || settings.namespace.vectors.contains_key("id")
                 || settings
+                    .namespace
                     .write_api
                     .as_ref()
                     .is_some_and(|api| api.text_attribute == "id")
@@ -1308,7 +1336,7 @@ async fn execute(
             settings
         }
     };
-    if settings.write_api.is_none() {
+    if settings.namespace.write_api.is_none() {
         return Err(ApiError(409, "namespace_not_writable"));
     }
     // Refused before anything is embedded or written. The envelope is checked
@@ -1353,13 +1381,14 @@ async fn execute(
         Some((head, _)) if head.content.is_some() => inferred_attributes(&body, &settings)?,
         _ => AttributeSchema::new(),
     };
-    settings.attributes.extend(added.clone());
+    settings.namespace.attributes.extend(added.clone());
     let process = config;
     let config = config
         .with_settings(&settings)
         .ok_or(ApiError(503, "unavailable"))?;
     let text_key = config
         .namespace
+        .settings
         .write_api
         .as_ref()
         .map_or("text", |api| api.text_attribute.as_str());
@@ -1435,7 +1464,7 @@ async fn execute(
             (head, policy)
         }
     };
-    if served.settings.write_api.is_none() {
+    if served.settings.namespace.write_api.is_none() {
         return Err(ApiError(409, "namespace_not_writable"));
     }
     if served.settings != settings {
@@ -1534,7 +1563,6 @@ async fn write_envelope(
     mut changes: Vec<ContentChange>,
     attributes: Vec<(String, ArrayRef)>,
 ) -> Result<(String, String), ApiError> {
-    let (store, root) = fyrr_reader::storage::namespace_store(config)?;
     let mut state = lease.state().await?;
     // The namespace the request was checked against is the one it is written
     // into: another may have taken its place since.
@@ -1543,34 +1571,6 @@ async fn write_envelope(
         .is_none_or(|current| current.incarnation != head.incarnation)
     {
         return Err(ApiError(409, "namespace_changed"));
-    }
-    let (generation, cursor) = (state.rejection_generation, state.cursor.clone());
-    let id_of = |sequence: u64| {
-        envelope_id(
-            &config.namespace.name,
-            API_SOURCE_ID,
-            SyncKind::Content,
-            sequence,
-            generation,
-            cursor.as_deref(),
-        )
-    };
-    // A crash between an envelope and the cursor that counts it leaves the
-    // envelope named by the next sequence: the cursor catches up first.
-    let mut sequence = state.sequence;
-    loop {
-        let next = sequence
-            .checked_add(1)
-            .ok_or(WriterError::CursorSequenceOverflow)?;
-        let path = root
-            .clone()
-            .join("envelopes")
-            .join(format!("{}.json", id_of(next)));
-        match object_store::ObjectStoreExt::head(store.as_ref(), &path).await {
-            Ok(_) => sequence = next,
-            Err(object_store::Error::NotFound { .. }) => break,
-            Err(_) => return Err(ApiError(503, "unavailable")),
-        }
     }
     // A restore moves the boundary that an envelope of the source must have been
     // prepared after, as it does for a connector's cursor.
@@ -1581,15 +1581,16 @@ async fn write_envelope(
         .map(|m| m.restore_sequence)
         .max()
         .unwrap_or(0);
-    if sequence != state.sequence || boundary > state.restore_sequence {
-        state.sequence = sequence;
-        state.restore_sequence = state.restore_sequence.max(boundary);
+    if boundary > state.restore_sequence {
+        state.restore_sequence = boundary;
         lease.write(state.clone()).await?;
     }
-    let sequence = sequence
+    // An envelope that a crash left before the cursor confirmed it is not on
+    // the chain: the next one takes its sequence under a new lease generation.
+    let sequence = state
+        .sequence
         .checked_add(1)
         .ok_or(WriterError::CursorSequenceOverflow)?;
-    let id = id_of(sequence);
     // Every revision of the source is newer than the one before it.
     let revision = i64::try_from(sequence).map_err(|_| WriterError::CursorSequenceOverflow)?;
     for change in &mut changes {
@@ -1640,6 +1641,7 @@ async fn write_envelope(
         attributes,
     )
     .await?;
+    let id = state.last.ok_or(WriterError::EnvelopeInvalid)?.id;
     Ok((id, format!("rev-{sequence}")))
 }
 

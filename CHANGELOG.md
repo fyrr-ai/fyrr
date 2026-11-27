@@ -9,6 +9,14 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Changed
 
+- A namespace's settings are one type. `NamespaceConfig` embeds what the policy
+  artifact stores, and each content manifest holds the settings it was built
+  with in one `settings` object instead of copying them field by field, so the
+  retrieval policy digest is gone and the reader compares the settings
+  themselves. The policy writes `fts_positions` and `analyzer` beside the other
+  settings in place of `fts`, and the HTTP API's namespace settings and the
+  generated clients follow. Content manifests are 6.0 and policy artifacts 5.0;
+  a namespace of an unreleased build is refused, so recreate it.
 - `PATCH` and `DELETE /v1/namespaces/{namespace}` answer `{"error":"<code>"}`
   for every status, as the other routes do, not a SCIM error; `DELETE` admits
   the key against the namespace of its path, as `PATCH` does, so a namespace
@@ -30,9 +38,8 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   stop words; `stop_words = []` with it stems and removes none. The excerpt of a
   hit in a namespace with the default analyzer is now chosen with the tokens of
   the index, not the literal words of the query: a word the index drops (40
-  bytes or more) or cuts (at `_`) no longer counts. The retrieval digest of
-  every namespace changes: a namespace of an unreleased build is refused;
-  recreate it.
+  bytes or more) or cuts (at `_`) no longer counts. A namespace of an
+  unreleased build is refused; recreate it.
 - A permission read that repeats the published rights writes no envelope and
   publishes nothing; its cursor still moves. A document is left out of the read
   when its permission revision is the one its published rows hold, and a
@@ -50,19 +57,16 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   now means the default instead of `400 invalid_argument`, as the OpenAPI schema
   says. A required member that is `null` is still refused.
 - Each stored contract has one major, whatever a document holds. v0.2.0
-  writes and reads content manifest 5.0, policy artifact 4.0, prepared
+  writes and reads content manifest 6.0, policy artifact 5.0, prepared
   envelope and envelope rejection 6.0, and serving head, envelope checkpoint
   and history cut 4.1. The majors that the older entries below name for plain
-  documents (manifest 4.1, policy 3.1, envelope 5.0) are no longer read: this
-  build refuses any other major, an older one before it reads the document. A manifest always carries `stats` and
+  documents (manifest 4.1 and 5.0, policy 3.1 and 4.0, envelope 5.0) are no longer
+  read: this build refuses any other major, an older one before it reads the
+  document. A manifest always carries `stats` and
   `envelope_evidence`, so the namespace report always has `rows`,
-  `logical_bytes` and `first_published_at`, never `null`. The retrieval digest
-  always includes the retrieval settings, and a connector batch must have
-  `sections[].vector` (a contract 1.3 batch without it is refused). A namespace
-  written by an unreleased build before this change is still read when its
-  manifest is 5.0 and its policy 4.0, as every connector namespace's are; a
-  manifest 4.1, a policy 3.1 and a queued envelope 5.0 are refused, so recreate
-  such a namespace.
+  `logical_bytes` and `first_published_at`, never `null`. A connector batch must have
+  `sections[].vector` (a contract 1.3 batch without it is refused). A
+  namespace of any earlier build is refused, so recreate it.
 - `rescore_depth` has no `legacy` mode. Leave it unset for the default: four
   times the dense lane depth, which for one-bit codes grows with the rows the
   probes inspect. A configuration that sets `{ mode = "legacy" }` is refused.
@@ -104,9 +108,8 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   `list_filters` return the same fields as before. A connector namespace
   created without the columns is refused: recreate it under a new name with
   v0.2.0 and sync its sources again. A manifest of the new layout is
-  content-manifest 5.0 and its policy artifact 4.0, the versions of attribute
-  index options and of the read-only switch, so an older build refuses it
-  instead of reading nulls. The
+  content-manifest 6.0 and its policy artifact 5.0, so an older build refuses
+  it instead of reading nulls. The
   `key=value` attributes of a connector document stay in the `attributes`
   column. The `title` has a full-text index, so a query can rank by it with
   `query_attributes`. A namespace or a configuration made by an unreleased build between
@@ -166,9 +169,8 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   declared (`limits::schema::MAX_VECTOR_ATTRIBUTES`). A patch keeps the stored
   vectors and cannot change the attribute one was embedded from. The recall of
   a namespace stays that of the built-in vector. A namespace with vector
-  attributes is content-manifest 5.0 and policy-artifact 4.0, so an older build
-  refuses it; one without keeps its versions, files and retrieval-policy
-  digest. See [tuning](docs/tuning.md#namespacevectors).
+  attributes is content-manifest 6.0 and policy-artifact 5.0, so an older build
+  refuses it. See [tuning](docs/tuning.md#namespacevectors).
 
 - The JSON `query` route takes `group_documents` and `caps`.
   `group_documents: false` makes every matching record a hit, not only the best
@@ -198,9 +200,8 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   index build, the partition routing, the rescoring and the recall sample use
   the namespace's metric. Under `dot` Lance ranks the partitions itself, so
   `reader.routing = "rabitq"` is not used for it. A namespace with another
-  metric or element type is content-manifest 5.0 and policy-artifact 4.0, so
-  an older build refuses it; a namespace with the defaults keeps its versions,
-  files and retrieval-policy digest. See
+  metric or element type is content-manifest 6.0 and policy-artifact 5.0, so
+  an older build refuses it. See
   [tuning](docs/tuning.md#namespace-vector-index).
 - The JSON `query` route takes `query_match`, which makes a text ranking
   require all of its terms, and `contains`, which requires a hit to hold all
@@ -271,11 +272,7 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   `namespace_read_only`, judged against the published head as each envelope
   becomes durable; envelopes prepared before the switch are still committed, and
   maintenance and the switch itself still work. The namespace report shows
-  `read_only`. A policy that sets `read_only` is `policy-artifact` 4.0, the same
-  unreleased 4.0 as a policy with index options: both enter it together, so a
-  build with index options but without the switch must not be released alone,
-  and this change ships in the release of the index options. A build without
-  the switch refuses the policy, readers included. See
+  `read_only`. A build without the switch refuses the policy, readers included. See
   [Freezing a namespace](docs/http-api.md#freezing-a-namespace).
 - `fyrr writer namespace list [--prefix P]` and `GET /v1/namespaces?prefix=P` on
   the reader list the namespaces of the storage root, in name order, that start
@@ -319,9 +316,9 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   (`attribute_type_change_refused`, `attribute_removal_refused`); a schema
   change carries nothing else and waits for the first publication of its
   namespace (`schema_change_with_rows`, `namespace_not_published`). A manifest that
-  records index options has contract version 5.0 and a policy artifact whose
-  settings hold them 4.0, which an older build refuses; others keep 4.1 and 3.1,
-  and this build reads both. See
+  records index options is content-manifest 6.0 and a policy artifact whose
+  settings hold them 5.0, which an older build refuses, as it refuses every
+  other major. See
   [Changing the schema](docs/http-api.md#changing-the-schema) and
   [`[namespace.attribute_indexes]`](docs/tuning.md#namespaceattribute_indexes).
 - The full-text index of an attribute has its own `analyzer`: the tokenizer
@@ -331,7 +328,7 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   stemming and stop words (18 are offered), a custom `stop_words` list,
   `ascii_folding` and `max_token_length`. The analyzer is an option of the
   index, so it travels in the contract versions that carry index options
-  (content-manifest 5.0, policy-artifact 4.0). A change of it is a schema
+  (content-manifest 6.0, policy-artifact 5.0). A change of it is a schema
   change: the next maintenance builds the index again and publishes it, and the
   index it replaces serves until then. An index without an analyzer takes the
   analyzer of the namespace. See [Analyzer](docs/tuning.md#analyzer-of-a-full-text-index).
@@ -681,6 +678,15 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Fixed
 
+- A root whose rows are over `writer.commit.group_max_rows` or
+  `group_max_bytes` no longer fails `fyrr writer restore` or the commit of a
+  content change that replaces it with `envelope_bounds_invalid`, nor does the
+  commit of more deletes than a group holds before the first content: the
+  rows are written in steps within those bounds, in one publication, as a
+  permission read's are, the rows of a write API request too. A patch is
+  refused (`envelope_bounds_exceeded`, `409 rejected` on the write API) only
+  when the stored rows it loads are over the bounds of a group; rewritten
+  rows that grow past them now publish in steps.
 - A serving reader no longer turns its generation cold when a second
   subject's admission is built. The roots of the vector index grow a little
   after their first searches, and each admission compared that new size with

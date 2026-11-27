@@ -294,7 +294,7 @@ pub fn quarantine_reason(
                         || fyrr_reader::embedding::validate(
                             vector,
                             config.embedding.dimensions,
-                            config.namespace.dense_element,
+                            config.namespace.settings.dense_element,
                         )
                             .is_err()
                 })
@@ -393,12 +393,13 @@ fn record_estimate(config: &Config) -> u64 {
     let dimensions = u64::from(config.embedding.dimensions)
         + config
             .namespace
+            .settings
             .vectors
             .values()
             .filter(|vector| !vector.multi)
             .map(|vector| u64::from(vector.dimensions))
             .sum::<u64>();
-    2048 + dimensions * config.namespace.dense_element.bytes()
+    2048 + dimensions * config.namespace.settings.dense_element.bytes()
 }
 
 /// What the lists of the multi-vector attributes in `attributes` hold: the
@@ -406,6 +407,7 @@ fn record_estimate(config: &Config) -> u64 {
 fn listed_bytes(config: &Config, attributes: &[(String, ArrayRef)]) -> u64 {
     config
         .namespace
+        .settings
         .vectors
         .iter()
         .filter(|(_, spec)| spec.multi)
@@ -415,7 +417,7 @@ fn listed_bytes(config: &Config, attributes: &[(String, ArrayRef)]) -> u64 {
             Some(lists.values().len() as u64 * u64::from(spec.dimensions))
         })
         .sum::<u64>()
-        .saturating_mul(config.namespace.dense_element.bytes())
+        .saturating_mul(config.namespace.settings.dense_element.bytes())
 }
 
 /// What an envelope weighs before its first change.
@@ -427,7 +429,10 @@ const BASE_BYTES: u64 = 16384;
 /// bound for all but a record with very many readers, which the committer
 /// refuses when it is written.
 pub(crate) fn patch_bound(config: &Config) -> u64 {
-    patch_bytes(&config.namespace.attributes, record_estimate(config))
+    patch_bytes(
+        &config.namespace.settings.attributes,
+        record_estimate(config),
+    )
 }
 /// The part of `bound` that an envelope of `taken` bytes may weigh within
 /// `max`. The estimate only groups envelopes: a patch is never refused for it
@@ -1113,7 +1118,7 @@ pub async fn non_content(
     put_envelope(config, envelope, true, state, lease).await
 }
 
-/// The envelope that is not content that `state` puts next: a permissions
+/// The envelope that is not content that `state` puts next: a chained
 /// envelope follows the one before it in the chain, and carries the
 /// generation of the lease it is written under.
 #[allow(clippy::too_many_arguments)]
@@ -1131,28 +1136,10 @@ fn build_envelope(
         .sequence
         .checked_add(1)
         .ok_or(WriterError::CursorSequenceOverflow)?;
-    let chained = kind == SyncKind::Permissions;
-    let lease_generation = state
-        .lease
-        .as_ref()
-        .filter(|_| chained)
-        .map_or(0, |lease| lease.epoch);
-    let previous = state
-        .last
-        .as_ref()
-        .filter(|_| chained)
-        .map(|last| last.id.clone());
+    let (lease_generation, previous) = link(state, kind, source);
     Ok(PreparedEnvelope {
         schema_version: ENVELOPE_CONTRACT_VERSION,
-        envelope_id: fyrr_core::envelope::leased_envelope_id(
-            &config.namespace.name,
-            source,
-            kind,
-            sequence,
-            state.rejection_generation,
-            state.cursor.as_deref(),
-            lease_generation,
-        ),
+        envelope_id: next_id(config, state, kind, source)?,
         namespace: config.namespace.name.clone(),
         source_id: source.into(),
         kind,
@@ -1167,6 +1154,50 @@ fn build_envelope(
         previous,
         payload,
     })
+}
+
+/// The lease generation and the predecessor of the envelope of `kind` that
+/// `state` puts next: none unless the kind is chained.
+fn link(state: &CursorState, kind: SyncKind, source: &str) -> (u64, Option<String>) {
+    if kind != crate::commit::chain_kind(source) {
+        return (0, None);
+    }
+    (
+        state.lease.as_ref().map_or(0, |lease| lease.epoch),
+        state.last.as_ref().map(|last| last.id.clone()),
+    )
+}
+
+/// The ID of the envelope of `kind` that `state` puts next.
+fn next_id(config: &Config, state: &CursorState, kind: SyncKind, source: &str) -> Result<String> {
+    let sequence = state
+        .sequence
+        .checked_add(1)
+        .ok_or(WriterError::CursorSequenceOverflow)?;
+    Ok(fyrr_core::envelope::leased_envelope_id(
+        &config.namespace.name,
+        source,
+        kind,
+        sequence,
+        state.rejection_generation,
+        state.cursor.as_deref(),
+        link(state, kind, source).0,
+    ))
+}
+
+/// Records in `state` that `envelope` is put: a chained one is the newest
+/// link that the cursor write confirms.
+fn record(state: &mut CursorState, envelope: &PreparedEnvelope) {
+    state.sequence = envelope.sequence;
+    if envelope.advances_cursor {
+        state.cursor = Some(envelope.cursor.end.clone());
+    }
+    if envelope.kind == crate::commit::chain_kind(&envelope.source_id) {
+        state.last = Some(fyrr_core::connector::LastEnvelope {
+            sequence: envelope.sequence,
+            id: envelope.envelope_id.clone(),
+        });
+    }
 }
 
 /// Puts `envelope` and records it in `state`. `confirmed` writes the cursor
@@ -1191,18 +1222,9 @@ async fn put_envelope(
         &envelope,
     )
     .await?;
-    state.sequence = envelope.sequence;
-    if envelope.advances_cursor {
-        state.cursor = Some(envelope.cursor.end.clone());
-    }
-    if envelope.kind == SyncKind::Permissions {
-        state.last = Some(fyrr_core::connector::LastEnvelope {
-            sequence: envelope.sequence,
-            id: envelope.envelope_id.clone(),
-        });
-        if crate::apply::complete_read(&envelope) {
-            state.completed_generation = state.completed_generation.max(state.rejection_generation);
-        }
+    record(state, &envelope);
+    if envelope.kind == SyncKind::Permissions && crate::apply::complete_read(&envelope) {
+        state.completed_generation = state.completed_generation.max(state.rejection_generation);
     }
     if !confirmed {
         return Ok(());
@@ -1456,10 +1478,10 @@ mod tests {
         // A record with no list takes no more room than one without the attributes.
         assert_eq!(record_estimate(&multi), record_estimate(&plain));
         // Two rows carry vectors, two carry none, one of them an empty list.
-        let spec = &multi.namespace.vectors["m0"];
+        let spec = &multi.namespace.settings.vectors["m0"];
         let flat = vec![0.5_f32; 2 * 8192];
         let column = named_vector_column(
-            multi.namespace.dense_element,
+            multi.namespace.settings.dense_element,
             spec,
             [
                 None,
@@ -1472,7 +1494,7 @@ mod tests {
         let attributes = [("m0".to_owned(), column)];
         assert_eq!(
             listed_bytes(&multi, &attributes),
-            3 * 8192 * multi.namespace.dense_element.bytes()
+            3 * 8192 * multi.namespace.settings.dense_element.bytes()
         );
         assert_eq!(listed_bytes(&multi, &[]), 0);
         assert_eq!(listed_bytes(&plain, &attributes), 0);

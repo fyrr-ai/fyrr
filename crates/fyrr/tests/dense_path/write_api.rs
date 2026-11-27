@@ -95,7 +95,8 @@ impl Writer {
                 .build()
                 .unwrap(),
         };
-        for _ in 0..400 {
+        let deadline = Instant::now() + Duration::from_secs(120);
+        while Instant::now() < deadline {
             assert!(
                 writer.child.try_wait().unwrap().is_none(),
                 "the writer exited: {}",
@@ -284,7 +285,7 @@ async fn identity_write_api_upserts_searches_fetches_deletes_and_refuses_on_stor
     )
     .await
     .unwrap();
-    assert_eq!(manifest.attributes.len(), 2);
+    assert_eq!(manifest.settings.namespace.attributes.len(), 2);
     assert!(
         manifest
             .envelope_ids
@@ -1287,7 +1288,7 @@ async fn identity_write_api_freezes_a_namespace_and_commits_what_it_accepted_bef
         .unwrap()
     };
     assert!(policy.read_only);
-    assert_eq!(policy.schema_version.to_string(), "4.0");
+    assert_eq!(policy.schema_version.to_string(), "5.0");
 
     // The switch is repeatable and reversible, by the key with `admin`.
     assert_eq!(
@@ -1746,18 +1747,18 @@ async fn metric_recall(metric: &str, element: &str) {
     // The manifest records them unless they are the defaults, which leave no entry.
     let (_, manifest) = super::coordination::publication(&config).await;
     assert_eq!(
-        serde_json::to_value(&manifest).unwrap()["dense_metric"]
+        serde_json::to_value(&manifest).unwrap()["settings"]["dense_metric"]
             .as_str()
             .unwrap_or("cosine"),
         metric
     );
     assert_eq!(
-        serde_json::to_value(&manifest).unwrap()["dense_element"]
+        serde_json::to_value(&manifest).unwrap()["settings"]["dense_element"]
             .as_str()
             .unwrap_or("f16"),
         element
     );
-    assert_eq!(manifest.schema_version.major, 5);
+    assert_eq!(manifest.schema_version.major, 6);
     let vectors = stored(&config, "source_id = '_api'").await;
     let column = vectors.column_by_name("vector").unwrap();
     let stored_type = format!("{:?}", column.data_type());
@@ -3803,10 +3804,10 @@ async fn identity_write_api_changes_the_schema_of_a_live_namespace_on_storage() 
     );
     let (head, manifest) = super::coordination::publication(&config).await;
     assert_eq!(
-        serde_json::to_value(&manifest.attribute_indexes).unwrap(),
+        serde_json::to_value(&manifest.settings.namespace.attribute_indexes).unwrap(),
         json!({"note": {"index": false, "full_text": false, "ngram": true}})
     );
-    assert_eq!(manifest.schema_version.to_string(), "5.0");
+    assert_eq!(manifest.schema_version.to_string(), "6.0");
     let sequence = head.content.as_ref().unwrap().sequence;
 
     // A schema alone: a new attribute, the price index off and a text index on.
@@ -3826,6 +3827,8 @@ async fn identity_write_api_changes_the_schema_of_a_live_namespace_on_storage() 
     );
     assert_eq!(
         manifest
+            .settings
+            .namespace
             .attributes
             .keys()
             .map(String::as_str)
@@ -3836,7 +3839,7 @@ async fn identity_write_api_changes_the_schema_of_a_live_namespace_on_storage() 
     // are not built yet: the manifest holds what is built.
     assert_eq!(names().await, set(&["attrngram_note_idx"]));
     assert_eq!(
-        serde_json::to_value(&manifest.attribute_indexes).unwrap(),
+        serde_json::to_value(&manifest.settings.namespace.attribute_indexes).unwrap(),
         json!({
             "note": {"index": false, "full_text": false, "ngram": true},
             "price": {"index": false, "full_text": false, "ngram": false},
@@ -3893,7 +3896,7 @@ async fn identity_write_api_changes_the_schema_of_a_live_namespace_on_storage() 
     );
     let (_, manifest) = super::coordination::publication(&config).await;
     assert_eq!(
-        serde_json::to_value(&manifest.attribute_indexes).unwrap(),
+        serde_json::to_value(&manifest.settings.namespace.attribute_indexes).unwrap(),
         json!({
             "note": {"index": false, "full_text": false, "ngram": true},
             "price": {"index": false, "full_text": false, "ngram": false},
@@ -4025,7 +4028,7 @@ async fn identity_write_api_rebuilds_a_full_text_index_for_a_changed_analyzer_on
         (
             head.content.as_ref().unwrap().sequence,
             segments,
-            serde_json::to_value(&manifest.attribute_indexes).unwrap(),
+            serde_json::to_value(&manifest.settings.namespace.attribute_indexes).unwrap(),
             params,
         )
     };
@@ -4220,7 +4223,7 @@ async fn identity_write_api_keeps_the_columns_of_added_attributes_in_table_order
     );
     let (after, manifest) = super::coordination::publication(&config).await;
     assert_eq!(after.content, head.content);
-    assert_eq!(manifest.attributes.len(), 3);
+    assert_eq!(manifest.settings.namespace.attributes.len(), 3);
     assert_eq!(
         post(json!({"upserts": [
             row("r2", "bravo", json!({"z": 1, "a": "x", "b": 2.5})),
@@ -4274,7 +4277,7 @@ async fn identity_write_api_infers_undeclared_attributes_on_storage() {
     let eq = |field: &str, value: Value| json!({"field": field, "op": "eq", "value": value});
     let schema = async || {
         let (_, manifest) = super::coordination::publication(&config).await;
-        serde_json::to_value(&manifest.attributes).unwrap()
+        serde_json::to_value(&manifest.settings.namespace.attributes).unwrap()
     };
 
     // No publication yet: the schema is what the settings say.
@@ -4432,7 +4435,7 @@ async fn identity_write_api_bounds_the_inferred_attributes_on_storage() {
     };
     let declared = async || {
         let (_, manifest) = super::coordination::publication(&config).await;
-        manifest.attributes.len()
+        manifest.settings.namespace.attributes.len()
     };
     assert_eq!(
         post(json!({"settings": {"attributes": {"a000": "int"}},
@@ -4489,12 +4492,15 @@ async fn identity_write_api_restores_a_version_from_before_an_attribute_was_adde
         200
     );
     let (_, added) = super::coordination::publication(&config).await;
-    assert!(added.attributes.contains_key("stock"));
+    assert!(added.settings.namespace.attributes.contains_key("stock"));
     let restored = run_when_free(&config, &["writer", "rollback"]).await;
     assert_eq!(restored["restored"], true);
     // The publication has the column the namespace declares, and a reader opens it.
     let (_, manifest) = super::coordination::publication(&config).await;
-    assert_eq!(manifest.attributes, added.attributes);
+    assert_eq!(
+        manifest.settings.namespace.attributes,
+        added.settings.namespace.attributes
+    );
     let eq = |field: &str, value: Value| json!({"field": field, "op": "eq", "value": value});
     assert_eq!(listing(&config, eq("stock", Value::Null)), ["a"]);
     assert_eq!(listing(&config, eq("price", json!(2.5))), ["a"]);
@@ -5904,9 +5910,14 @@ async fn identity_write_api_searches_named_vector_attributes_on_storage() {
 
     // The manifest records them, with an index of each.
     let (_, manifest) = super::coordination::publication(&config).await;
-    assert_eq!(manifest.schema_version.major, 5);
+    assert_eq!(manifest.schema_version.major, 6);
     assert_eq!(
-        manifest.vectors.keys().collect::<Vec<_>>(),
+        manifest
+            .settings
+            .namespace
+            .vectors
+            .keys()
+            .collect::<Vec<_>>(),
         ["caption_vec", "image", "null", "order", "small"]
     );
     let indexes: Vec<_> = manifest.indexes.iter().map(|i| i.name.as_str()).collect();
@@ -6149,7 +6160,7 @@ async fn multi_vector_case(element: &str, background: usize) {
         "{element} {background}"
     );
     let (_, manifest) = super::coordination::publication(&config).await;
-    assert!(manifest.vectors["tokens"].multi);
+    assert!(manifest.settings.namespace.vectors["tokens"].multi);
     assert!(
         manifest
             .indexes
@@ -6337,7 +6348,7 @@ async fn identity_write_api_builds_a_vector_index_when_the_first_vector_arrives_
     );
     let index_names = async || -> Vec<String> {
         let (_, manifest) = super::coordination::publication(&config).await;
-        assert_eq!(manifest.schema_version.major, 5);
+        assert_eq!(manifest.schema_version.major, 6);
         manifest.indexes.iter().map(|i| i.name.clone()).collect()
     };
     assert!(!index_names().await.contains(&"vec_image_idx".to_owned()));
@@ -6511,4 +6522,56 @@ async fn identity_write_api_refuses_a_phrase_on_a_namespace_without_positions_on
             (400, json!({"error": "invalid_argument"}))
         );
     }
+}
+
+#[tokio::test]
+#[ignore = "real writer and reader executables on local storage; scripts/ci"]
+async fn identity_write_api_takes_current_settings_and_refuses_unknown_ones_on_storage() {
+    let (config, root) = setup_on(Backend::Local);
+    let address = free_address();
+    configure(&config, &address, "");
+    let writer = Writer::start(&config, &root, address).await;
+    let namespace = "dense-fixture";
+    let upsert = json!([{"id": "a", "text": "alpha beta", "vector": vector(0, 1024)}]);
+    // The shape of an earlier build and a misspelled key are refused, never
+    // dropped: nothing is created.
+    for settings in [
+        json!({"fts": {"with_position": true}}),
+        json!({"fts_position": true}),
+    ] {
+        assert_eq!(
+            writer
+                .post(
+                    WRITE_KEY,
+                    namespace,
+                    &json!({"settings": settings, "upserts": upsert})
+                )
+                .await,
+            (400, json!({"error": "settings_invalid"})),
+            "{settings}"
+        );
+    }
+    assert_eq!(
+        writer
+            .post(
+                WRITE_KEY,
+                namespace,
+                &json!({"settings": {"fts_positions": true}, "upserts": upsert})
+            )
+            .await,
+        (200, json!({"upserted": 1, "deleted": 0}))
+    );
+    let (_, manifest) = super::coordination::publication(&config).await;
+    assert!(manifest.settings.namespace.fts_positions);
+    // An existing namespace refuses an unknown key as it refuses a changed setting.
+    assert_eq!(
+        writer
+            .post(
+                WRITE_KEY,
+                namespace,
+                &json!({"settings": {"fts": {"with_position": false}}, "upserts": upsert})
+            )
+            .await,
+        (400, json!({"error": "settings_invalid"}))
+    );
 }

@@ -1,8 +1,8 @@
 //! The content publication manifest and the serving head.
 //!
 //! The manifest binds one published content version: namespace, exact Lance
-//! version (FTS included), embedding, chunking and FTS settings, the
-//! retrieval-policy digest, index and file identities, and the envelope IDs it
+//! version (FTS included), the namespace settings it was built with, chunking,
+//! index and file identities, and the envelope IDs it
 //! published (the commit point of their receipts). The serving head points at
 //! the content publication and, separately, at the policy and identity
 //! generations, so those can move without a new content publication. Head CAS
@@ -15,13 +15,7 @@ use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::attributes::{
-    AttributeIndexes, AttributeSchema, VectorAttributes, check_indexes, check_schema, check_vectors,
-};
-use crate::config::{
-    CompositionSettings, DenseElement, DenseMetric, NamespaceConfig, RerankSettings,
-    RetrievalSettings,
-};
+use crate::config::{PersistedSettings, RerankSettings};
 use crate::envelope::{ChunkProfileIdentity, EmbeddingIdentity, FileRef};
 use crate::limits::{check_digest, check_id};
 use crate::version::{Contract, SchemaVersion};
@@ -29,75 +23,84 @@ use crate::version::{Contract, SchemaVersion};
 /// The version of the serving head, the envelope checkpoint and the history cut.
 pub const PUBLICATION_CONTRACT_VERSION: SchemaVersion = SchemaVersion::new(4, 1);
 /// The version of the content manifest.
-pub const MANIFEST_CONTRACT_VERSION: SchemaVersion = SchemaVersion::new(5, 0);
+pub const MANIFEST_CONTRACT_VERSION: SchemaVersion = SchemaVersion::new(6, 0);
 /// The version of the policy artifact.
-pub const POLICY_CONTRACT_VERSION: SchemaVersion = SchemaVersion::new(4, 0);
+pub const POLICY_CONTRACT_VERSION: SchemaVersion = SchemaVersion::new(5, 0);
 
 /// The index and retrieval settings a namespace is created with and keeps for
 /// its life. The process configuration only supplies them when the namespace is
 /// created; every reader and writer afterwards takes them from the namespace's
 /// policy artifact, which each content manifest pins.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[schemars(transform = stored_settings_required)]
 pub struct NamespaceSettings {
     pub embedding: EmbeddingIdentity,
-    pub fts: FtsSettings,
-    /// RaBitQ bits per dimension of the vector index.
-    pub dense_rq_bits: u8,
-    /// Target rows per partition of the vector index.
-    pub dense_partition_rows: u32,
-    /// The distance of the vector index and the rescoring; absent: cosine.
-    #[serde(default, skip_serializing_if = "DenseMetric::is_default")]
-    pub dense_metric: DenseMetric,
-    /// The element type of the stored vectors; absent: 16-bit floats.
-    #[serde(default, skip_serializing_if = "DenseElement::is_default")]
-    pub dense_element: DenseElement,
-    pub retrieval: RetrievalSettings,
-    pub composition: CompositionSettings,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rerank: Option<RerankSettings>,
-    /// The typed attributes the namespace declares. Each is a nullable column;
-    /// a request that changes the schema adds attributes and never changes or
-    /// removes one.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub attributes: AttributeSchema,
-    /// The indexes the attributes are to have where they are not the default.
-    /// An index switched on is built by the next maintenance; the manifest
-    /// records the ones that are built.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub attribute_indexes: AttributeIndexes,
-    /// The named vector attributes, fixed at creation.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub vectors: VectorAttributes,
-    /// Present: the namespace is written through the HTTP API and takes no
-    /// connector source. Fixed with the rest of the settings.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub write_api: Option<crate::config::WriteApiSettings>,
+    #[serde(flatten)]
+    pub namespace: PersistedSettings,
+}
+
+/// A stored document names every setting that has a default in a file.
+fn stored_settings_required(schema: &mut schemars::Schema) {
+    let mut required = vec!["embedding".to_owned()];
+    required.extend(PersistedSettings::defaults().keys().cloned());
+    schema.insert("required".into(), required.into());
 }
 
 impl NamespaceSettings {
+    /// Whether a request's `settings` names only settings. A key this build
+    /// does not know would otherwise be dropped without a word.
+    pub fn names_only_settings(request: &serde_json::Value) -> bool {
+        let schema = schemars::schema_for!(NamespaceSettings);
+        match (
+            request.as_object(),
+            schema.get("properties").and_then(|known| known.as_object()),
+        ) {
+            (Some(request), Some(known)) => request.keys().all(|key| known.contains_key(key)),
+            _ => false,
+        }
+    }
+
+    /// Refuses a stored document that leaves a setting out, which this build
+    /// would fill with its own default, and a `retrieval` or `composition`
+    /// that leaves out one of its members.
+    fn check_complete(document: &serde_json::Value) -> Result<(), String> {
+        let stored = document.get("settings").and_then(|s| s.as_object());
+        let defaults = PersistedSettings::defaults();
+        let missing =
+            |stored: &serde_json::Map<String, serde_json::Value>,
+             defaults: &serde_json::Map<String, serde_json::Value>| {
+                defaults
+                    .keys()
+                    .find(|key| !stored.contains_key(*key))
+                    .cloned()
+            };
+        let Some(stored) = stored else {
+            return Err("settings are missing".into());
+        };
+        if let Some(key) = missing(stored, &defaults) {
+            return Err(format!("settings.{key} is missing"));
+        }
+        for key in ["retrieval", "composition"] {
+            if let (Some(stored), Some(defaults)) = (
+                stored.get(key).and_then(|v| v.as_object()),
+                defaults.get(key).and_then(|v| v.as_object()),
+            ) && let Some(member) = missing(stored, defaults)
+            {
+                return Err(format!("settings.{key}.{member} is missing"));
+            }
+        }
+        Ok(())
+    }
+
     /// The bounds a configuration file is held to, so that no stored settings
     /// can fail a build or a search later.
     pub fn validate(&self) -> Result<(), String> {
         self.embedding.validate_profile()?;
-        let namespace = NamespaceConfig {
-            rerank: None,
-            retrieval: (&self.retrieval).into(),
-            composition: (&self.composition).into(),
-            name: String::new(),
-            fts_positions: self.fts.with_position,
-            analyzer: self.fts.analyzer.clone(),
-            dense_rq_bits: self.dense_rq_bits,
-            dense_partition_rows: self.dense_partition_rows,
-            dense_metric: self.dense_metric,
-            dense_element: self.dense_element,
-            attributes: self.attributes.clone(),
-            attribute_indexes: self.attribute_indexes.clone(),
-            vectors: self.vectors.clone(),
-            write_api: self.write_api.clone(),
-        };
         let mut issues = Vec::new();
         let mut issue = |path: &str, message: String| issues.push(format!("{path}: {message}"));
-        crate::config::check_namespace(&namespace, self.embedding.dimensions, &mut issue);
+        crate::config::check_namespace(&self.namespace, self.embedding.dimensions, &mut issue);
         if let Some(rerank) = &self.rerank {
             crate::config::check_rerank(rerank, &mut issue);
         }
@@ -146,12 +149,15 @@ pub struct RetiredSource {
 impl Contract for PolicyArtifact {
     const NAME: &'static str = "policy-artifact";
     const VERSION: SchemaVersion = POLICY_CONTRACT_VERSION;
+    fn check_document(document: &serde_json::Value) -> Result<(), String> {
+        NamespaceSettings::check_complete(document)
+    }
     fn validate(&self) -> Result<(), String> {
         check_id("namespace", &self.namespace)?;
-        if self.settings.write_api.is_none()
+        if self.settings.namespace.write_api.is_none()
             && crate::attributes::CONNECTOR_COLUMNS
                 .iter()
-                .any(|(name, kind)| self.settings.attributes.get(*name) != Some(kind))
+                .any(|(name, kind)| self.settings.namespace.attributes.get(*name) != Some(kind))
         {
             return Err("a connector namespace needs its typed connector columns".into());
         }
@@ -196,21 +202,11 @@ pub struct ContentManifest {
     /// Last completed maintenance, inherited by ordinary publications.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub maintenance_completed_at: Option<DateTime<Utc>>,
-    pub embedding: EmbeddingIdentity,
+    /// The namespace's settings as this version was built with them. The reader
+    /// refuses a version that differs from the policy's, apart from
+    /// `attribute_indexes`, which here holds the indexes that are built.
+    pub settings: NamespaceSettings,
     pub chunk_profile: ChunkProfileIdentity,
-    pub fts: FtsSettings,
-    /// RaBitQ bits per dimension of the vector index.
-    pub dense_rq_bits: u8,
-    /// Target rows per partition of the vector index.
-    pub dense_partition_rows: u32,
-    /// The distance of the vector index and the rescoring; absent: cosine.
-    #[serde(default, skip_serializing_if = "DenseMetric::is_default")]
-    pub dense_metric: DenseMetric,
-    /// The element type of the stored vectors; absent: 16-bit floats.
-    #[serde(default, skip_serializing_if = "DenseElement::is_default")]
-    pub dense_element: DenseElement,
-    /// Digest of the retrieval policy, including the result composition.
-    pub retrieval_policy_digest: String,
     pub indexes: Vec<IndexIdentity>,
     /// Of each vector index with more live segments than `writer serve` leaves
     /// alone (64), the smallest sum of the rows of two neighboring segments, in
@@ -218,18 +214,6 @@ pub struct ContentManifest {
     /// may rewrite, to know whether a merge has anything to do.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub merge_pair_rows: BTreeMap<String, u64>,
-    /// The typed attributes of this version: each is a nullable column.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub attributes: AttributeSchema,
-    /// The attributes whose built indexes are not the default: each attribute
-    /// has the scalar index of its type unless it says `index: false`, and the
-    /// text indexes it asks for, among `indexes`.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub attribute_indexes: AttributeIndexes,
-    /// The named vector attributes of this version: each is a nullable column
-    /// with a vector index of its own, among `indexes` once it has a vector.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub vectors: VectorAttributes,
     /// Immutable files of this version, relative to the dataset root.
     pub files: Vec<FileRef>,
     /// Envelopes this publication committed.
@@ -252,11 +236,11 @@ pub struct ContentManifest {
     pub envelope_evidence: EnvelopeEvidence,
     /// What the version holds.
     pub stats: PublicationStats,
-    /// The newest chained permissions envelope of each source that this
-    /// publication and every older one applied. The committer walks the chain of
-    /// the cursor back to it.
+    /// The newest chained envelope of each source (the write API's content, a
+    /// connector's permissions) that this publication and every older one
+    /// resolved. The committer walks the chain of the cursor back to it.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub authorization_applied: BTreeMap<String, String>,
+    pub chain_applied: BTreeMap<String, String>,
 }
 
 /// The size of a published version and when its namespace was first published.
@@ -344,15 +328,14 @@ fn check_unique(field: &str, ids: &[String]) -> Result<(), String> {
 
 impl ContentManifest {
     /// Whether this publication was built with the settings its namespace
-    /// records: the embedding profile, the vector index and the attributes.
+    /// records. The built indexes are the manifest's own record.
     pub fn built_with(&self, settings: &NamespaceSettings) -> bool {
-        self.embedding == settings.embedding
-            && self.dense_rq_bits == settings.dense_rq_bits
-            && self.dense_partition_rows == settings.dense_partition_rows
-            && self.dense_metric == settings.dense_metric
-            && self.dense_element == settings.dense_element
-            && self.attributes == settings.attributes
-            && self.vectors == settings.vectors
+        let mut built = settings.clone();
+        built
+            .namespace
+            .attribute_indexes
+            .clone_from(&self.settings.namespace.attribute_indexes);
+        self.settings == built
     }
 }
 
@@ -372,16 +355,6 @@ pub struct CommitLineage {
 pub struct LineageTransaction {
     pub version: u64,
     pub transaction_id: String,
-}
-
-/// FTS analyzer settings, part of the publication identity.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct FtsSettings {
-    /// How the index of `searchable_text` cuts a text into terms; the highlights
-    /// and the excerpts of a hit cut it the same way.
-    pub analyzer: crate::attributes::analyzer::Analyzer,
-    /// Positional postings, which a phrase condition needs.
-    pub with_position: bool,
 }
 
 /// One index of the published version.
@@ -454,24 +427,20 @@ impl Contract for ContentManifest {
     const NAME: &'static str = "content-manifest";
     const VERSION: SchemaVersion = MANIFEST_CONTRACT_VERSION;
 
+    fn check_document(document: &serde_json::Value) -> Result<(), String> {
+        NamespaceSettings::check_complete(document)
+    }
+
     fn validate(&self) -> Result<(), String> {
         check_id("namespace", &self.namespace)?;
         check_id("publication_id", &self.publication_id)?;
         check_id("incarnation", &self.incarnation)?;
-        check_digest("embedding.fingerprint", &self.embedding.fingerprint)?;
-        self.embedding.validate_profile()?;
+        check_digest(
+            "embedding.fingerprint",
+            &self.settings.embedding.fingerprint,
+        )?;
         check_digest("chunk_profile.digest", &self.chunk_profile.digest)?;
-        check_digest("retrieval_policy_digest", &self.retrieval_policy_digest)?;
-        check_schema(&self.attributes).map_err(|error| format!("attributes: {error}"))?;
-        check_indexes(&self.attributes, &self.attribute_indexes)
-            .map_err(|error| format!("attribute_indexes: {error}"))?;
-        check_vectors(
-            &self.attributes,
-            &self.vectors,
-            self.embedding.dimensions,
-            self.dense_metric,
-        )
-        .map_err(|error| format!("vectors: {error}"))?;
+        self.settings.validate()?;
         if !self.indexes.iter().any(|index| index.column == "readers") {
             // A publication lacking the readers index is refused.
             return Err("the readers index is missing".into());

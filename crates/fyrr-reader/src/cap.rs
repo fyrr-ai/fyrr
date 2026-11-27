@@ -17,7 +17,13 @@ const BUILT_IN: [&str; 3] = ["author", "project", "source_type"];
 pub(crate) fn check(reader: &PreparedReader, caps: Option<&[ValueCap]>) -> Result<()> {
     for cap in caps.into_iter().flatten() {
         if !BUILT_IN.contains(&cap.attribute.as_str())
-            && reader.manifest.attributes.get(&cap.attribute).copied()
+            && reader
+                .manifest
+                .settings
+                .namespace
+                .attributes
+                .get(&cap.attribute)
+                .copied()
                 != Some(AttributeType::String)
         {
             return Err(InvalidArgument);

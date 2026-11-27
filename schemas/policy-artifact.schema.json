@@ -69,36 +69,6 @@
         "embedding": {
           "$ref": "#/$defs/EmbeddingIdentity"
         },
-        "fts": {
-          "$ref": "#/$defs/FtsSettings"
-        },
-        "dense_rq_bits": {
-          "type": "integer",
-          "format": "uint8",
-          "minimum": 0,
-          "maximum": 255,
-          "description": "RaBitQ bits per dimension of the vector index."
-        },
-        "dense_partition_rows": {
-          "type": "integer",
-          "format": "uint32",
-          "minimum": 0,
-          "description": "Target rows per partition of the vector index."
-        },
-        "dense_metric": {
-          "$ref": "#/$defs/DenseMetric",
-          "description": "The distance of the vector index and the rescoring; absent: cosine."
-        },
-        "dense_element": {
-          "$ref": "#/$defs/DenseElement",
-          "description": "The element type of the stored vectors; absent: 16-bit floats."
-        },
-        "retrieval": {
-          "$ref": "#/$defs/RetrievalSettings"
-        },
-        "composition": {
-          "$ref": "#/$defs/CompositionSettings"
-        },
         "rerank": {
           "anyOf": [
             {
@@ -109,26 +79,89 @@
             }
           ]
         },
+        "retrieval": {
+          "$ref": "#/$defs/RetrievalConfig",
+          "description": "Candidate depths, fusion weight and batched output bounds.",
+          "default": {
+            "dense_weight": 0.5,
+            "dense_candidates": 75,
+            "lexical_candidates": 200,
+            "source_cap": 2,
+            "max_documents": 75
+          }
+        },
+        "composition": {
+          "$ref": "#/$defs/Composition",
+          "description": "Document slots: fusion first, then further unique dense and lexical hits.",
+          "default": {
+            "fusion": 50,
+            "dense": 0,
+            "lexical": 0
+          }
+        },
+        "fts_positions": {
+          "type": "boolean",
+          "description": "Token positions in the `searchable_text` index; a `phrase` condition needs them.",
+          "default": false
+        },
+        "analyzer": {
+          "$ref": "#/$defs/Analyzer",
+          "description": "How the full-text index of `searchable_text` cuts a text into terms: the\ntokenizer, the language, the stop words and the other settings of an\nattribute's analyzer. The index, the highlights and the excerpts of a hit\nall use it. Absent: the `simple` tokenizer, lowercase, tokens under 40 bytes,\nno stemming, stop words or folding. Fixed when the namespace is created.",
+          "default": {
+            "tokenizer": "simple",
+            "ascii_folding": false,
+            "max_token_length": 40,
+            "ngram_min_length": 3,
+            "ngram_max_length": 3,
+            "prefix_only": false
+          }
+        },
+        "dense_rq_bits": {
+          "type": "integer",
+          "format": "uint8",
+          "minimum": 1,
+          "maximum": 9,
+          "description": "RaBitQ bits per dimension of the dense vector index.",
+          "default": 1
+        },
+        "dense_partition_rows": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 32,
+          "description": "Target rows per partition of the dense vector index.",
+          "maximum": 4096,
+          "default": 550
+        },
+        "dense_metric": {
+          "$ref": "#/$defs/DenseMetric",
+          "description": "The distance the dense index and the rescoring measure, fixed for the\nlife of the namespace: `cosine`, `squared_l2` or `dot`.",
+          "default": "cosine"
+        },
+        "dense_element": {
+          "$ref": "#/$defs/DenseElement",
+          "description": "The element type the vectors are stored in, fixed for the life of the\nnamespace: `f16` or `f32`.",
+          "default": "f16"
+        },
         "attributes": {
           "type": "object",
           "additionalProperties": {
             "$ref": "#/$defs/AttributeType"
           },
-          "description": "The typed attributes the namespace declares. Each is a nullable column;\na request that changes the schema adds attributes and never changes or\nremoves one."
+          "description": "Typed attributes declared for a new namespace: name to `string`, `int`,\n`float`, `bool` or `datetime`. Each is a nullable column with its own\nindex. A request that changes the schema adds attributes and never\nchanges or removes one."
         },
         "attribute_indexes": {
           "type": "object",
           "additionalProperties": {
             "$ref": "#/$defs/AttributeIndex"
           },
-          "description": "The indexes the attributes are to have where they are not the default.\nAn index switched on is built by the next maintenance; the manifest\nrecords the ones that are built."
+          "description": "The attributes whose indexes differ from the default (the scalar index\nof the attribute's type): `index = false` leaves the attribute to a scan\nof the table, `full_text` and `ngram` add a text index to a `string`\n(`full_text` also to an array of strings, one document per element),\nand `analyzer` sets how the full-text index cuts a text into terms. An\nindex switched on is built by the next maintenance."
         },
         "vectors": {
           "type": "object",
           "additionalProperties": {
             "$ref": "#/$defs/VectorAttribute"
           },
-          "description": "The named vector attributes, fixed at creation."
+          "description": "Named vector attributes declared for a new namespace, fixed for its\nlife: name to `dimensions` and, optionally, the `string` attribute\n(`from`) the writer embeds the vector from. Each is a nullable column\nwith its own vector index. The built-in `vector` is not declared: it\nstays the default attribute of every namespace. Needs `write_api`."
         },
         "write_api": {
           "anyOf": [
@@ -139,16 +172,19 @@
               "type": "null"
             }
           ],
-          "description": "Present: the namespace is written through the HTTP API and takes no\nconnector source. Fixed with the rest of the settings."
+          "description": "Present: the writer serves `POST /v1/namespaces/{namespace}/documents`,\nand a namespace created from this file or through that route takes its\ndocuments only from the API (no `[[sources]]`). The keys are the\ndefaults of a new namespace; an existing one keeps its own."
         }
       },
       "required": [
         "embedding",
-        "fts",
+        "retrieval",
+        "composition",
+        "fts_positions",
+        "analyzer",
         "dense_rq_bits",
         "dense_partition_rows",
-        "retrieval",
-        "composition"
+        "dense_metric",
+        "dense_element"
       ],
       "description": "The index and retrieval settings a namespace is created with and keeps for\nits life. The process configuration only supplies them when the namespace is\ncreated; every reader and writer afterwards takes them from the namespace's\npolicy artifact, which each content manifest pins."
     },
@@ -250,23 +286,180 @@
         }
       }
     },
-    "FtsSettings": {
+    "RerankSettings": {
       "type": "object",
       "properties": {
-        "analyzer": {
-          "$ref": "#/$defs/Analyzer",
-          "description": "How the index of `searchable_text` cuts a text into terms; the highlights\nand the excerpts of a hit cut it the same way."
+        "model": {
+          "type": "string"
         },
-        "with_position": {
-          "type": "boolean",
-          "description": "Positional postings, which a phrase condition needs."
+        "candidates": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 1,
+          "description": "Authorized composed documents to rerank before the request limit.",
+          "maximum": 75
+        },
+        "weight": {
+          "type": "number",
+          "format": "double",
+          "description": "Logistic population-z score blend; 1 uses raw reranker order, 0 fusion order.",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "text_chars": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 200,
+          "description": "Optional per-candidate text bound in characters: send the window with the\nmost distinct query terms instead of the whole record. Absent sends the\nwhole record.",
+          "maximum": 32768
         }
       },
       "required": [
-        "analyzer",
-        "with_position"
+        "model",
+        "candidates",
+        "weight"
       ],
-      "description": "FTS analyzer settings, part of the publication identity."
+      "description": "What of a reranker decides results: recorded in the namespace when it is\ncreated. The endpoint, credential, spend caps and deadline stay process\nconfiguration ([`RerankConfig`])."
+    },
+    "RetrievalConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "rescore_depth": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RescoreDepth"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Float16 candidate refinement. Unset, it starts at four times the dense\nlane depth and, with one-bit codes, grows with the rows the probes inspect."
+        },
+        "dense_weight": {
+          "type": "number",
+          "format": "double",
+          "minimum": 0,
+          "maximum": 1,
+          "default": 0.5
+        },
+        "dense_candidates": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 1,
+          "maximum": 75,
+          "default": 75
+        },
+        "lexical_candidates": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 1,
+          "maximum": 200,
+          "default": 200
+        },
+        "source_cap": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "Soft cap per composition bucket; zero disables it.",
+          "maximum": 75,
+          "default": 2
+        },
+        "max_documents": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 1,
+          "description": "Total unique documents in a multi-query response.",
+          "maximum": 320,
+          "default": 75
+        }
+      },
+      "description": "Retrieval policy bound into each publication's ranking identity."
+    },
+    "RescoreDepth": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "mode": {
+              "type": "string",
+              "const": "fixed"
+            },
+            "candidates": {
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "mode",
+            "candidates"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "mode": {
+              "type": "string",
+              "const": "adaptive"
+            },
+            "min_candidates": {
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0
+            },
+            "max_candidates": {
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0
+            },
+            "min_gap": {
+              "type": "number",
+              "format": "double"
+            }
+          },
+          "required": [
+            "mode",
+            "min_candidates",
+            "max_candidates",
+            "min_gap"
+          ],
+          "description": "Expand when the exact distance gap, in the units of the namespace's\nmetric, at the retained boundary is small."
+        }
+      ]
+    },
+    "Composition": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "fusion": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 1,
+          "maximum": 75,
+          "default": 50
+        },
+        "dense": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "maximum": 74,
+          "default": 0
+        },
+        "lexical": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "maximum": 74,
+          "default": 0
+        }
+      },
+      "description": "Operator composition; its values are bound into the retrieval policy identity."
     },
     "Analyzer": {
       "type": "object",
@@ -398,169 +591,6 @@
         "f32"
       ],
       "description": "The element type of a stored vector. A 16-bit float halves the vector\ncolumn; a 32-bit one keeps the numbers the caller sent."
-    },
-    "RetrievalSettings": {
-      "type": "object",
-      "properties": {
-        "rescore_depth": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/RescoreSettings"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "dense_weight": {
-          "type": "number",
-          "format": "double"
-        },
-        "dense_candidates": {
-          "type": "integer",
-          "format": "uint",
-          "minimum": 0
-        },
-        "lexical_candidates": {
-          "type": "integer",
-          "format": "uint",
-          "minimum": 0
-        },
-        "source_cap": {
-          "type": "integer",
-          "format": "uint",
-          "minimum": 0
-        },
-        "max_documents": {
-          "type": "integer",
-          "format": "uint",
-          "minimum": 0
-        }
-      },
-      "required": [
-        "dense_weight",
-        "dense_candidates",
-        "lexical_candidates",
-        "source_cap",
-        "max_documents"
-      ],
-      "description": "The persisted copy of [`RetrievalConfig`]."
-    },
-    "RescoreSettings": {
-      "oneOf": [
-        {
-          "type": "object",
-          "properties": {
-            "mode": {
-              "type": "string",
-              "const": "fixed"
-            },
-            "candidates": {
-              "type": "integer",
-              "format": "uint",
-              "minimum": 0
-            }
-          },
-          "required": [
-            "mode",
-            "candidates"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "mode": {
-              "type": "string",
-              "const": "adaptive"
-            },
-            "min_candidates": {
-              "type": "integer",
-              "format": "uint",
-              "minimum": 0
-            },
-            "max_candidates": {
-              "type": "integer",
-              "format": "uint",
-              "minimum": 0
-            },
-            "min_gap": {
-              "type": "number",
-              "format": "double"
-            }
-          },
-          "required": [
-            "mode",
-            "min_candidates",
-            "max_candidates",
-            "min_gap"
-          ]
-        }
-      ],
-      "description": "The persisted copy of [`RescoreDepth`]."
-    },
-    "CompositionSettings": {
-      "type": "object",
-      "properties": {
-        "fusion": {
-          "type": "integer",
-          "format": "uint",
-          "minimum": 0
-        },
-        "dense": {
-          "type": "integer",
-          "format": "uint",
-          "minimum": 0
-        },
-        "lexical": {
-          "type": "integer",
-          "format": "uint",
-          "minimum": 0
-        }
-      },
-      "required": [
-        "fusion",
-        "dense",
-        "lexical"
-      ],
-      "description": "The persisted copy of [`Composition`]."
-    },
-    "RerankSettings": {
-      "type": "object",
-      "properties": {
-        "model": {
-          "type": "string"
-        },
-        "candidates": {
-          "type": "integer",
-          "format": "uint",
-          "minimum": 1,
-          "description": "Authorized composed documents to rerank before the request limit.",
-          "maximum": 75
-        },
-        "weight": {
-          "type": "number",
-          "format": "double",
-          "description": "Logistic population-z score blend; 1 uses raw reranker order, 0 fusion order.",
-          "minimum": 0,
-          "maximum": 1
-        },
-        "text_chars": {
-          "type": [
-            "integer",
-            "null"
-          ],
-          "format": "uint",
-          "minimum": 200,
-          "description": "Per-candidate text bound in characters; absent sends the whole record.",
-          "maximum": 32768
-        }
-      },
-      "required": [
-        "model",
-        "candidates",
-        "weight"
-      ],
-      "description": "What of a reranker decides results: recorded in the namespace when it is\ncreated. The endpoint, credential, spend caps and deadline stay process\nconfiguration ([`RerankConfig`]). Persisted types accept the fields a newer\nminor version adds, unlike their configuration counterparts."
     },
     "AttributeType": {
       "oneOf": [
@@ -725,5 +755,5 @@
     }
   },
   "x-fyrr-contract": "policy-artifact",
-  "x-fyrr-schema-version": "4.0"
+  "x-fyrr-schema-version": "5.0"
 }

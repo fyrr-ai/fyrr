@@ -98,7 +98,7 @@ impl<'a> ContentWork<'a> {
             if group.is_empty() {
                 continue;
             }
-            if self.dataset.is_none() && config.namespace.write_api.is_some() {
+            if self.dataset.is_none() && config.namespace.settings.write_api.is_some() {
                 // Rows of the API reach their typed columns through the commit
                 // path of any later publication: start from the empty table.
                 self.overwrite(Vec::new()).await?;
@@ -183,9 +183,10 @@ impl<'a> ContentWork<'a> {
                 schema: lance::datatypes::Schema::try_from(
                     crate::prepare::schema_with(
                         config.embedding.dimensions,
-                        config.namespace.dense_element,
+                        config.namespace.settings.dense_element,
                         config
                             .namespace
+                            .settings
                             .attributes
                             .iter()
                             .map(|(name, kind)| {
@@ -193,16 +194,18 @@ impl<'a> ContentWork<'a> {
                             })
                             // The vector attributes come after the typed ones, in
                             // name order, and are fixed with the table.
-                            .chain(config.namespace.vectors.iter().map(|(name, vector)| {
-                                arrow_schema::Field::new(
-                                    name,
-                                    crate::prepare::named_vector_type(
-                                        config.namespace.dense_element,
-                                        vector,
-                                    ),
-                                    true,
-                                )
-                            }))
+                            .chain(config.namespace.settings.vectors.iter().map(
+                                |(name, vector)| {
+                                    arrow_schema::Field::new(
+                                        name,
+                                        crate::prepare::named_vector_type(
+                                            config.namespace.settings.dense_element,
+                                            vector,
+                                        ),
+                                        true,
+                                    )
+                                },
+                            ))
                             .collect(),
                     )
                     .as_ref(),

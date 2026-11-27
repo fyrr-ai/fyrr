@@ -441,33 +441,58 @@ class NamespaceSettings(TypedDict):
     policy artifact, which each content manifest pins.
     """
     embedding: EmbeddingIdentity
-    fts: FtsSettings
-    dense_rq_bits: int
-    """RaBitQ bits per dimension of the vector index."""
-    dense_partition_rows: int
-    """Target rows per partition of the vector index."""
-    dense_metric: NotRequired[DenseMetric]
-    """The distance of the vector index and the rescoring; absent: cosine."""
-    dense_element: NotRequired[DenseElement]
-    """The element type of the stored vectors; absent: 16-bit floats."""
-    retrieval: RetrievalSettings
-    composition: CompositionSettings
     rerank: NotRequired[RerankSettings | None]
+    retrieval: RetrievalConfig
+    """Candidate depths, fusion weight and batched output bounds."""
+    composition: Composition
+    """Document slots: fusion first, then further unique dense and lexical hits."""
+    fts_positions: bool
+    """Token positions in the `searchable_text` index; a `phrase` condition needs them."""
+    analyzer: Analyzer
+    """How the full-text index of `searchable_text` cuts a text into terms: the
+    tokenizer, the language, the stop words and the other settings of an
+    attribute's analyzer. The index, the highlights and the excerpts of a hit
+    all use it. Absent: the `simple` tokenizer, lowercase, tokens under 40 bytes,
+    no stemming, stop words or folding. Fixed when the namespace is created.
+    """
+    dense_rq_bits: int
+    """RaBitQ bits per dimension of the dense vector index."""
+    dense_partition_rows: int
+    """Target rows per partition of the dense vector index."""
+    dense_metric: DenseMetric
+    """The distance the dense index and the rescoring measure, fixed for the
+    life of the namespace: `cosine`, `squared_l2` or `dot`.
+    """
+    dense_element: DenseElement
+    """The element type the vectors are stored in, fixed for the life of the
+    namespace: `f16` or `f32`.
+    """
     attributes: NotRequired[dict[str, AttributeType]]
-    """The typed attributes the namespace declares. Each is a nullable column;
-    a request that changes the schema adds attributes and never changes or
-    removes one.
+    """Typed attributes declared for a new namespace: name to `string`, `int`,
+    `float`, `bool` or `datetime`. Each is a nullable column with its own
+    index. A request that changes the schema adds attributes and never
+    changes or removes one.
     """
     attribute_indexes: NotRequired[dict[str, AttributeIndex]]
-    """The indexes the attributes are to have where they are not the default.
-    An index switched on is built by the next maintenance; the manifest
-    records the ones that are built.
+    """The attributes whose indexes differ from the default (the scalar index
+    of the attribute's type): `index = false` leaves the attribute to a scan
+    of the table, `full_text` and `ngram` add a text index to a `string`
+    (`full_text` also to an array of strings, one document per element),
+    and `analyzer` sets how the full-text index cuts a text into terms. An
+    index switched on is built by the next maintenance.
     """
     vectors: NotRequired[dict[str, VectorAttribute]]
-    """The named vector attributes, fixed at creation."""
+    """Named vector attributes declared for a new namespace, fixed for its
+    life: name to `dimensions` and, optionally, the `string` attribute
+    (`from`) the writer embeds the vector from. Each is a nullable column
+    with its own vector index. The built-in `vector` is not declared: it
+    stays the default attribute of every namespace. Needs `write_api`.
+    """
     write_api: NotRequired[WriteApiSettings | None]
-    """Present: the namespace is written through the HTTP API and takes no
-    connector source. Fixed with the rest of the settings.
+    """Present: the writer serves `POST /v1/namespaces/{namespace}/documents`,
+    and a namespace created from this file or through that route takes its
+    documents only from the API (no `[[sources]]`). The keys are the
+    defaults of a new namespace; an existing one keeps its own.
     """
 
 
@@ -503,14 +528,58 @@ class EmbeddingRole(TypedDict):
     input_type: NotRequired[str | None]
 
 
-class FtsSettings(TypedDict):
-    """FTS analyzer settings, part of the publication identity."""
-    analyzer: Analyzer
-    """How the index of `searchable_text` cuts a text into terms; the highlights
-    and the excerpts of a hit cut it the same way.
+class RerankSettings(TypedDict):
+    """What of a reranker decides results: recorded in the namespace when it is
+    created. The endpoint, credential, spend caps and deadline stay process
+    configuration ([`RerankConfig`]).
     """
-    with_position: bool
-    """Positional postings, which a phrase condition needs."""
+    model: str
+    candidates: int
+    """Authorized composed documents to rerank before the request limit."""
+    weight: float
+    """Logistic population-z score blend; 1 uses raw reranker order, 0 fusion order."""
+    text_chars: NotRequired[int | None]
+    """Optional per-candidate text bound in characters: send the window with the
+    most distinct query terms instead of the whole record. Absent sends the
+    whole record.
+    """
+
+
+class RetrievalConfig(TypedDict):
+    """Retrieval policy bound into each publication's ranking identity."""
+    rescore_depth: NotRequired[RescoreDepth | None]
+    """Float16 candidate refinement. Unset, it starts at four times the dense
+    lane depth and, with one-bit codes, grows with the rows the probes inspect.
+    """
+    dense_weight: float
+    dense_candidates: int
+    lexical_candidates: int
+    source_cap: int
+    """Soft cap per composition bucket; zero disables it."""
+    max_documents: int
+    """Total unique documents in a multi-query response."""
+
+
+class RescoreDepthFixed(TypedDict):
+    mode: Literal["fixed"]
+    candidates: int
+
+
+class RescoreDepthAdaptive(TypedDict):
+    """Expand when the exact distance gap, in the units of the namespace's
+    metric, at the retained boundary is small.
+    """
+    mode: Literal["adaptive"]
+    min_candidates: int
+    max_candidates: int
+    min_gap: float
+
+
+class Composition(TypedDict):
+    """Operator composition; its values are bound into the retrieval policy identity."""
+    fusion: int
+    dense: int
+    lexical: int
 
 
 class Analyzer(TypedDict):
@@ -539,50 +608,6 @@ class Analyzer(TypedDict):
     """Only with the `ngram` tokenizer; not below `ngram_min_length`."""
     prefix_only: bool
     """Only with the `ngram` tokenizer: only the n-grams that start a token."""
-
-
-class RetrievalSettings(TypedDict):
-    """The persisted copy of [`RetrievalConfig`]."""
-    rescore_depth: NotRequired[RescoreSettings | None]
-    dense_weight: float
-    dense_candidates: int
-    lexical_candidates: int
-    source_cap: int
-    max_documents: int
-
-
-class RescoreSettingsFixed(TypedDict):
-    mode: Literal["fixed"]
-    candidates: int
-
-
-class RescoreSettingsAdaptive(TypedDict):
-    mode: Literal["adaptive"]
-    min_candidates: int
-    max_candidates: int
-    min_gap: float
-
-
-class CompositionSettings(TypedDict):
-    """The persisted copy of [`Composition`]."""
-    fusion: int
-    dense: int
-    lexical: int
-
-
-class RerankSettings(TypedDict):
-    """What of a reranker decides results: recorded in the namespace when it is
-    created. The endpoint, credential, spend caps and deadline stay process
-    configuration ([`RerankConfig`]). Persisted types accept the fields a newer
-    minor version adds, unlike their configuration counterparts.
-    """
-    model: str
-    candidates: int
-    """Authorized composed documents to rerank before the request limit."""
-    weight: float
-    """Logistic population-z score blend; 1 uses raw reranker order, 0 fusion order."""
-    text_chars: NotRequired[int | None]
-    """Per-candidate text bound in characters; absent sends the whole record."""
 
 
 class AttributeIndex(TypedDict):
@@ -890,6 +915,9 @@ ElementType: TypeAlias = Literal["string", "int", "float", "bool", "datetime", "
 EmbeddingApiStyle: TypeAlias = Literal["openai-compatible"]
 
 
+RescoreDepth: TypeAlias = RescoreDepthFixed | RescoreDepthAdaptive
+
+
 # The way a text is cut into tokens.
 Tokenizer: TypeAlias = Literal["simple", "whitespace", "unicode", "ngram"]
 
@@ -904,10 +932,6 @@ DenseMetric: TypeAlias = Literal["cosine", "squared_l2", "dot"]
 
 # The element type of a stored vector. A 16-bit float halves the vector
 DenseElement: TypeAlias = Literal["f16", "f32"]
-
-
-# The persisted copy of [`RescoreDepth`].
-RescoreSettings: TypeAlias = RescoreSettingsFixed | RescoreSettingsAdaptive
 
 
 # Contract schema version `<major>.<minor>`. Readers accept any minor of their major and reject other majors.

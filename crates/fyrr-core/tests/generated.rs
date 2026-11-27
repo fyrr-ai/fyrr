@@ -21,7 +21,7 @@ fn contract_fixture<T: fyrr_core::Contract>(path: &'static str, bytes: &[u8]) ->
     // These fixtures describe the default model with no text transformation.
     // Construct its complete persisted identity with the current contract.
     let embedding = if T::NAME == "content-manifest" {
-        value.get_mut("embedding")
+        value["settings"].get_mut("embedding")
     } else {
         value["payload"].get_mut("embedding")
     };

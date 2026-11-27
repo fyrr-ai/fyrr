@@ -11,16 +11,26 @@ use fyrr_core::config::{Environment, LoadedConfig, Severity, parse};
 const EXAMPLE: &str = "config/fyrr.example.toml";
 const SENTINEL: &str = "SENTINEL-5ecr3t-9f1c";
 
+/// What a namespace records of its configuration: everything but the process
+/// configuration of the reranker.
+fn identity(namespace: &fyrr_core::config::NamespaceConfig) -> String {
+    serde_json::json!([
+        namespace.settings,
+        namespace.rerank.as_ref().map(|r| &r.settings)
+    ])
+    .to_string()
+}
+
 const RERANK: &str = "\n[namespace.rerank]\nendpoint='http://127.0.0.1:1234/rerank'\nmodel='fixture-rerank'\ncandidates=50\nweight=0.5\ndeadline='1s'\nspend_limit_microusd=100\nmax_call_cost_microusd=10\n";
 
 #[test]
 fn rerank_is_optional_capped_validated_and_bound_into_policy() {
     let base = parse(MINIMAL).unwrap();
     assert!(base.config.namespace.rerank.is_none());
-    let legacy = base.config.namespace.retrieval_digest();
+    let legacy = identity(&base.config.namespace);
     let configured = parse(&format!("{MINIMAL}{RERANK}")).unwrap();
     assert!(errors(&configured).is_empty());
-    let digest = configured.config.namespace.retrieval_digest();
+    let digest = identity(&configured.config.namespace);
     assert_ne!(legacy, digest);
     for (from, to, field) in [
         ("127.0.0.1", "localhost", "endpoint"),
@@ -59,11 +69,12 @@ fn rerank_is_optional_capped_validated_and_bound_into_policy() {
         .is_err()
     );
     let digest_of = |from: &str, to: &str| {
-        parse(&format!("{MINIMAL}{}", RERANK.replace(from, to)))
-            .unwrap()
-            .config
-            .namespace
-            .retrieval_digest()
+        identity(
+            &parse(&format!("{MINIMAL}{}", RERANK.replace(from, to)))
+                .unwrap()
+                .config
+                .namespace,
+        )
     };
     // What decides results is bound into the policy.
     for (from, to) in [
@@ -88,7 +99,7 @@ fn rerank_is_optional_capped_validated_and_bound_into_policy() {
     }
     let with_secret = format!("{MINIMAL}{RERANK}api_key={{env='RERANK_TEST_KEY'}}\n");
     let secret = parse(&with_secret).unwrap();
-    assert_eq!(digest, secret.config.namespace.retrieval_digest());
+    assert_eq!(digest, identity(&secret.config.namespace));
     assert!(
         secret
             .missing_secrets(&|_: &str| None)
@@ -1166,7 +1177,7 @@ fn config_show_redacts_inline_secrets() {
 #[test]
 fn composition_is_bounded_defaulted_and_bound_into_policy_identity() {
     let base = parse(MINIMAL).unwrap();
-    assert_eq!(base.config.namespace.composition.fusion, 50);
+    assert_eq!(base.config.namespace.settings.composition.fusion, 50);
     let changed = parse(&MINIMAL.replace(
         "name = \"acme\"",
         "name = \"acme\"\ncomposition = { fusion = 50, dense = 25 }",
@@ -1174,8 +1185,8 @@ fn composition_is_bounded_defaulted_and_bound_into_policy_identity() {
     .unwrap();
     assert!(errors(&changed).is_empty());
     assert_ne!(
-        base.config.namespace.retrieval_digest(),
-        changed.config.namespace.retrieval_digest()
+        identity(&base.config.namespace),
+        identity(&changed.config.namespace)
     );
     for composition in [
         "{ fusion = 0 }",
@@ -1198,7 +1209,7 @@ fn composition_is_bounded_defaulted_and_bound_into_policy_identity() {
 fn retrieval_config_bounds_and_digest() {
     let base = parse(MINIMAL).unwrap();
     assert!(errors(&base).is_empty());
-    let retrieval = &base.config.namespace.retrieval;
+    let retrieval = &base.config.namespace.settings.retrieval;
     assert_eq!(retrieval.dense_weight, 0.5);
     assert_eq!(retrieval.lexical_candidates, 200);
     assert_eq!(retrieval.dense_candidates, 75);
@@ -1208,12 +1219,12 @@ fn retrieval_config_bounds_and_digest() {
     let explicit = parse(&format!("{MINIMAL}\n[namespace.retrieval]\ndense_weight=0.5\ndense_candidates=75\nlexical_candidates=200\nsource_cap=2\nmax_documents=75\n")).unwrap();
     assert!(errors(&explicit).is_empty());
     assert_eq!(
-        base.config.namespace.retrieval,
-        explicit.config.namespace.retrieval
+        base.config.namespace.settings.retrieval,
+        explicit.config.namespace.settings.retrieval
     );
     assert_eq!(
-        base.config.namespace.retrieval_digest(),
-        explicit.config.namespace.retrieval_digest()
+        identity(&base.config.namespace),
+        identity(&explicit.config.namespace)
     );
     for (field, good) in [
         ("dense_weight", "0.25"),
@@ -1226,8 +1237,8 @@ fn retrieval_config_bounds_and_digest() {
         let config = parse(&format!("{MINIMAL}\n{extra}")).unwrap();
         assert!(errors(&config).is_empty());
         assert_ne!(
-            config.config.namespace.retrieval_digest(),
-            base.config.namespace.retrieval_digest()
+            identity(&config.config.namespace),
+            identity(&base.config.namespace)
         );
     }
     for bad in ["1.01", "-0.01", "nan"] {
@@ -1253,10 +1264,10 @@ fn the_text_analyzer_is_one_effective_setting_of_the_publication() {
     use fyrr_core::attributes::analyzer::{Analyzer, Tokenizer};
     let default = parse(MINIMAL).unwrap().config.namespace;
     // The default is an analyzer like any other: materialized, in the publication.
-    assert_eq!(default.fts_settings().analyzer, Analyzer::default());
-    assert!(!default.fts_settings().with_position);
+    assert_eq!(default.settings.analyzer, Analyzer::default());
+    assert!(!default.settings.fts_positions);
     assert!(
-        serde_json::to_string(&default.fts_settings())
+        serde_json::to_string(&default.settings.analyzer)
             .unwrap()
             .contains("\"tokenizer\":\"simple\"")
     );
@@ -1266,14 +1277,14 @@ fn the_text_analyzer_is_one_effective_setting_of_the_publication() {
     .unwrap()
     .config
     .namespace;
-    assert_eq!(default.retrieval_digest(), spelled.retrieval_digest());
+    assert_eq!(identity(&default), identity(&spelled));
     // Token positions are a setting of their own.
     let positional = parse(&MINIMAL.replace("[namespace]", "[namespace]\nfts_positions=true"))
         .unwrap()
         .config
         .namespace;
-    assert_ne!(default.retrieval_digest(), positional.retrieval_digest());
-    assert!(positional.fts_settings().with_position);
+    assert_ne!(identity(&default), identity(&positional));
+    assert!(positional.settings.fts_positions);
     // The flat keys are gone: the analyzer is the one way to say it.
     for key in [
         "fts_stem",
@@ -1295,12 +1306,9 @@ fn the_text_analyzer_is_one_effective_setting_of_the_publication() {
     let analyzed = parse(&format!("{MINIMAL}\n{table}")).unwrap();
     assert!(errors(&analyzed).is_empty(), "{:?}", errors(&analyzed));
     let namespace = analyzed.config.namespace;
-    assert_ne!(default.retrieval_digest(), namespace.retrieval_digest());
+    assert_ne!(identity(&default), identity(&namespace));
     // The publication says what the index does: the analyzer, not a tokenizer name apart.
-    assert_eq!(
-        namespace.fts_settings().analyzer.tokenizer,
-        Tokenizer::Unicode
-    );
+    assert_eq!(namespace.settings.analyzer.tokenizer, Tokenizer::Unicode);
     assert_error(
         "[namespace.analyzer]\nlanguage = \"german\"\nmax_token_length = 0\n",
         "namespace.analyzer",
@@ -1316,7 +1324,7 @@ fn the_text_analyzer_is_one_effective_setting_of_the_publication() {
     .unwrap();
     assert!(errors(&stemming).is_empty(), "{:?}", errors(&stemming));
     assert_eq!(
-        stemming.config.namespace.analyzer.stop_words,
+        stemming.config.namespace.settings.analyzer.stop_words,
         Some(Vec::new())
     );
     assert_error(
@@ -1325,18 +1333,22 @@ fn the_text_analyzer_is_one_effective_setting_of_the_publication() {
     );
 }
 #[test]
-fn dense_rq_bits_defaults_to_one_bit_and_is_bounded_without_changing_the_digest() {
+fn dense_rq_bits_defaults_to_one_bit_and_is_bounded() {
     let legacy = parse(MINIMAL).unwrap().config.namespace;
-    assert_eq!(legacy.dense_rq_bits, 1);
+    assert_eq!(legacy.settings.dense_rq_bits, 1);
     for good in ["1", "5", "9"] {
         let configured =
             parse(&MINIMAL.replace("[namespace]", &format!("[namespace]\ndense_rq_bits={good}")))
                 .unwrap();
         assert!(errors(&configured).is_empty());
-        assert_eq!(configured.config.namespace.dense_rq_bits.to_string(), good);
         assert_eq!(
-            configured.config.namespace.retrieval_digest(),
-            legacy.retrieval_digest()
+            configured
+                .config
+                .namespace
+                .settings
+                .dense_rq_bits
+                .to_string(),
+            good
         );
     }
     for bad in ["0", "10"] {
@@ -1352,9 +1364,9 @@ fn dense_rq_bits_defaults_to_one_bit_and_is_bounded_without_changing_the_digest(
     }
 }
 #[test]
-fn dense_partition_rows_defaults_to_550_and_is_bounded_without_changing_the_digest() {
+fn dense_partition_rows_defaults_to_550_and_is_bounded() {
     let legacy = parse(MINIMAL).unwrap().config.namespace;
-    assert_eq!(legacy.dense_partition_rows, 550);
+    assert_eq!(legacy.settings.dense_partition_rows, 550);
     for good in ["32", "1000", "4096"] {
         let configured = parse(&MINIMAL.replace(
             "[namespace]",
@@ -1363,12 +1375,13 @@ fn dense_partition_rows_defaults_to_550_and_is_bounded_without_changing_the_dige
         .unwrap();
         assert!(errors(&configured).is_empty());
         assert_eq!(
-            configured.config.namespace.dense_partition_rows.to_string(),
+            configured
+                .config
+                .namespace
+                .settings
+                .dense_partition_rows
+                .to_string(),
             good
-        );
-        assert_eq!(
-            configured.config.namespace.retrieval_digest(),
-            legacy.retrieval_digest()
         );
     }
     for bad in ["31", "4097"] {
@@ -1386,23 +1399,32 @@ fn dense_partition_rows_defaults_to_550_and_is_bounded_without_changing_the_dige
     }
 }
 #[test]
-fn dense_metric_and_element_default_to_cosine_and_f16_and_enter_the_digest_when_set() {
+fn the_effective_configuration_shows_the_vector_defaults() {
+    let values = parse(MINIMAL).unwrap().effective_values(&env(&[]));
+    for (path, shown) in [
+        ("namespace.dense_metric", "\"cosine\""),
+        ("namespace.dense_element", "\"f16\""),
+    ] {
+        let value = values.iter().find(|value| value.path == path);
+        assert_eq!(value.map(|value| value.value.as_str()), Some(shown));
+    }
+}
+
+#[test]
+fn dense_metric_and_element_default_to_cosine_and_f16_and_are_recorded_when_set() {
     use fyrr_core::config::{DenseElement, DenseMetric};
     let legacy = parse(MINIMAL).unwrap().config.namespace;
-    assert_eq!(legacy.dense_metric, DenseMetric::Cosine);
-    assert_eq!(legacy.dense_element, DenseElement::F16);
-    // The defaults spelled out are the legacy digest.
+    assert_eq!(legacy.settings.dense_metric, DenseMetric::Cosine);
+    assert_eq!(legacy.settings.dense_element, DenseElement::F16);
+    // The defaults spelled out are the defaults.
     let spelled = parse(&MINIMAL.replace(
         "[namespace]",
         "[namespace]\ndense_metric='cosine'\ndense_element='f16'",
     ))
     .unwrap();
     assert!(errors(&spelled).is_empty());
-    assert_eq!(
-        spelled.config.namespace.retrieval_digest(),
-        legacy.retrieval_digest()
-    );
-    let mut digests = vec![legacy.retrieval_digest()];
+    assert_eq!(identity(&spelled.config.namespace), identity(&legacy));
+    let mut digests = vec![identity(&legacy)];
     for (metric, element) in [
         ("squared_l2", "f16"),
         ("dot", "f16"),
@@ -1415,7 +1437,7 @@ fn dense_metric_and_element_default_to_cosine_and_f16_and_enter_the_digest_when_
         ))
         .unwrap();
         assert!(errors(&configured).is_empty(), "{metric} {element}");
-        digests.push(configured.config.namespace.retrieval_digest());
+        digests.push(identity(&configured.config.namespace));
     }
     let distinct: std::collections::BTreeSet<_> = digests.iter().collect();
     assert_eq!(distinct.len(), digests.len(), "{digests:?}");
@@ -1444,30 +1466,25 @@ fn dense_metric_and_element_default_to_cosine_and_f16_and_enter_the_digest_when_
     }
 }
 #[test]
-fn namespace_vectors_are_declared_with_dimensions_and_a_source_and_enter_the_digest() {
+fn namespace_vectors_are_declared_with_dimensions_and_a_source_and_are_recorded() {
     let declared = format!(
         "{MINIMAL}\n[namespace.write_api]\n[namespace.attributes]\ntitle='string'\nbody='int'\n\
          [namespace.vectors.image]\ndimensions=512\n[namespace.vectors.title_vec]\ndimensions=1024\nfrom='title'"
     );
     let loaded = parse(&declared).unwrap();
     assert!(errors(&loaded).is_empty(), "{:?}", errors(&loaded));
-    let vectors = &loaded.config.namespace.vectors;
+    let vectors = &loaded.config.namespace.settings.vectors;
     assert_eq!(vectors["image"].dimensions, 512);
     assert_eq!(vectors["image"].from, None);
     assert_eq!(vectors["title_vec"].from.as_deref(), Some("title"));
-    // They are part of the retrieval policy, and a namespace that declares
-    // none keeps the digest it always had.
+    // They are part of what the namespace records.
     let without = parse(&format!(
         "{MINIMAL}\n[namespace.write_api]\n[namespace.attributes]\ntitle='string'\nbody='int'"
     ))
     .unwrap();
-    assert_eq!(
-        without.config.namespace.retrieval_digest(),
-        parse(MINIMAL).unwrap().config.namespace.retrieval_digest()
-    );
     assert_ne!(
-        loaded.config.namespace.retrieval_digest(),
-        without.config.namespace.retrieval_digest()
+        identity(&loaded.config.namespace),
+        identity(&without.config.namespace)
     );
     // A name that is built in, an attribute's, malformed, a source that is not a
     // declared string attribute, a source of other dimensions than the model's,
@@ -1525,13 +1542,13 @@ fn a_multi_vector_attribute_needs_the_cosine_metric_and_no_source() {
     };
     let loaded = declared("cosine", "multi=true");
     assert!(errors(&loaded).is_empty(), "{:?}", errors(&loaded));
-    assert!(loaded.config.namespace.vectors["tokens"].multi);
-    // A single-vector attribute keeps the digest it had, and `multi` changes it.
+    assert!(loaded.config.namespace.settings.vectors["tokens"].multi);
+    // `multi` is a setting of its own.
     assert_ne!(
-        loaded.config.namespace.retrieval_digest(),
-        declared("cosine", "").config.namespace.retrieval_digest()
+        identity(&loaded.config.namespace),
+        identity(&declared("cosine", "").config.namespace)
     );
-    assert!(!declared("cosine", "").config.namespace.vectors["tokens"].multi);
+    assert!(!declared("cosine", "").config.namespace.settings.vectors["tokens"].multi);
     // Lance scores a list of vectors by cosine only, and nothing embeds one
     // from a text. The metric is refused by name.
     for metric in ["dot", "squared_l2"] {
@@ -1554,7 +1571,7 @@ fn namespace_attributes_are_declared_by_name_and_type() {
     ))
     .unwrap();
     assert!(errors(&declared).is_empty());
-    let attributes = &declared.config.namespace.attributes;
+    let attributes = &declared.config.namespace.settings.attributes;
     assert_eq!(attributes["created"], AttributeType::Datetime);
     assert_eq!(attributes["priority"], AttributeType::Int);
     assert_eq!(attributes["done"], AttributeType::Bool);
@@ -1565,6 +1582,7 @@ fn namespace_attributes_are_declared_by_name_and_type() {
         connector
             .config
             .namespace
+            .settings
             .attributes
             .keys()
             .collect::<Vec<_>>(),
@@ -1576,6 +1594,7 @@ fn namespace_attributes_are_declared_by_name_and_type() {
             .unwrap()
             .config
             .namespace
+            .settings
             .attributes
             .is_empty()
     );
@@ -1604,12 +1623,7 @@ fn namespace_attributes_are_declared_by_name_and_type() {
 fn rescore_depth_defaults_to_the_pool_rule_and_expands_only_at_small_gaps() {
     use fyrr_core::config::RescoreDepth;
     let namespace = parse(MINIMAL).unwrap().config.namespace;
-    // Pinned: a namespace that sets nothing keeps the identity its publications carry.
-    assert_eq!(
-        namespace.retrieval_digest(),
-        "sha256:1c55c2e89c3747c21d7120d347ce856ac078ee4e8cbc57c11ee0ee5733d69546"
-    );
-    let retrieval = namespace.retrieval;
+    let retrieval = namespace.settings.retrieval;
     assert_eq!(retrieval.rescore_depth, None);
     assert_eq!(retrieval.rescore_initial(75), 300);
     assert_eq!(retrieval.rescore_maximum(75), 1200);
@@ -1661,10 +1675,7 @@ fn sparse_read_backend_is_explicit_and_does_not_change_policy() {
         .unwrap()
         .config;
     assert_eq!(take.reader.sparse_read, SparseRead::TakeRows);
-    assert_eq!(
-        baseline.namespace.retrieval_digest(),
-        take.namespace.retrieval_digest()
-    );
+    assert_eq!(identity(&baseline.namespace), identity(&take.namespace));
 }
 
 #[test]

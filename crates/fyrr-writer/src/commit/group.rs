@@ -122,11 +122,13 @@ pub(crate) async fn commit_one(
         .await?;
     work.apply_non_content(&mut head, non_content, &mut receipts, sequence)
         .await?;
-    // The newest chained permissions envelope of each source applied: native
-    // apply refuses content only.
-    let mut permissions = BTreeMap::new();
-    for e in envelopes.iter().filter(|e| e.kind == SyncKind::Permissions) {
-        permissions.insert(e.source_id.clone(), e.envelope_id.clone());
+    // The newest chained envelope of each source resolved, in sequence order.
+    let mut chained = BTreeMap::new();
+    for e in envelopes
+        .iter()
+        .filter(|e| e.kind == chain_kind(&e.source_id))
+    {
+        chained.insert(e.source_id.clone(), e.envelope_id.clone());
     }
     stage(stage_timings, "data_commit", data_start);
     let native::ContentWork {
@@ -175,7 +177,7 @@ pub(crate) async fn commit_one(
         head,
         lineage,
         receipts,
-        permissions,
+        chained,
         acl_changed,
         Vec::new(),
         false,
@@ -298,12 +300,12 @@ async fn refusal(
             .contains_key(&envelope.source_id)
         {
             Some(WriterError::SourceRetired.as_str())
-        } else if current_policy.settings.write_api.is_some()
+        } else if current_policy.settings.namespace.write_api.is_some()
             != (envelope.source_id == fyrr_core::connector::API_SOURCE_ID)
         {
             // A namespace takes documents from its connectors or from the API,
             // as it was created; the policy under the lease decides.
-            Some(if current_policy.settings.write_api.is_some() {
+            Some(if current_policy.settings.namespace.write_api.is_some() {
                 "namespace_takes_api"
             } else {
                 "namespace_takes_connectors"
@@ -654,7 +656,10 @@ async fn build_indexes(
         .await?;
         record_transaction(dataset, lineage, before).await?;
     }
-    let fts_changed = previous_manifest.is_none_or(|m| m.fts != config.namespace.fts_settings());
+    let fts_changed = previous_manifest.is_none_or(|m| {
+        let (built, wanted) = (&m.settings.namespace, &config.namespace.settings);
+        built.analyzer != wanted.analyzer || built.fts_positions != wanted.fts_positions
+    });
     let count = if first {
         dataset.count_rows(None).await?
     } else {
@@ -666,9 +671,9 @@ async fn build_indexes(
     }
     let vector = vector_index_params(
         count,
-        config.namespace.dense_rq_bits,
-        config.namespace.dense_partition_rows,
-        config.namespace.dense_metric,
+        config.namespace.settings.dense_rq_bits,
+        config.namespace.settings.dense_partition_rows,
+        config.namespace.settings.dense_metric,
     );
     let scalar = ScalarIndexParams::default();
     let fts = fts_params(config)?;
@@ -737,7 +742,7 @@ async fn build_vector_indexes(
     dataset: &mut Dataset,
     lineage: &mut CommitLineage,
 ) -> Result<()> {
-    if config.namespace.vectors.is_empty() {
+    if config.namespace.settings.vectors.is_empty() {
         return Ok(());
     }
     let present: BTreeSet<_> = dataset
@@ -746,7 +751,7 @@ async fn build_vector_indexes(
         .iter()
         .map(|index| index.name.clone())
         .collect();
-    for name in config.namespace.vectors.keys() {
+    for name in config.namespace.settings.vectors.keys() {
         let index = fyrr_core::attributes::vector_index_name(name);
         if present.contains(&index) {
             continue;
@@ -764,9 +769,9 @@ async fn build_vector_indexes(
         // size them by the vectors if a search of such a column proves slow.
         let params = vector_index_params(
             rows,
-            config.namespace.dense_rq_bits,
-            config.namespace.dense_partition_rows,
-            config.namespace.dense_metric,
+            config.namespace.settings.dense_rq_bits,
+            config.namespace.settings.dense_partition_rows,
+            config.namespace.settings.dense_metric,
         );
         let before = dataset.version().version;
         native_step(
@@ -807,12 +812,13 @@ pub(crate) async fn build_attribute_indexes(
         .iter()
         .map(|index| index.name.clone())
         .collect();
-    let stale: BTreeSet<_> = stale_analyzers(&config.namespace.attribute_indexes, built).collect();
+    let stale: BTreeSet<_> =
+        stale_analyzers(&config.namespace.settings.attribute_indexes, built).collect();
     let scalar = ScalarIndexParams::default();
     let mut rebuilt = Vec::new();
     for (column, name, kind) in fyrr_reader::search::attribute_indexes(
-        &config.namespace.attributes,
-        &config.namespace.attribute_indexes,
+        &config.namespace.settings.attributes,
+        &config.namespace.settings.attribute_indexes,
     ) {
         let again = kind == IndexType::Inverted && stale.contains(column.as_str());
         if present.contains(&name) && !again {
@@ -824,6 +830,7 @@ pub(crate) async fn build_attribute_indexes(
             // settings, but not its positions: a phrase reads `searchable_text` only.
             fts = match config
                 .namespace
+                .settings
                 .attribute_indexes
                 .get(&column)
                 .and_then(|options| options.analyzer.as_ref())
@@ -833,7 +840,7 @@ pub(crate) async fn build_attribute_indexes(
             };
             // A string array has one document per element: a match never spans two.
             if matches!(
-                config.namespace.attributes.get(&column),
+                config.namespace.settings.attributes.get(&column),
                 Some(AttributeType::Array(_))
             ) {
                 fts = fts.document_granularity(DocumentGranularity::ListElement);
@@ -869,6 +876,7 @@ pub(crate) async fn add_attribute_columns(
     // A namespace written through the API created them with its table.
     let fields: Vec<_> = config
         .namespace
+        .settings
         .attributes
         .iter()
         .filter(|(name, _)| dataset.schema().field(name).is_none())

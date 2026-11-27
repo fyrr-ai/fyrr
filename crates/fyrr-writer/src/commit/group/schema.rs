@@ -13,14 +13,17 @@ pub(crate) fn check_schema_change(
     next: &NamespaceSettings,
 ) -> Result<()> {
     let mut rest = next.clone();
-    rest.attributes.clone_from(&current.attributes);
-    rest.attribute_indexes
-        .clone_from(&current.attribute_indexes);
+    rest.namespace
+        .attributes
+        .clone_from(&current.namespace.attributes);
+    rest.namespace
+        .attribute_indexes
+        .clone_from(&current.namespace.attribute_indexes);
     if rest != *current {
         return Err(WriterError::NamespaceSettingsFixed);
     }
-    for (name, kind) in &current.attributes {
-        match next.attributes.get(name) {
+    for (name, kind) in &current.namespace.attributes {
+        match next.namespace.attributes.get(name) {
             None => return Err(WriterError::AttributeRemoval),
             Some(other) if other != kind => return Err(WriterError::AttributeTypeChange),
             Some(_) => {}
@@ -117,8 +120,8 @@ async fn drop_attribute_indexes(
     lineage: &mut CommitLineage,
 ) -> Result<()> {
     let wanted: BTreeSet<_> = fyrr_reader::search::attribute_indexes(
-        &config.namespace.attributes,
-        &config.namespace.attribute_indexes,
+        &config.namespace.settings.attributes,
+        &config.namespace.settings.attribute_indexes,
     )
     .map(|(_, name, _)| name)
     .collect();
@@ -128,7 +131,7 @@ async fn drop_attribute_indexes(
         .iter()
         .map(|index| index.name.clone())
         .collect();
-    for (_, _, _, name) in possible_indexes(&config.namespace.attributes) {
+    for (_, _, _, name) in possible_indexes(&config.namespace.settings.attributes) {
         if built.contains(&name) && !wanted.contains(&name) {
             let before = dataset.version().version;
             native_step(

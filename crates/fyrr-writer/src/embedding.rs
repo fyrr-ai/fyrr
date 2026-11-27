@@ -101,7 +101,7 @@ impl WriterEmbedding {
         };
         Ok(Self {
             config: embedding,
-            element: config.namespace.dense_element,
+            element: config.namespace.settings.dense_element,
             client: None,
             cap,
             local,

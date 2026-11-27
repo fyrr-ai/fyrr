@@ -5,8 +5,8 @@ use fyrr_core::attributes::{
 use lance::index::DatasetIndexInternalExt;
 use lance_index::metrics::NoOpMetricsCollector;
 
-/// The newest chained permissions envelope applied, by source.
-pub(crate) type PermissionsApplied = BTreeMap<String, String>;
+/// The newest chained envelope resolved, by source.
+pub(crate) type ChainApplied = BTreeMap<String, String>;
 
 /// Publish native work through the same immutable manifest and fenced head CAS.
 /// `carry` holds the options of the indexes that stand as they were built: the
@@ -20,7 +20,7 @@ pub(crate) async fn publish(
     mut head: ServingHead,
     lineage: CommitLineage,
     receipts: Vec<String>,
-    permissions: PermissionsApplied,
+    chained: ChainApplied,
     acl_changed: bool,
     cursor_rewinds: Vec<String>,
     maintenance_completed: bool,
@@ -33,7 +33,7 @@ pub(crate) async fn publish(
         &lineage,
         1,
         receipts,
-        permissions,
+        chained,
         acl_changed,
         cursor_rewinds,
         maintenance_completed,
@@ -61,7 +61,7 @@ pub(crate) async fn write_manifest(
     lineage: &CommitLineage,
     first_sequence: u64,
     receipts: Vec<String>,
-    permissions: PermissionsApplied,
+    chained: ChainApplied,
     acl_changed: bool,
     mut cursor_rewinds: Vec<String>,
     maintenance_completed: bool,
@@ -91,12 +91,13 @@ pub(crate) async fn write_manifest(
         {
             (column, kind)
         } else if let Some((column, kind, option, _)) =
-            possible_indexes(&config.namespace.attributes)
+            possible_indexes(&config.namespace.settings.attributes)
                 .find(|(_, _, _, name)| *name == index.name)
         {
             (column, attribute_index_kind(kind, option))
         } else if let Some(name) = config
             .namespace
+            .settings
             .vectors
             .keys()
             .find(|name| fyrr_core::attributes::vector_index_name(name) == index.name)
@@ -158,18 +159,22 @@ pub(crate) async fn write_manifest(
     // switched on waits for maintenance, and a reader expects what is built.
     // A full-text index that stands has the analyzer it was built with, which
     // the settings may have left since.
-    let carry = carry.or(previous_manifest.as_ref().map(|m| &m.attribute_indexes));
+    let carry = carry.or(previous_manifest
+        .as_ref()
+        .map(|m| &m.settings.namespace.attribute_indexes));
     let attribute_indexes = indexes_present(
-        &config.namespace.attributes,
+        &config.namespace.settings.attributes,
         |name| indexes.iter().any(|index| index.name == name),
         |attribute| {
             carry
                 .and_then(|indexes| indexes.get(attribute))
                 .filter(|options| options.full_text)
-                .or_else(|| config.namespace.attribute_indexes.get(attribute))
+                .or_else(|| config.namespace.settings.attribute_indexes.get(attribute))
                 .and_then(|options| options.analyzer.clone())
         },
     );
+    let mut settings = namespace_settings(config);
+    settings.namespace.attribute_indexes = attribute_indexes;
     let reader_coverage = fyrr_reader::storage::coverage(&actual, "readers_idx");
     if dataset
         .manifest()
@@ -264,12 +269,12 @@ pub(crate) async fn write_manifest(
         sequence,
     )
     .await?;
-    // Carried forward, and moved on by the permissions envelopes this one applied.
-    let mut authorization_applied = previous_manifest
+    // Carried forward, and moved on by the chained envelopes this one resolved.
+    let mut chain_applied = previous_manifest
         .as_ref()
-        .map(|m| m.authorization_applied.clone())
+        .map(|m| m.chain_applied.clone())
         .unwrap_or_default();
-    authorization_applied.extend(permissions);
+    chain_applied.extend(chained);
     let manifest = ContentManifest {
         schema_version: MANIFEST_CONTRACT_VERSION,
         namespace: config.namespace.name.clone(),
@@ -285,14 +290,8 @@ pub(crate) async fn write_manifest(
                 .as_ref()
                 .and_then(|m| m.maintenance_completed_at)
         },
-        embedding: identity(&config.embedding),
+        settings,
         chunk_profile: chunk_identity(),
-        fts: config.namespace.fts_settings(),
-        dense_rq_bits: config.namespace.dense_rq_bits,
-        dense_partition_rows: config.namespace.dense_partition_rows,
-        dense_metric: config.namespace.dense_metric,
-        dense_element: config.namespace.dense_element,
-        retrieval_policy_digest: config.namespace.retrieval_digest(),
         indexes,
         merge_pair_rows: vector_segments
             .into_iter()
@@ -300,9 +299,6 @@ pub(crate) async fn write_manifest(
                 crate::maintenance::crowded_pair_rows(segments).map(|rows| (name, rows))
             })
             .collect(),
-        attributes: config.namespace.attributes.clone(),
-        attribute_indexes,
-        vectors: config.namespace.vectors.clone(),
         files,
         envelope_ids: receipts,
         lineage: lineage.clone(),
@@ -313,7 +309,7 @@ pub(crate) async fn write_manifest(
         incarnation: head.incarnation.clone(),
         envelope_evidence: evidence,
         stats,
-        authorization_applied,
+        chain_applied,
     };
     let manifest_path = format!("publications/{publication_id}.json");
     put_immutable(
