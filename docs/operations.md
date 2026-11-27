@@ -290,8 +290,11 @@ storage) blocks only the source whose chain names it: the committer and `fyrr
 writer status` walk every chain then, the walk that reaches it reports its
 source in `blocked_sources`, and the other sources go on. The committer logs
 `telemetry envelope=unreadable id=ID`, and the worker of that source fails
-until the envelope is put back or the source is purged. One that no chain
-names is left alone, unpublished.
+until the envelope is put back or the source is purged. Only content and
+permissions envelopes are chained: an unreadable envelope that no chain names,
+such as a members snapshot or a listing, could hide a revoke, so `fyrr writer
+commit` and `fyrr writer status` fail with `publication_invalid` for every
+source until it is put back.
 
 ## Upgrades
 

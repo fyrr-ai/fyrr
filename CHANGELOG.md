@@ -73,9 +73,11 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   See [tuning](docs/tuning.md).
 - A local put no longer opens a root lock file.
 - An envelope in the log that does not parse blocks only the source whose
-  chain names it, which `fyrr writer status` lists in `blocked_sources`; the
-  other sources go on publishing. Before, `writer commit` and `writer status`
-  failed with `publication_invalid` for every source. See
+  content or permissions chain names it, which `fyrr writer status` lists in
+  `blocked_sources`; the other sources go on publishing. Before, `writer
+  commit` and `writer status` failed with `publication_invalid` for every
+  source; they still do for an unreadable envelope that no chain names, such
+  as a members snapshot or a listing. See
   [operations](docs/operations.md#blocked-sources).
 - Content envelopes, of connectors and of the write API, count only once the
   cursor write confirmed them, as permission envelopes do: a page or a write

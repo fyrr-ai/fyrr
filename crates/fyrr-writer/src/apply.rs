@@ -520,8 +520,14 @@ pub async fn reconcile(
         }
     }
     for path in paths {
+        // Another source's envelope that does not parse is not this listing's:
+        // a part of it that is missing fails below.
         let item: PreparedEnvelope =
-            fyrr_reader::storage::read_contract(store.as_ref(), &path).await?;
+            match fyrr_reader::storage::read_contract(store.as_ref(), &path).await {
+                Ok(item) => item,
+                Err(fyrr_reader::storage::StorageError::PublicationInvalid) => continue,
+                Err(error) => return Err(error.into()),
+            };
         if item.source_id != envelope.source_id
             || item.rejection_generation != envelope.rejection_generation
         {
