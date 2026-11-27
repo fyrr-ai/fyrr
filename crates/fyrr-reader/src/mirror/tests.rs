@@ -790,7 +790,7 @@ mod latency {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn warming_starts_no_fill_while_a_request_runs() {
+    async fn warming_downloads_nothing_while_a_request_runs() {
         let Fixture {
             directory,
             mirror,
@@ -800,21 +800,24 @@ mod latency {
         let lease = mirror.pin(&files).await.unwrap();
         let store = LatencyStore::new(source, LATENCY);
         let request = lease.request().unwrap();
-        let warming = tokio::spawn({
-            let (mirror, store, files) = (mirror.clone(), store.clone(), files.clone());
-            async move { mirror.prewarm(Arc::new(store), &files).await }
-        });
-        tokio::time::sleep(LATENCY * 10).await;
-        assert_eq!(store.requests(), 0, "no fill starts while a request runs");
-        // The request's own fill does not wait for it.
+        // The request's own fill does not stop for it.
         mirror
             .prewarm_if_room(Arc::new(store.clone()), &files[..1])
             .await
             .unwrap();
         assert_eq!(store.requests(), 1);
+        // Warming takes what the mirror holds, and stops before a download.
+        assert_eq!(
+            mirror.prewarm(Arc::new(store.clone()), &files).await,
+            Err(Busy)
+        );
+        assert_eq!(store.requests(), 1, "no download while a request runs");
         drop(request);
-        warming.await.unwrap().unwrap();
-        assert_eq!(store.requests(), 20, "warming fills the rest once it ends");
+        mirror
+            .prewarm(Arc::new(store.clone()), &files)
+            .await
+            .unwrap();
+        assert_eq!(store.requests(), 20, "the rest once no request runs");
         std::fs::remove_dir_all(directory).unwrap();
     }
 

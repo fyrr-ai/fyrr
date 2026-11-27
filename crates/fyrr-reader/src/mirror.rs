@@ -52,7 +52,7 @@ pub struct MirrorStore {
     publication: Option<String>,
     /// The version manifests of that publication, relative to the dataset root.
     version_manifests: Option<Arc<std::collections::BTreeSet<String>>>,
-    /// Requests that hold a pin of this mirror now. Warming starts no fill
+    /// Requests that hold a pin of this mirror now. Warming downloads nothing
     /// while one runs, so that its copies do not take the bandwidth and the
     /// disk the request reads from.
     requests: Arc<tokio::sync::watch::Sender<usize>>,
@@ -999,9 +999,10 @@ impl MirrorStore {
     const PREWARM_CONCURRENCY: usize = 16;
 
     /// Fill and verify every manifest file. At most `PREWARM_CONCURRENCY` files
-    /// are filled at once, and none starts while a request holds a pin of
-    /// this mirror: the request reads in pages meanwhile. The first failure
-    /// stops new fills and in-flight fills finish. Fills reserve their bytes
+    /// are filled at once. While a request holds a pin of this mirror, no
+    /// download of a missing file starts: the request reads in pages, and
+    /// warming stops with `Busy` once its in-flight fills finish, to run again
+    /// later. The first failure stops new fills and in-flight fills finish. Fills reserve their bytes
     /// in the order their responses arrive, so under a tight budget a later
     /// file can take the room of an earlier one: a capacity failure may then
     /// be a consequence of another failure in the same batch. A failure other
@@ -1033,16 +1034,12 @@ impl MirrorStore {
                 && running.len() < Self::PREWARM_CONCURRENCY
                 && let Some((index, file)) = pending.next()
             {
-                let mut requests = warming.then(|| self.requests.subscribe());
-                let (store, prefix, root) = (&store, &prefix, &root);
-                running.push(async move {
-                    if let Some(requests) = &mut requests {
-                        // This mirror holds the sender: the wait cannot fail.
-                        let _ = requests.wait_for(|n| *n == 0).await;
-                    }
-                    self.prewarm_file(store, prefix, root, index, file, warming)
-                        .await
-                });
+                if warming && *self.requests.borrow() > 0 && !self.holds(&prefix, &root, file) {
+                    // After every other failure: this one only means later.
+                    first = Some(((false, usize::MAX), Busy));
+                    break;
+                }
+                running.push(self.prewarm_file(&store, &prefix, &root, index, file, warming));
             }
             let Some((index, result)) = running.next().await else {
                 break;
@@ -1056,11 +1053,25 @@ impl MirrorStore {
         }
         first.map_or(Ok(()), |(_, error)| Err(error))
     }
+    /// Whether the complete copy of `file` is here and verified in this process.
+    fn holds(&self, prefix: &str, root: &str, file: &fyrr_core::envelope::FileRef) -> bool {
+        let path = Path::from(format!("{root}/{}", file.path));
+        let Some(name) = self.blob_name(prefix, path.as_ref()) else {
+            return false;
+        };
+        let blob = self.directory.join(name);
+        Self::file_fingerprint(&blob)
+            .ok()
+            .flatten()
+            .is_some_and(|fingerprint| {
+                crate::sync::lock(&self.verified).get(&blob) == Some(&fingerprint)
+            })
+    }
     /// `prewarm` that reserves each missing file's room before any request,
     /// without evicting: a file the mirror has no room for costs no request and
     /// no head, and is left to be read in pages. For a caller that reads all of
     /// the files anyway and can read pages instead. A request fills through
-    /// it, so it does not wait for requests to end.
+    /// it, so requests do not stop it.
     pub(crate) async fn prewarm_if_room(
         &self,
         store: Arc<dyn ObjectStore>,

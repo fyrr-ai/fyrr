@@ -1344,7 +1344,10 @@ async fn a_reader_is_ready_only_once_it_holds_the_published_keys() {
     let deployment = Deployment::new().await;
     let published = deployment.publish(&[&key], &[&key], "");
     assert!(published.status.success(), "{}", report(&published));
-    // A slow start: the reader's first read of the published keys is held.
+    // A slow start: the reader's first read of the published keys is held
+    // for one and a half version checks. A held copy is refused once it is
+    // two checks older than the start of its read.
+    let interval = Duration::from_secs(2);
     let (gate, hook) = super::corrections::RequestGate::new(|request, _, after| {
         !after && request.starts_with("GET ") && request.contains("/api-keys.json ")
     });
@@ -1354,6 +1357,13 @@ async fn a_reader_is_ready_only_once_it_holds_the_published_keys() {
         hook,
     );
     let config = super::corrections::proxied(&deployment.shipped(), &endpoint);
+    let text = std::fs::read_to_string(&config).unwrap();
+    assert!(text.contains("[reader]"));
+    std::fs::write(
+        &config,
+        text.replace("[reader]", "[reader]\nversion_check_interval = '2s'"),
+    )
+    .unwrap();
     let root = deployment.root.to_path_buf();
     let start = tokio::spawn(async move { Reader::start_appended(&config, &root, key_http).await });
     let gate = tokio::task::spawn_blocking(move || {
@@ -1362,15 +1372,20 @@ async fn a_reader_is_ready_only_once_it_holds_the_published_keys() {
     })
     .await
     .unwrap();
+    let read = tokio::time::Instant::now();
     // A reader that answered `/readyz` now would refuse the key it cannot
     // yet look up, as `authorization_unavailable`.
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    tokio::time::sleep(interval).await;
     assert!(
         !start.is_finished(),
         "ready before the published keys were read"
     );
+    tokio::time::sleep_until(read + interval * 3 / 2).await;
     gate.release();
     let mut reader = start.await.unwrap();
+    // Past two checks from the start of the first read: the next read is
+    // due by then, however long the first one took.
+    tokio::time::sleep_until(read + interval * 23 / 10).await;
     assert_eq!(
         roots(&reader.call(&key.secret, 1, "search", search()).await),
         [deployment.doc(1)]

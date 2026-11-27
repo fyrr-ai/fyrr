@@ -1173,11 +1173,15 @@ pub(crate) async fn serve(reader: crate::search::PreparedReader) -> Result<()> {
             .version_check_interval
             .as_duration()
             .min(Duration::from_secs(30));
+        // A copy is as old as the start of its read, so the next read is due
+        // an interval after this one started, however long it took.
+        let started = tokio::time::Instant::now();
         let _ = admission.refresh_api_keys().await;
         let admission = admission.clone();
         tokio::spawn(async move {
-            let mut tick =
-                tokio::time::interval_at(tokio::time::Instant::now() + interval, interval);
+            let mut tick = tokio::time::interval_at(started + interval, interval);
+            // A read longer than an interval is followed by one read, not several.
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
                 tick.tick().await;
                 let _ = admission.refresh_api_keys().await;

@@ -303,10 +303,12 @@ impl Scheduler {
                 self.prepare(Trigger::Collect);
                 self.next_check = now + self.interval;
             }
+            // Warming downloads nothing while a request runs (see `prewarm`).
             if !self.handover
                 && !self.dormant
                 && self.preparation.is_none()
                 && self.warming.is_none()
+                && self.running.is_empty()
                 && now >= self.next_warm
                 && let Some(reader) = &self.template
                 && reader.generation_state != crate::generation::GenerationState::WarmReady
@@ -659,6 +661,11 @@ impl Scheduler {
                         "telemetry namespace=warmed name={}",
                         self.config.namespace.name
                     ));
+                }
+                // Requests came first: warm again once none runs.
+                Ok(Err(Busy)) => {
+                    self.next_warm = Instant::now();
+                    return;
                 }
                 Ok(Err(reason)) => {
                     let capacity = reason == MirrorCapacityExhausted;
