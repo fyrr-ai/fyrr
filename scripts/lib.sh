@@ -14,7 +14,7 @@ fi
 # uv must use its own managed, pinned Python (connectors/.python-version).
 export UV_PYTHON_PREFERENCE=only-managed
 
-PROTOC_DIR="$ROOT/target/tools/protoc"
+TOOLS_DIR="$ROOT/target/tools"
 
 # Image builds and release archives share this checkout-owned tag.
 worktree_image_tag() { printf 'wt-%s\n' "$(printf '%s' "$ROOT" | sha256sum | cut -c1-12)"; }
@@ -61,53 +61,39 @@ cargo() {
   esac
 }
 
-# Fetch the pinned protoc into target/tools once; verify its checksum.
-ensure_protoc() {
-  local bin="$PROTOC_DIR/bin/protoc"
-  if [[ -x "$bin" ]] && "$bin" --version | grep -qx "libprotoc $PROTOC_VERSION"; then
+# Fetch the pinned archive of <name> (protoc, helm, cargo-deny) into
+# target/tools/<name> once and verify its checksum. pins.env names the archive
+# per build host as <NAME>_URL_<ARCH> and <NAME>_SHA256_<ARCH>. The stamp,
+# written last, holds the mode and checksum of every extracted file, so a
+# missing, damaged or non-executable file and an unfinished extraction fetch
+# the archive again.
+ensure_tool() {
+  local name="$1" pin arch dir="$TOOLS_DIR/$1" tmp rc=0
+  pin="${name^^}"
+  pin="${pin//-/_}"
+  arch="$(uname -m)"
+  local url_var="${pin}_URL_${arch^^}" sha_var="${pin}_SHA256_${arch^^}"
+  [[ -n "${!url_var:-}" ]] || die "no pinned $name for $arch"
+  local url="${!url_var}" sha="${!sha_var}"
+  inventory() { (cd "$dir" && find . -type f ! -path "./.$sha" -printf '%m ' -exec sha256sum {} \; | LC_ALL=C sort); }
+  if [[ -f "$dir/.$sha" ]] && cmp -s "$dir/.$sha" <(inventory); then
     return 0
   fi
-  local url sha
-  case "$(uname -m)" in
-    x86_64) url="$PROTOC_URL_X86_64" sha="$PROTOC_SHA256_X86_64" ;;
-    aarch64) url="$PROTOC_URL_AARCH64" sha="$PROTOC_SHA256_AARCH64" ;;
-    *) die "no pinned protoc for $(uname -m)" ;;
-  esac
-  log "fetching protoc $PROTOC_VERSION"
-  local tmp
+  log "fetching $name"
   tmp="$(mktemp -d)"
-  curl -fsSL --retry 3 -o "$tmp/protoc.zip" "$url"
-  echo "$sha  $tmp/protoc.zip" | sha256sum -c --quiet - || die "protoc checksum mismatch"
-  rm -rf "$PROTOC_DIR"
-  mkdir -p "$PROTOC_DIR"
-  unzip -q "$tmp/protoc.zip" -d "$PROTOC_DIR"
-  chmod 0755 "$bin"
+  {
+    curl -fsSL --retry 3 -o "$tmp/archive" "$url" &&
+      echo "$sha  $tmp/archive" | sha256sum -c --quiet - &&
+      rm -rf "$dir" && mkdir -p "$dir" &&
+      case "$url" in
+        *.zip) unzip -q "$tmp/archive" -d "$dir" ;;
+        *) tar -xzf "$tmp/archive" --strip-components=1 -C "$dir" ;;
+      esac &&
+      inventory >"$tmp/stamp" &&
+      mv "$tmp/stamp" "$dir/.$sha"
+  } || rc=$?
   rm -rf "$tmp"
-}
-
-HELM_DIR="$ROOT/target/tools/helm"
-
-# Fetch the pinned helm into target/tools once; verify its checksum.
-ensure_helm() {
-  local bin="$HELM_DIR/helm"
-  if [[ -x "$bin" ]] && [[ "$("$bin" version --short)" == "v$HELM_VERSION+"* ]]; then
-    return 0
-  fi
-  local url sha
-  case "$(uname -m)" in
-    x86_64) url="$HELM_URL_X86_64" sha="$HELM_SHA256_X86_64" ;;
-    aarch64) url="$HELM_URL_AARCH64" sha="$HELM_SHA256_AARCH64" ;;
-    *) die "no pinned helm for $(uname -m)" ;;
-  esac
-  log "fetching helm $HELM_VERSION"
-  local tmp
-  tmp="$(mktemp -d)"
-  curl -fsSL --retry 3 -o "$tmp/helm.tar.gz" "$url"
-  echo "$sha  $tmp/helm.tar.gz" | sha256sum -c --quiet - || die "helm checksum mismatch"
-  rm -rf "$HELM_DIR"
-  mkdir -p "$HELM_DIR"
-  tar -xzf "$tmp/helm.tar.gz" --strip-components=1 -C "$HELM_DIR" --wildcards '*/helm'
-  rm -rf "$tmp"
+  return "$rc"
 }
 
 # Keep source locations stable across checkouts, Cargo homes and image builds.

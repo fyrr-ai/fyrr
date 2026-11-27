@@ -1,2 +1,3 @@
+# The one mbx pin. scripts/doctor and the workflows read it from here.
 [tools]
 mr-boxington = "1.30.0"

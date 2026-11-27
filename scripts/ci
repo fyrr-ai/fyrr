@@ -402,7 +402,7 @@ cases_start
 step "test-case ownership guard" none ownership_check
 step "reference docs" none reference_docs
 step "reader-only link check" none reader_link_check
-step "licenses and advisories" none cargo deny --locked check
+step "licenses and advisories" none "$TOOLS_DIR/cargo-deny/cargo-deny" --locked check
 step "python connector SDK" pytest python_checks
 step "python client" pytest python_client_checks
 step "example provider (test kit)" pytest example_provider

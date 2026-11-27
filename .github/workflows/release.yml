@@ -107,15 +107,14 @@ jobs:
 
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
 
-      - name: Install the pinned cargo-deny (scripts/doctor requires it)
-        run: |
-          source scripts/pins.env
-          cargo install --locked "cargo-deny@$CARGO_DENY_VERSION"
+      - name: Read the mbx pin (mise.toml)
+        id: mbx
+        run: echo "version=$(sed -n 's/^mr-boxington = "\(.*\)"/\1/p' mise.toml)" >> "$GITHUB_OUTPUT"
 
       - name: Shared Cargo compilation cache
         uses: jdx/mr-boxington-action@88acf2bb50552c7c508cbac13e5f8c576b95b1de # v1
         with:
-          version: '1.30.0'
+          version: ${{ steps.mbx.outputs.version }}
           backend: github
 
       - name: scripts/release

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Verifies the prerequisites for building and testing fyrr and prepares the
-# pinned local tools (protoc into target/tools, the uv-managed Python and the
-# locked connectors venv that the tests run providers in, the RustFS image).
+# pinned local tools (protoc and cargo-deny into target/tools, the uv-managed
+# Python and the locked connectors venv that the tests run providers in, the
+# RustFS image).
 # Idempotent; run it before the first work in a worktree.
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 cd "$ROOT"
@@ -37,19 +38,18 @@ for component in rustfmt clippy; do
   fi
 done
 
-if [[ "$(mbx --version 2>/dev/null)" == "mbx 1.30.0" ]]; then
-  ok "mr-boxington 1.30.0 (mise.toml)"
+mbx="$(sed -n 's/^mr-boxington = "\(.*\)"/\1/p' mise.toml)"
+if [[ "$(mbx --version 2>/dev/null)" == "mbx $mbx" ]]; then
+  ok "mr-boxington $mbx (mise.toml)"
 else
-  if ((LOCAL)); then warn "mr-boxington 1.30.0 missing (required for CI)"; else bad "mr-boxington 1.30.0 missing; run: mise install"; fi
+  if ((LOCAL)); then warn "mr-boxington $mbx missing (required for CI)"; else bad "mr-boxington $mbx missing; run: mise install"; fi
 fi
 
-if deny_version="$(cargo deny --version 2>/dev/null)" && [[ "$deny_version" == "cargo-deny $CARGO_DENY_VERSION" ]]; then
-  ok "$deny_version"
-else
-  if ((LOCAL)); then warn "cargo-deny $CARGO_DENY_VERSION missing (required for CI)"; else bad "cargo-deny $CARGO_DENY_VERSION missing; run: cargo install --locked cargo-deny@$CARGO_DENY_VERSION"; fi
-fi
-
-if ensure_protoc; then ok "protoc $PROTOC_VERSION (pinned, checksum verified): $PROTOC_DIR/bin/protoc"; else bad "protoc could not be prepared"; fi
+for tool in protoc cargo-deny; do
+  if ensure_tool "$tool"; then ok "$tool (pinned, checksum verified): ${TOOLS_DIR#"$ROOT"/}/$tool"
+  elif ((LOCAL)) && [[ $tool == cargo-deny ]]; then warn "cargo-deny $CARGO_DENY_VERSION missing (required for CI)"
+  else bad "$tool could not be prepared"; fi
+done
 
 python_version="$(cat connectors/.python-version)"
 if uv python find "$python_version" >/dev/null 2>&1 || uv python install "$python_version" >/dev/null 2>&1; then
