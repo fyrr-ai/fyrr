@@ -21,7 +21,7 @@ the release image and needs only Docker, curl, openssl and Python 3:
 
 ```sh
 mkdir fyrr-try && cd fyrr-try
-curl -fsSLO https://raw.githubusercontent.com/fyrr-ai/fyrr/v0.1.0/examples/quickstart/toy-embeddings.py
+curl -fsSLO https://raw.githubusercontent.com/fyrr-ai/fyrr/v0.1.1/examples/quickstart/toy-embeddings.py
 python3 toy-embeddings.py &
 openssl rand -hex 32 > identity.key && chmod 600 identity.key
 export FYRR_IDENTITY_KEY="$(cat identity.key)"
@@ -55,7 +55,7 @@ TOML
 fyrr() {
   docker run --rm -i --network host -e FYRR_IDENTITY_KEY \
     -v "$PWD/fyrr.toml:/etc/fyrr/fyrr.toml:ro" -v "$NOTES:/notes:ro" \
-    -v fyrr-quickstart:/home/fyrr ghcr.io/fyrr-ai/fyrr:0.1.0 --config /etc/fyrr/fyrr.toml "$@"
+    -v fyrr-quickstart:/home/fyrr ghcr.io/fyrr-ai/fyrr:0.1.1 --config /etc/fyrr/fyrr.toml "$@"
 }
 fyrr writer namespace create && fyrr writer sync && fyrr writer commit
 fyrr reader search 'a question about your notes' --limit 3
@@ -71,7 +71,7 @@ that the container gets `FYRR_IDENTITY_KEY` (in a new shell, first run
 claude mcp add fyrr --scope user \
   -- docker run --rm -i --network host -e FYRR_IDENTITY_KEY \
   -v "$PWD/fyrr.toml:/etc/fyrr/fyrr.toml:ro" -v fyrr-quickstart:/home/fyrr \
-  ghcr.io/fyrr-ai/fyrr:0.1.0 --config /etc/fyrr/fyrr.toml reader serve
+  ghcr.io/fyrr-ai/fyrr:0.1.1 --config /etc/fyrr/fyrr.toml reader serve
 ```
 
 The toy service matches words only; keep it running while you search. The

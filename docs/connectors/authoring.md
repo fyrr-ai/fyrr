@@ -257,11 +257,8 @@ that series. Pin the dependency to one series
 (`fyrr-connectors>=0.1.2,<0.2`). Contract documents carry `major.minor` too:
 a newer minor only adds optional fields.
 
-The package index has `fyrr-connectors` 0.1.0, and fyrr 0.1.1 shipped a
-0.1.1 wheel; both were built for the embedded interpreter of earlier fyrr
-versions, have no provider host and do not work with this fyrr. This fyrr
-needs the SDK wheel of its own release (0.1.2 or newer), installed from the
-release, or `[tool.uv.sources]` pointing at `connectors/` in a checkout, as
+This fyrr needs the SDK wheel of its own release, installed from the release,
+or `[tool.uv.sources]` pointing at `connectors/` in a checkout, as
 [the example provider](../../examples/markdown-provider/pyproject.toml) does.
 
 ## How a provider runs

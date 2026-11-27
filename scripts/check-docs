@@ -4,6 +4,7 @@
   scripts/ci --step="reference docs"       build both variants and check
   scripts/check-docs FULL_BIN READER_BIN   check against prebuilt binaries
   scripts/check-docs --static              committed schemas and fixtures only
+  scripts/check-docs --render              rewrite generated docs (routes, README index)
 
 docs/cli.md: every command and subcommand of both builds, their flags,
 positional arguments and defaults match `--help`; documented flag ranges
@@ -17,8 +18,10 @@ config/fyrr.example.toml passes `config check --no-env`.
 docs/mcp-tools.md: every tool argument of fixtures/mcp/tools-list.json is
 documented with its schema ranges; the error table equals
 fixtures/mcp/error-codes.json.
-docs/api-reference.md: every route of schemas/openapi.json has a section that
-names the process serving it, the role it needs and its body and answer.
+docs/api-reference.md: the route sections are the rendering of schemas/openapi.json
+(`--render` writes them).
+README.md: the documentation table is the rendering of site/lib/navigation.ts.
+Image and release tags in the docs are the workspace version.
 docs/guarantees.md: every row names an existing test, or says `No test yet`.
 docs/limits.md: one row per constant of crates/fyrr-core/src/limits.rs, with
 its value.
@@ -540,38 +543,99 @@ def check_namespace_delete_diagnostics():
             fail("docs/cli.md", f"unknown writer diagnostic: {code}")
 
 
-# --- API reference, guarantees, limits --------------------------------------------
+# --- API reference, docs index, guarantees, limits --------------------------------------------
 
 
 def schema_refs(node):
     """Names of the schemas a request or answer of a route points to."""
-    return set(re.findall(r'"\$ref": "#/components/schemas/(\w+)"', json.dumps(node)))
+    return sorted(set(re.findall(r'"\$ref": "#/components/schemas/(\w+)"', json.dumps(node))))
+
+
+def render_routes(spec):
+    """The route sections of docs/api-reference.md, one per route of the OpenAPI file."""
+    sections_ = []
+    for path, operations in spec["paths"].items():
+        for method, op in operations.items():
+            lines = [
+                f"## `{method.upper()} {path}`",
+                "",
+                op["summary"],
+                "",
+                f"Served by: {' and '.join(op['tags'])}.",
+                "",
+                f"Needs: {op['description']}",
+            ]
+            parts = [
+                f"{label}: {', '.join(f'`{name}`' for name in names)}."
+                for label, names in (
+                    ("Body", schema_refs(op.get("requestBody"))),
+                    ("Answer", schema_refs(op["responses"].get("200"))),
+                )
+                if names
+            ]
+            if parts:
+                lines += ["", " ".join(parts)]
+            sections_.append("\n".join(lines) + "\n")
+    return "\n".join(sections_)
+
+
+def api_reference_split():
+    """The hand-written part of docs/api-reference.md and its generated routes."""
+    text = (ROOT / "docs/api-reference.md").read_text()
+    start = text.index("\n## `") + 1
+    return text[:start], text[start:]
+
+
+def render_api_reference():
+    spec = json.loads((ROOT / "schemas/openapi.json").read_text())
+    head, _ = api_reference_split()
+    (ROOT / "docs/api-reference.md").write_text(head + render_routes(spec))
 
 
 def check_api_reference():
-    where = "docs/api-reference.md"
     spec = json.loads((ROOT / "schemas/openapi.json").read_text())
-    docs = sections(ROOT / where, 2)
-    routes = {
-        f"{method.upper()} {path}": op
-        for path, operations in spec["paths"].items()
-        for method, op in operations.items()
-    }
-    titles = {CODE.fullmatch(h).group(1) for h in docs if CODE.fullmatch(h)}
-    if titles != set(routes):
-        fail(where, f"route sections {sorted(titles)} != routes {sorted(routes)}")
-    for route, op in routes.items():
-        body = " ".join(docs.get(f"`{route}`", "").split())
-        served = " and ".join(op["tags"])
-        if not re.search(rf"Served by: {served}\b(?! and)", body):
-            fail(where, f"`{route}` does not say it is served by {served}")
-        for key in ("summary", "description"):
-            if op[key] not in body:
-                fail(where, f"`{route}`: {key} `{op[key]}` is not in its section")
-        named = schema_refs(op.get("requestBody")) | schema_refs(op["responses"].get("200"))
-        for name in sorted(named):
-            if f"`{name}`" not in body:
-                fail(where, f"`{route}`: schema `{name}` is not named")
+    if api_reference_split()[1] != render_routes(spec):
+        fail(
+            "docs/api-reference.md",
+            "the route sections differ from schemas/openapi.json; run scripts/check-docs --render",
+        )
+
+
+DOCS_INDEX = re.compile(r"(## Documentation\n\n)(\|.*(?:\n\|.*)*)")
+
+
+def render_docs_index():
+    """The README table of the documentation: the sections of site/lib/navigation.ts."""
+    source = (ROOT / "site/lib/navigation.ts").read_text()
+    navigation = json.loads(source.split("=", 1)[1].rsplit("as const", 1)[0])
+    rows = [
+        f"| {name} | "
+        + " · ".join(f"[{title}](docs/{page})" for page, title, _ in pages)
+        + " |"
+        for name, pages in navigation
+    ]
+    return "\n".join(["| Section | Pages |", "| --- | --- |", *rows])
+
+
+def render_docs_index_readme():
+    path = ROOT / "README.md"
+    path.write_text(DOCS_INDEX.sub(lambda m: m.group(1) + render_docs_index(), path.read_text()))
+
+
+def check_docs_index():
+    found = DOCS_INDEX.search((ROOT / "README.md").read_text())
+    if not found or found.group(2) != render_docs_index():
+        fail("README.md", "the documentation table differs from site/lib/navigation.ts; run --render")
+
+
+def check_release_tags():
+    """Image, download and archive names in the docs carry the workspace version."""
+    version = tomllib.loads((ROOT / "Cargo.toml").read_text())["workspace"]["package"]["version"]
+    tag = re.compile(r"(?:ghcr\.io/fyrr-ai/fyrr(?:-reader)?:|fyrr-ai/fyrr/v|fyrr-image-)(\d+\.\d+\.\d+)")
+    for page in [*sorted((ROOT / "docs").rglob("*.md")), ROOT / "README.md", ROOT / "CONTRIBUTING.md"]:
+        for found in tag.findall(page.read_text()):
+            if found != version:
+                fail(str(page.relative_to(ROOT)), f"release tag {found}, workspace version {version}")
 
 
 def check_guarantees():
@@ -625,10 +689,14 @@ def check_limits():
 
 
 def main():
+    if sys.argv[1:] == ["--render"]:
+        render_api_reference()
+        render_docs_index_readme()
+        return 0
     static = sys.argv[1:] == ["--static"]
     if not static and len(sys.argv) != 3:
         sys.exit(
-            "usage: scripts/check-docs --static | FULL_BIN READER_BIN "
+            "usage: scripts/check-docs --static | --render | FULL_BIN READER_BIN "
             '(or scripts/ci --step="reference docs")'
         )
     if static:
@@ -640,6 +708,8 @@ def main():
     check_mcp_tools()
     check_namespace_delete_diagnostics()
     check_api_reference()
+    check_docs_index()
+    check_release_tags()
     check_guarantees()
     check_limits()
     for error in errors:
@@ -650,13 +720,15 @@ def main():
     if static:
         print(
             f"ok: {', '.join(CONFIG_DOCS)}, docs/mcp-tools.md, docs/api-reference.md, "
-            "docs/guarantees.md and docs/limits.md match committed schemas, fixtures and sources"
+            "docs/guarantees.md, docs/limits.md, the README index and the release tags match committed "
+            "schemas, fixtures and sources"
         )
         print("n/e: CLI help, flag-boundary and example runtime checks (--static)")
     else:
         print(
             f"ok: docs/cli.md, {', '.join(CONFIG_DOCS)}, docs/mcp-tools.md, "
-            "docs/api-reference.md, docs/guarantees.md and docs/limits.md match the code"
+            "docs/api-reference.md, docs/guarantees.md, docs/limits.md, the README index and the "
+            "release tags match the code"
         )
     return 0
 

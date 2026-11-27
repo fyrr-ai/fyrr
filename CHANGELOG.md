@@ -23,9 +23,9 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   written through the API can be deleted over HTTP, and with the write API on an
   unauthenticated `DELETE` of a name that is not a namespace name answers `404
   not_found`, not `401`. Errors of the writer map as on the write route: a
-  namespace or storage root of v0.1.x answers `409` (`namespace_layout_old`,
-  `storage_root_old`), not `503`, and a `401` carries `WWW-Authenticate:
-  Bearer`. The clients no longer read `scimType`.
+  namespace or storage root of an older build answers `409`
+  (`namespace_layout_old`, `storage_root_old`), not `503`, and a `401`
+  carries `WWW-Authenticate: Bearer`. The clients no longer read `scimType`.
 - One analyzer cuts the text of a namespace for its index, its highlights and
   its excerpts. The keys `fts_stem`, `fts_remove_stop_words`,
   `fts_ascii_folding` and `fts_max_token_length` are gone (a file that sets one
@@ -71,18 +71,7 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   times the dense lane depth, which for one-bit codes grows with the rows the
   probes inspect. A configuration that sets `{ mode = "legacy" }` is refused.
   See [tuning](docs/tuning.md).
-- **Breaking (v0.2.0):** every local storage root written by v0.1.x or an
-  earlier build (it holds `.fyrr-storage.lock` or `.fyrr-storage.stage`) is
-  refused with `storage_root_old`. Recreate its namespaces in a new root with
-  v0.2.0; remove those files only once no older writer runs. A namespace
-  that v0.1.x or an earlier build wrote is refused with `namespace_layout_old`
-  in any root, S3 included: one of its stored contracts is of an older major.
-  Recreate it under a
-  new name (or, with every writer stopped and a copy kept, after deleting its
-  `namespaces/<name>/` prefix), sync its sources again and write the API
-  documents again. A
-  local put no longer opens a root lock file. See
-  [operations](docs/operations.md#upgrades).
+- A local put no longer opens a root lock file.
 - A permission read is published whole, in one publication, or not at all:
   its roots are written in parts and an envelope without roots ends the read
   and moves the cursor, and the committer writes the rows a read rewrites in
@@ -116,8 +105,7 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   typed attributes (#225) and this change can be refused: one that declares the
   five connector names with exactly their types, one at the limit of declared
   attributes (the five count), or one that sets one of the five to another type.
-  Namespaces and roots of v0.1.x are refused, as above. See
-  [tuning](docs/tuning.md#namespaceattributes).
+  See [tuning](docs/tuning.md#namespaceattributes).
 
 ### Added
 
@@ -516,10 +504,7 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   the installation. The full image includes the SDK and bundled providers.
   Commands that run no connector need no Python. Each sync kind runs in a
   fresh Python process; the worker memory limit applies to that process
-  separately. What breaks for existing users:
-  - The embedded interpreter is gone: the binary links no Python
-    (`PYO3_PYTHON`, `libpython`).
-  - SDK 0.1.2 or newer is needed; 0.1.0 and 0.1.1 do not work.
+  separately. Also:
   - A provider that aborts fails its source with `the provider failed`.
   - `PATH`, `VIRTUAL_ENV` and names starting with `PYTHON` or `LD_` are
     reserved names for stored credentials a source references;

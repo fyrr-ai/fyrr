@@ -79,6 +79,7 @@ scripts/ci --images     # full suite plus image checks (compiles release binarie
 scripts/ci --jobs=2     # bound concurrent Rust cases (default: CPU/memory based)
 scripts/ci --step=configuration "--step=schema drift" # exact names; others n/e
 scripts/ci --step="reference docs" # standalone reference-doc verification
+scripts/check-docs --render        # rewrite the generated docs: API routes, README index
 ```
 
 `scripts/ci` runs doctor, rustfmt, clippy for the workspace and the
