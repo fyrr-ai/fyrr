@@ -93,7 +93,7 @@ See [provider installation and discovery](deployment.md#providers-in-the-image).
 | Code | Meaning |
 | --- | --- |
 | `restore_horizon_expired` | The publication is not retained, or older than `writer.purge_window`. Nothing was published. |
-| `restore_unsupported` | The namespace holds connector sources. It is a derived index: sync it again, or copy a backup back with `writer namespace copy`. Nothing was written. |
+| `restore_unsupported` | The namespace holds connector sources, or a source is retired and its purged rows would come back. A namespace of connector sources is a derived index: sync it again, or copy a backup back with `writer namespace copy`. Nothing was written. |
 
 ### Namespace copy failures
 

@@ -162,7 +162,9 @@ version under the namespace lease: its documents come back as they were then,
 **with the readers they had then**. The namespace's current settings, policy and
 identity stay, and a write the API accepts during the restore is applied after
 it. A namespace of connector sources is a derived index and fails with
-`restore_unsupported`: sync it again, or copy a backup back (see below). `fyrr
+`restore_unsupported`: sync it again, or copy a backup back (see below). A copy
+of one fails the same way, and so does a namespace with a retired source, whose
+purged rows a restore would bring back. `fyrr
 writer verify` scans the whole pinned publication and needs only namespace
 storage.
 

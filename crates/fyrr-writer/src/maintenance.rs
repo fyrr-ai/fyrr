@@ -377,10 +377,15 @@ async fn command_recover(
 /// rows come back as they were then, with the readers they had. Only a
 /// namespace written through the write API alone restores; one that holds a
 /// connector source fails with `restore_unsupported` and recovers by a sync or
-/// `writer namespace copy`.
+/// `writer namespace copy`. So does one with a retired source, whose purged
+/// rows a restore would bring back.
 pub async fn restore(config: &Config, publication: Option<&str>) -> Result<serde_json::Value> {
     if publication.is_some_and(|id| !fyrr_core::limits::prefixed_hex(id, "pub-", 32)) {
         return Err(WriterError::PublicationIdInvalid);
+    }
+    // Decided before the lease, so a refusal writes nothing.
+    if !config.sources.is_empty() || holds_other_sources(config).await? {
+        return Err(WriterError::RestoreUnsupported);
     }
     crate::lease::LeaseGuard::with(config, |lease| async move {
         // Keep the native publication future off the caller's stack.
@@ -389,25 +394,37 @@ pub async fn restore(config: &Config, publication: Option<&str>) -> Result<serde
     .await
 }
 
+/// Whether the namespace has a cursor of a connector source, which a copy keeps
+/// too, or a retired source of any kind. A connector's source ID starts with a
+/// letter or digit, and the write API's with `_`.
+async fn holds_other_sources(config: &Config) -> Result<bool> {
+    let Some(head) = fyrr_reader::storage::optional_head(config).await? else {
+        return Ok(false);
+    };
+    let (store, root) = namespace_store(config)?;
+    let policy: PolicyArtifact =
+        fyrr_reader::storage::artifact(store.as_ref(), &root, &head.policy).await?;
+    if !policy.retired_sources.is_empty() {
+        return Ok(true);
+    }
+    let mut cursors = store.list(Some(&root.clone().join("cursors")));
+    while let Some(object) = cursors.try_next().await? {
+        if !object
+            .location
+            .filename()
+            .is_some_and(|name| name.starts_with('_'))
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 async fn restore_held(
     config: &Config,
     lease: &LeaseGuard,
     publication: Option<&str>,
 ) -> Result<serde_json::Value> {
-    // A source that ever published names its chain in every later manifest.
-    let (store, root) = namespace_store(config)?;
-    let head = lease.head().await?;
-    let connector = !config.sources.is_empty()
-        || commit::previous_manifest(store.as_ref(), &root, &head)
-            .await?
-            .is_some_and(|m| {
-                m.chain_applied
-                    .keys()
-                    .any(|source| source != fyrr_core::connector::API_SOURCE_ID)
-            });
-    if connector {
-        return Err(WriterError::RestoreUnsupported);
-    }
     // Recover an unpublished native suffix, so the restore follows the head.
     commit::commit_one(config, false, lease, Vec::new(), None).await?;
     let head = lease.head().await?;
