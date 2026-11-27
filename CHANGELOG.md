@@ -678,6 +678,13 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Fixed
 
+- A root whose rows are over `writer.commit.group_max_rows` or
+  `group_max_bytes` no longer fails `fyrr writer restore` or the commit of a
+  content change that replaces it with `envelope_bounds_invalid`, nor does the
+  commit of more deletes than a group holds before the first content: the
+  rows are written in steps within those bounds, in one publication, as a
+  permission read's are. A patch of such a root is still refused
+  (`envelope_bounds_exceeded`).
 - A serving reader no longer turns its generation cold when a second
   subject's admission is built. The roots of the vector index grow a little
   after their first searches, and each admission compared that new size with
