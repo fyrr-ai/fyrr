@@ -46,7 +46,9 @@ else
 fi
 
 for tool in protoc cargo-deny; do
-  if ensure_tool "$tool"; then ok "$tool (pinned, checksum verified): ${TOOLS_DIR#"$ROOT"/}/$tool"; else bad "$tool could not be prepared"; fi
+  if ensure_tool "$tool"; then ok "$tool (pinned, checksum verified): ${TOOLS_DIR#"$ROOT"/}/$tool"
+  elif ((LOCAL)) && [[ $tool == cargo-deny ]]; then warn "cargo-deny $CARGO_DENY_VERSION missing (required for CI)"
+  else bad "$tool could not be prepared"; fi
 done
 
 python_version="$(cat connectors/.python-version)"

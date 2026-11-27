@@ -63,31 +63,35 @@ cargo() {
 
 # Fetch the pinned archive of <name> (protoc, helm, cargo-deny) into
 # target/tools/<name> once and verify its checksum. pins.env names the archive
-# per build host as <NAME>_URL_<ARCH> and <NAME>_SHA256_<ARCH>.
+# per build host as <NAME>_URL_<ARCH> and <NAME>_SHA256_<ARCH>. The stamp,
+# written last, holds the checksum of every extracted file, so a missing or
+# damaged file and an unfinished extraction fetch the archive again.
 ensure_tool() {
-  local name="$1" pin arch dir="$TOOLS_DIR/$1"
+  local name="$1" pin arch dir="$TOOLS_DIR/$1" tmp rc=0
   pin="${name^^}"
   pin="${pin//-/_}"
   arch="$(uname -m)"
   local url_var="${pin}_URL_${arch^^}" sha_var="${pin}_SHA256_${arch^^}"
   [[ -n "${!url_var:-}" ]] || die "no pinned $name for $arch"
   local url="${!url_var}" sha="${!sha_var}"
-  if [[ "$(cat "$dir/.sha256" 2>/dev/null)" == "$sha" ]]; then
+  if (cd "$dir" 2>/dev/null && sha256sum -c --status ".$sha" &>/dev/null); then
     return 0
   fi
   log "fetching $name"
-  local tmp
   tmp="$(mktemp -d)"
-  curl -fsSL --retry 3 -o "$tmp/archive" "$url"
-  echo "$sha  $tmp/archive" | sha256sum -c --quiet - || die "$name checksum mismatch"
-  rm -rf "$dir"
-  mkdir -p "$dir"
-  case "$url" in
-    *.zip) unzip -q "$tmp/archive" -d "$dir" ;;
-    *) tar -xzf "$tmp/archive" --strip-components=1 -C "$dir" ;;
-  esac
-  echo "$sha" >"$dir/.sha256"
+  {
+    curl -fsSL --retry 3 -o "$tmp/archive" "$url" &&
+      echo "$sha  $tmp/archive" | sha256sum -c --quiet - &&
+      rm -rf "$dir" && mkdir -p "$dir" &&
+      case "$url" in
+        *.zip) unzip -q "$tmp/archive" -d "$dir" ;;
+        *) tar -xzf "$tmp/archive" --strip-components=1 -C "$dir" ;;
+      esac &&
+      (cd "$dir" && find . -type f -exec sha256sum {} + >"$tmp/stamp") &&
+      mv "$tmp/stamp" "$dir/.$sha"
+  } || rc=$?
   rm -rf "$tmp"
+  return "$rc"
 }
 
 # Keep source locations stable across checkouts, Cargo homes and image builds.
