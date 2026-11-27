@@ -72,6 +72,10 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   probes inspect. A configuration that sets `{ mode = "legacy" }` is refused.
   See [tuning](docs/tuning.md).
 - A local put no longer opens a root lock file.
+- A frozen namespace (`read_only`) still takes connector syncs of permissions
+  and members, and commits them, so a revoke is published while it is frozen.
+  Content, listings, schema changes and API writes stay refused with
+  `namespace_read_only`. See [Freezing a namespace](docs/http-api.md#freezing-a-namespace).
 - Content envelopes, of connectors and of the write API, count only once the
   cursor write confirmed them, as permission envelopes do: a page or a write
   whose worker died before its cursor write never publishes, and the next read
