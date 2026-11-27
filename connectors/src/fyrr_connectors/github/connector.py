@@ -471,20 +471,9 @@ class GitHub(Connector[Settings, Scope]):
 
     def listing(self, cursor: str | None) -> Iterator[ListingBatch]:
         self._open()
-        roots = sorted(self._listing_ids())
-        listing_id = hashlib.sha256(f"{cursor}:{time.time_ns()}".encode()).hexdigest()
-        width = min(256, self.context.limits.max_rows)
-        parts = [roots[start : start + width] for start in range(0, len(roots), width)] or [[]]
-        for part, ids in enumerate(parts):
-            last = part + 1 == len(parts)
-            yield ListingBatch(
-                listing_id=listing_id,
-                part=part,
-                last=last,
-                complete=last and self.context.next_revisions is not None,
-                root_ids=ids,
-                cursor=f"{listing_id}:{part}",
-            )
+        yield from self.listing_batches(
+            sorted(self._listing_ids()), lambda: self.context.next_revisions is not None
+        )
 
     def permissions(self, cursor: str | None) -> Iterator[PermissionBatch]:
         if self.context.permissions == "fixed":

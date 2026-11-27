@@ -117,7 +117,7 @@ state. The provider metadata lists the kinds the class overrides.
 | Method | Yields | Required |
 | --- | --- | --- |
 | `content(cursor)` | `ContentBatch(changes, cursor)` with an Arrow batch from `document_changes([...])` | yes |
-| `listing(cursor)` | `ListingBatch(listing_id, part, last, complete, root_ids, cursor)`: a full-ID listing in parts; `complete=True` only on the last part and only if every document in scope was seen. fyrr derives deletes from a complete listing and never from an incomplete one. | yes for reconcile |
+| `listing(cursor)` | `ListingBatch(listing_id, part, last, complete, root_ids, cursor)`: a full-ID listing in parts; `complete=True` only on the last part and only if every document in scope was seen. fyrr derives deletes from a complete listing and never from an incomplete one. `self.listing_batches(root_ids, lambda: complete)` cuts the IDs into parts of `limits.max_rows` under one listing ID. | yes for reconcile |
 | `permissions(cursor)` | `PermissionBatch(documents, container_grants, cursor)`: `DocumentPermission(root_id, permission_revision, readers, containers)` and `ContainerGrant(container_id, container_kind, permission_revision, readers)` | for `sync` connections |
 | `members(cursor)` | `PrincipalBatch(snapshot_id, part, last, users, groups, cursor)`: a full snapshot of `SourceUser(id, active, email, email_verification)` and `SourceGroup(id, members)` | for `sync` connections |
 

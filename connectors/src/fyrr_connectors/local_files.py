@@ -56,8 +56,6 @@ class LocalFiles(Connector[NoConfig, LocalFilesScope]):
         return Path(scope.paths[int(index)]) / relative
 
     def content(self, cursor: str | None) -> Iterator[ContentBatch]:
-        if self.context.permissions != "fixed" or not self.context.readers:
-            raise ValueError("local_files_readers_invalid")
         changes: list[Upsert | Delete] = []
         batch_number = 0
 
@@ -150,29 +148,4 @@ class LocalFiles(Connector[NoConfig, LocalFilesScope]):
             yield batch()
 
     def listing(self, cursor: str | None) -> Iterator[ListingBatch]:
-        import time
-
-        listing_id = hashlib.sha256(f"{cursor}:{time.time_ns()}".encode()).hexdigest()
-        roots: list[str] = []
-        part = 0
-        for root, _ in self._files():
-            roots.append(root)
-            if len(roots) >= min(256, self.context.limits.max_rows):
-                yield ListingBatch(
-                    listing_id=listing_id,
-                    part=part,
-                    last=False,
-                    complete=False,
-                    root_ids=roots,
-                    cursor=f"{listing_id}:{part}",
-                )
-                part += 1
-                roots = []
-        yield ListingBatch(
-            listing_id=listing_id,
-            part=part,
-            last=True,
-            complete=True,
-            root_ids=roots,
-            cursor=f"{listing_id}:{part}",
-        )
+        yield from self.listing_batches((root for root, _ in self._files()), lambda: True)

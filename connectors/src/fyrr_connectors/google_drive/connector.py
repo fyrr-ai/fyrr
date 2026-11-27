@@ -318,10 +318,8 @@ class GoogleDrive(Connector[Settings, Scope]):
     @_run
     def listing(self, cursor: str | None) -> Iterator[ListingBatch]:
         feeds = self._open()
-        listing_id = hashlib.sha256(f"{cursor}:{time.time_ns()}".encode()).hexdigest()
-        rows = min(LOOKUP_ROWS, self.context.limits.max_rows)
-        roots: list[str] = []
-        part = 0
+        found: list[str] = []
+        settled = False
         fields = LISTING_FIELDS
         # Every listed ID: another owner's file can be listed by each user it
         # is shared with, and the catch-up must know what is still missing.
@@ -333,83 +331,69 @@ class GoogleDrive(Connector[Settings, Scope]):
                 return False
             budget.add(file["id"])
             seen.add(file["id"])
-            roots.append(file["id"])
+            found.append(file["id"])
             return True
 
-        def full_parts() -> Iterator[ListingBatch]:
-            nonlocal part
-            while len(roots) > rows:
-                yield ListingBatch(
-                    listing_id=listing_id,
-                    part=part,
-                    last=False,
-                    complete=False,
-                    root_ids=roots[:rows],
-                    cursor=f"{listing_id}:{part}",
-                )
-                part += 1
-                del roots[:rows]
+        def drain() -> Iterator[str]:
+            ids, found[:] = list(found), []
+            yield from ids
 
-        # The feeds are listed one after another, so a file that moves from a
-        # feed not yet listed into one already listed is in neither listing.
-        # The changes of every feed since before the listing name such a file.
-        began = datetime.now(UTC) + CLOCK_SKEW
-        since = Cursor(feeds={feed.key: start_token(self._client, feed) for feed in feeds})
-        # Any failed page raises: no final part, so nothing is deleted.
-        for feed in feeds:
-            for files in listed(self._client, feed, self._mime_types, fields):
-                for file in files:
-                    take(feed, file)
-                yield from full_parts()
-        changed = f"{fields},mimeType,trashed,createdTime"
-        drives = {feed.drive_id for feed in feeds if feed.drive_id}
-        owners = {feed.subject for feed in feeds if feed.drive_id is None and feed.owned}
-
-        def elsewhere(file: dict[str, Any]) -> bool:
-            """Whether another feed of this listing reports the file."""
-            if file.get("driveId"):
-                return file["driveId"] in drives
-            return any(
-                str(owner.get("emailAddress", "")).lower() in owners
-                for owner in file.get("owners", [])
-            )
-
-        settled = False
-        for _ in range(CATCH_UP_PASSES):
-            # Files the listing missed: taken here, or seen in a feed they
-            # have left for another one, whose changes the next pass reads (a
-            # file that changed feed again while this pass ran). A file
-            # created since the listing began is listed too but asks for no
-            # further pass: it cannot have been missed by moving, and new
-            # files never stop arriving in a large domain.
-            missed = 0
+        def roots() -> Iterator[str]:
+            nonlocal settled
+            types = self._mime_types
+            # The feeds are listed one after another, so a file that moves from a
+            # feed not yet listed into one already listed is in neither listing.
+            # The changes of every feed since before the listing name such a file.
+            began = datetime.now(UTC) + CLOCK_SKEW
+            since = Cursor(feeds={feed.key: start_token(self._client, feed) for feed in feeds})
+            # Any failed page raises: no final part, so nothing is deleted.
             for feed in feeds:
-                for files, step in pages(
-                    self._client, feed, since, self._mime_types, changed, recover_invalid=False
-                ):
-                    for candidates in self._candidates(feed, files, changed, every_folder=True):
-                        for file in candidates:
-                            if file.get("mimeType") not in self._mime_types or file.get("trashed"):
-                                continue
-                            unlisted = file["id"] not in seen
-                            if take(feed, file) or (
-                                unlisted and not feed.owns(file) and elsewhere(file)
-                            ):
-                                created = _instant(file.get("createdTime"))
-                                missed += created is None or created <= began
-                    step()
-                    yield from full_parts()
-            if not missed:
-                settled = True
-                break
-        yield ListingBatch(
-            listing_id=listing_id,
-            part=part,
-            last=True,
-            complete=settled,
-            root_ids=roots,
-            cursor=f"{listing_id}:{part}",
-        )
+                for files in listed(self._client, feed, types, fields):
+                    for file in files:
+                        take(feed, file)
+                    yield from drain()
+            changed = f"{fields},mimeType,trashed,createdTime"
+            drives = {feed.drive_id for feed in feeds if feed.drive_id}
+            owners = {feed.subject for feed in feeds if feed.drive_id is None and feed.owned}
+
+            def elsewhere(file: dict[str, Any]) -> bool:
+                """Whether another feed of this listing reports the file."""
+                if file.get("driveId"):
+                    return file["driveId"] in drives
+                return any(
+                    str(owner.get("emailAddress", "")).lower() in owners
+                    for owner in file.get("owners", [])
+                )
+
+            for _ in range(CATCH_UP_PASSES):
+                # Files the listing missed: taken here, or seen in a feed they
+                # have left for another one, whose changes the next pass reads (a
+                # file that changed feed again while this pass ran). A file
+                # created since the listing began is listed too but asks for no
+                # further pass: it cannot have been missed by moving, and new
+                # files never stop arriving in a large domain.
+                missed = 0
+                for feed in feeds:
+                    for files, step in pages(
+                        self._client, feed, since, types, changed, recover_invalid=False
+                    ):
+                        for candidates in self._candidates(feed, files, changed, every_folder=True):
+                            for file in candidates:
+                                if file.get("mimeType") not in types or file.get("trashed"):
+                                    continue
+                                unlisted = file["id"] not in seen
+                                if take(feed, file) or (
+                                    unlisted and not feed.owns(file) and elsewhere(file)
+                                ):
+                                    created = _instant(file.get("createdTime"))
+                                    missed += created is None or created <= began
+                        step()
+                        yield from drain()
+                if not missed:
+                    settled = True
+                    break
+
+        yield from self.listing_batches(roots(), lambda: settled)
 
     def _listed_permissions(
         self, subject: str, file_id: str, **params: Any

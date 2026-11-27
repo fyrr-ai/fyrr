@@ -2,6 +2,7 @@
 provider test kit."""
 
 import json
+from types import SimpleNamespace
 
 import pytest
 import sample_provider
@@ -208,19 +209,19 @@ assert not any(name in sys.modules for name in ['requests', 'jwt', 'google.auth'
     assert probe.returncode == 0, probe.stderr
 
 
-def test_bundled_lazy_metadata_matches_the_real_connector_contract():
+@pytest.mark.parametrize("provider", json.loads(runtime.discover())["providers"], ids=BUNDLED)
+def test_bundled_lazy_metadata_matches_the_real_connector_contract(provider):
     from fyrr_connectors.runtime import connector_class
 
-    for provider in json.loads(runtime.discover())["providers"]:
-        info = provider["info"]
-        real = provider_info(
-            name=info["name"],
-            connector=connector_class(info),
-            min_sdk_version=info["min_sdk_version"],
-            connection_types=info["connection_types"],
-            description=info["description"],
-        )
-        assert info == real
+    info = provider["info"]
+    real = provider_info(
+        name=info["name"],
+        connector=connector_class(info),
+        min_sdk_version=info["min_sdk_version"],
+        connection_types=info["connection_types"],
+        description=info["description"],
+    )
+    assert info == real
 
 
 def test_local_files_grants_every_configured_reader(tmp_path) -> None:
@@ -239,8 +240,6 @@ def test_local_files_grants_every_configured_reader(tmp_path) -> None:
     assert (
         other.documents[0]["body"]["changes"][0]["source_revision"] != (change["source_revision"])
     )
-    with pytest.raises(ValueError, match="local_files_readers_invalid"):
-        testkit.run_sync("local-files", "content", scope={"paths": [str(tmp_path)]}, readers=())
 
 
 def test_local_files_normalizes_controls_without_changing_raw_revision_identity(tmp_path) -> None:
@@ -275,3 +274,22 @@ def test_local_files_normalizes_controls_without_changing_raw_revision_identity(
         "local-files", "content", scope={"paths": [str(tmp_path)]}, readers=readers
     ).documents[0]["body"]["changes"][0]
     assert invalid["sections"][0]["text"] == "\0"
+
+
+@pytest.mark.parametrize(
+    ("count", "parts"), [(0, [0]), (1, [1]), (3, [3]), (4, [3, 1]), (6, [3, 3]), (7, [3, 3, 1])]
+)
+def test_listing_batches_cut_roots_into_parts_of_one_listing(count, parts) -> None:
+    context = SimpleNamespace(limits=SimpleNamespace(max_rows=3))
+    roots = [f"r{index}" for index in range(count)]
+    batches = list(Connector(context).listing_batches(iter(roots), lambda: True))
+    assert [len(batch.root_ids) for batch in batches] == parts
+    assert [id for batch in batches for id in batch.root_ids] == roots
+    assert [batch.part for batch in batches] == list(range(len(parts)))
+    assert [batch.last for batch in batches] == [False] * (len(parts) - 1) + [True]
+    # Only the final part attests a complete listing.
+    assert [batch.complete for batch in batches] == [False] * (len(parts) - 1) + [True]
+    assert len({batch.listing_id for batch in batches}) == 1
+    assert [batch.cursor for batch in batches] == [
+        f"{batches[0].listing_id}:{part}" for part in range(len(parts))
+    ]

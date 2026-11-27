@@ -14,7 +14,6 @@ from ..connector import (
     ContainerGrant,
     ContentBatch,
     DocumentPermission,
-    ListingBatch,
     PermissionBatch,
     PrincipalBatch,
     SyncKind,
@@ -493,20 +492,9 @@ class Slack(Connector[Settings, Scope]):
         # Reconcile has its own cursor. Published root anchors are not a content
         # cursor: reconstruct the bounded seed ledger from live first messages.
         self._open()
-        roots = sorted(self._listing_ids())
-        listing_id = hashlib.sha256(json.dumps(roots).encode()).hexdigest()
-        width = max(1, self.context.limits.max_rows)
-        parts = [roots[start : start + width] for start in range(0, len(roots), width)] or [[]]
-        for part, values in enumerate(parts):
-            last = part == len(parts) - 1
-            yield ListingBatch(
-                listing_id=listing_id,
-                part=part,
-                last=last,
-                complete=last and self.context.next_revisions is not None,
-                root_ids=values,
-                cursor=f"{listing_id}:{part}",
-            )
+        yield from self.listing_batches(
+            sorted(self._listing_ids()), lambda: self.context.next_revisions is not None
+        )
 
     def _access(self):
         self._open()

@@ -10,10 +10,11 @@ within `context.limits`.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import ClassVar, Generic, TypeVar
+from uuid import uuid4
 
 import pyarrow as pa
 
@@ -174,6 +175,39 @@ class Connector(Generic[SettingsT, ScopeT]):
     def listing(self, cursor: str | None) -> Iterator[ListingBatch]:
         """A full-ID listing of every document in scope (reconcile)."""
         raise NotImplementedError
+
+    def listing_batches(
+        self, roots: Iterable[str], complete: Callable[[], bool]
+    ) -> Iterator[ListingBatch]:
+        """Cut the root IDs a `listing` found into parts of `limits.max_rows`
+        IDs under one new listing ID. `roots` is read lazily, so a listing
+        streams. `complete` is called once `roots` is exhausted and says
+        whether the listing saw every document in scope."""
+        listing_id = uuid4().hex
+        width = max(1, self.context.limits.max_rows)
+        part = 0
+        ids: list[str] = []
+        for root in roots:
+            if len(ids) == width:
+                yield ListingBatch(
+                    listing_id=listing_id,
+                    part=part,
+                    last=False,
+                    complete=False,
+                    root_ids=ids,
+                    cursor=f"{listing_id}:{part}",
+                )
+                part += 1
+                ids = []
+            ids.append(root)
+        yield ListingBatch(
+            listing_id=listing_id,
+            part=part,
+            last=True,
+            complete=complete(),
+            root_ids=ids,
+            cursor=f"{listing_id}:{part}",
+        )
 
     @classmethod
     def sync_kinds(cls) -> list[SyncKind]:
