@@ -188,13 +188,15 @@ async fn write_fragments(
     }
     let mut fragments = Vec::new();
     for (schema, batches) in groups {
+        // One batch per schema: Lance writes each batch it is given apart, so
+        // rows held one by one would cost their write per row.
+        let batch = arrow_select::concat::concat_batches(&schema, &batches)
+            .map_err(|_| WriterError::FragmentWriteFailed)?;
+        drop(batches);
         fragments.extend(
             FragmentCreateBuilder::new(&fyrr_reader::storage::dataset_uri(config))
                 .write_params(&params)
-                .write_fragments(RecordBatchIterator::new(
-                    batches.into_iter().map(Ok),
-                    schema,
-                ))
+                .write_fragments(RecordBatchIterator::new([Ok(batch)], schema))
                 .await
                 .map_err(|_| WriterError::FragmentWriteFailed)?,
         );
@@ -452,26 +454,33 @@ pub(crate) struct Steps {
 }
 
 impl Steps {
-    /// Holds each row of `batch`, and writes the step held first when the row
-    /// would put it over.
+    /// Holds the rows of `batch`, and writes the step held first when a row
+    /// would put it over. The rows of `batch` in one step are held as one
+    /// slice: a step of one-row batches costs its write per row.
     pub(crate) async fn push(&mut self, config: &Config, batch: RecordBatch) -> Result<()> {
+        let mut start = 0;
         for row in 0..batch.num_rows() {
-            let row = batch.slice(row, 1);
-            let (count, bytes) = row_size(std::slice::from_ref(&row))?;
+            let (count, bytes) = row_size(&[batch.slice(row, 1)])?;
             let bytes = bytes - ROW_OVERHEAD_BYTES;
-            if !self.rows.is_empty()
+            if (!self.rows.is_empty() || row > start)
                 && (self.held.0 + count > config.writer.commit.group_max_rows
                     || ROW_OVERHEAD_BYTES
                         .saturating_add(self.held.1)
                         .saturating_add(bytes)
                         > config.writer.commit.group_max_bytes.as_u64())
             {
+                if row > start {
+                    self.rows.push(batch.slice(start, row - start));
+                }
+                start = row;
                 self.held = (0, 0);
                 let full = std::mem::take(&mut self.rows);
                 self.fragments.extend(write_fragments(config, full).await?);
             }
             self.held = (self.held.0 + count, self.held.1.saturating_add(bytes));
-            self.rows.push(row);
+        }
+        if batch.num_rows() > start {
+            self.rows.push(batch.slice(start, batch.num_rows() - start));
         }
         Ok(())
     }
@@ -803,13 +812,18 @@ mod tests {
             .unwrap()
         };
         let rows: Vec<_> = (0..5).map(|n| row(&format!("root-{n}"))).collect();
+        let batch = arrow_select::concat::concat_batches(&rows[0].schema(), &rows).unwrap();
+        // Under the default bounds the five are one step, held as one batch:
+        // a step of one-row batches costs its write per row (#416).
+        let mut steps = Steps::default();
+        steps.push(&config, batch.clone()).await.unwrap();
+        assert_eq!(steps.rows.len(), 1, "a step holds the batch as one slice");
         let (_, one) = row_size(&rows[..1]).unwrap();
         let one = one - ROW_OVERHEAD_BYTES;
         // Two rows fit a group, three do not; the five come as one batch, as
         // the rows of an API envelope do.
         config.writer.commit.group_max_bytes =
             fyrr_core::units::ByteSize::bytes(ROW_OVERHEAD_BYTES + 2 * one + one / 2);
-        let batch = arrow_select::concat::concat_batches(&rows[0].schema(), &rows).unwrap();
         let mut steps = Steps::default();
         steps.push(&config, batch).await.unwrap();
         let fragments = steps.finish(&config).await.unwrap();
