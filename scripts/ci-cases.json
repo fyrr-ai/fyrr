@@ -155,13 +155,13 @@
       "full:fyrr:test:dense_path/publication_lifecycle::": {"tier": "full", "seconds": 44.902}
     },
     "cases": {
-      "full:fyrr:test:dense_path/write_api::identity_write_api_boosts_a_ranking_by_an_attribute_and_by_recency_on_storage": {"tier": "full", "seconds": 30},
-      "full:fyrr:test:dense_path/write_api::identity_write_api_caps_the_hits_per_attribute_value_on_storage": {"tier": "full", "seconds": 30},
-      "full:fyrr:test:dense_path/write_api::identity_write_api_narrows_a_query_by_the_tokens_of_a_full_text_attribute_on_storage": {"tier": "full", "seconds": 30},
-      "full:fyrr:test:dense_path/write_api::identity_write_api_ranks_a_text_query_by_several_full_text_attributes_on_storage": {"tier": "full", "seconds": 30},
-      "full:fyrr:test:dense_path/write_api::identity_write_api_rebuilds_a_full_text_index_for_a_changed_analyzer_on_storage": {"tier": "full", "seconds": 40},
-      "full:fyrr:test:dense_path/write_api::identity_write_api_refuses_a_phrase_on_a_namespace_without_positions_on_storage": {"tier": "full", "seconds": 30},
-      "full:fyrr:test:dense_path/write_api::identity_write_api_requires_a_phrase_of_the_text_on_storage": {"tier": "full", "seconds": 30}
+      "full:fyrr:test:dense_path/write_api_aggregate::identity_write_api_rebuilds_a_full_text_index_for_a_changed_analyzer_on_storage": {"tier": "full", "seconds": 40},
+      "full:fyrr:test:dense_path/write_api_query::identity_write_api_boosts_a_ranking_by_an_attribute_and_by_recency_on_storage": {"tier": "full", "seconds": 30},
+      "full:fyrr:test:dense_path/write_api_query::identity_write_api_caps_the_hits_per_attribute_value_on_storage": {"tier": "full", "seconds": 30},
+      "full:fyrr:test:dense_path/write_api_query::identity_write_api_narrows_a_query_by_the_tokens_of_a_full_text_attribute_on_storage": {"tier": "full", "seconds": 30},
+      "full:fyrr:test:dense_path/write_api_query::identity_write_api_ranks_a_text_query_by_several_full_text_attributes_on_storage": {"tier": "full", "seconds": 30},
+      "full:fyrr:test:dense_path/write_api_query::identity_write_api_refuses_a_phrase_on_a_namespace_without_positions_on_storage": {"tier": "full", "seconds": 30},
+      "full:fyrr:test:dense_path/write_api_query::identity_write_api_requires_a_phrase_of_the_text_on_storage": {"tier": "full", "seconds": 30}
     }
   },
   "local-coordination": {
@@ -222,8 +222,8 @@
       "full:fyrr:test:dense_path/embedding::tools_policy_change_before_a_cancellation_on_storage": {"tier": "quick", "seconds": 2.858},
       "full:fyrr:test:dense_path/rerank::tools_rerank_revoke_before_body_emission_sends_no_text_on_storage": {"tier": "quick", "seconds": 13.604},
       "full:fyrr:test:dense_path/tools::tools_every_admitted_result_and_error_rechecks_identity_on_storage": {"tier": "quick", "seconds": 16.049},
-      "full:fyrr:test:dense_path/write_api::identity_write_api_highlights_the_tokens_an_excerpt_matches_on_storage": {"tier": "full", "seconds": 40},
-      "full:fyrr:test:dense_path/write_api::identity_write_api_text_follows_the_namespace_analyzer_on_storage": {"tier": "full", "seconds": 40}
+      "full:fyrr:test:dense_path/write_api_query::identity_write_api_highlights_the_tokens_an_excerpt_matches_on_storage": {"tier": "full", "seconds": 40},
+      "full:fyrr:test:dense_path/write_api_query::identity_write_api_text_follows_the_namespace_analyzer_on_storage": {"tier": "full", "seconds": 40}
     },
     "children": {
       "full:fyrr-reader:lib:fyrr_reader/serve::tests::embedding::embedding_wait_revocation_refuses_old_authorization_on_storage": {
@@ -270,7 +270,9 @@
       "full:fyrr:test:dense_path/http_json::": {"tier": "full", "seconds": 30},
       "full:fyrr:test:dense_path/http_mcp::": {"tier": "full", "seconds": 121.306},
       "full:fyrr:test:dense_path/identity::": {"tier": "full", "seconds": 34.884},
-      "full:fyrr:test:dense_path/write_api::": {"tier": "full", "seconds": 46.214}
+      "full:fyrr:test:dense_path/write_api::": {"tier": "full", "seconds": 46.214},
+      "full:fyrr:test:dense_path/write_api_aggregate::": {"tier": "full", "seconds": 46.214},
+      "full:fyrr:test:dense_path/write_api_query::": {"tier": "full", "seconds": 46.214}
     },
     "cases": {
       "full:fyrr:test:dense_path/api_keys::bad_secret_does_not_block_revocation": {"tier": "full", "seconds": 16.63},
@@ -363,7 +365,7 @@
     },
     "cases": {
       "full:fyrr:test:dense_path/embedding::tools_writer_embedding_512_batches_restart_mcp_recall_and_routing_on_storage": {"tier": "full", "seconds": 39.237},
-      "full:fyrr:test:dense_path/write_api::identity_write_api_reports_recall_to_an_admin_key_on_storage": {"tier": "full", "seconds": 5}
+      "full:fyrr:test:dense_path/write_api_aggregate::identity_write_api_reports_recall_to_an_admin_key_on_storage": {"tier": "full", "seconds": 5}
     },
     "children": {
       "full:fyrr-reader:lib:fyrr_reader/search::authorization_cache_tests::authorization_cache_budget_on_storage": {
