@@ -661,6 +661,58 @@ async fn incremental_an_unreadable_members_envelope_fails_the_commit_on_storage(
     assert!(!fetch(), "the revoke is published");
 }
 
+/// Purging the source that an unreadable envelope blocks deletes that envelope
+/// too, which its chain names: the namespace commits again (#370).
+#[tokio::test]
+#[ignore = "real CLI and local storage; scripts/ci"]
+async fn incremental_a_purge_of_the_blocked_source_deletes_its_unreadable_envelope_on_storage() {
+    let (worker, commit, root) = fixture();
+    publish_initial(&worker, &commit, &root);
+    input(
+        &root,
+        json!({"epoch":2,"permissions":[[{"id":"a","revision":"p2","readers":[]},{"id":"b","revision":"p1","readers":["grp:group"]}]]}),
+    );
+    worker_sync(&worker, &["incremental", "--kind", "permissions"]);
+    let last = cursor_of(&worker, SyncKind::Permissions)
+        .await
+        .last
+        .unwrap();
+    let loaded = fyrr_core::config::load(&worker).unwrap();
+    let (store, ns) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
+    let path = ns.join("envelopes").join(format!("{}.json", last.id));
+    let bytes = store.get(&path).await.unwrap().bytes().await.unwrap();
+    store
+        .put(&path, bytes.slice(..bytes.len() / 2).into())
+        .await
+        .unwrap();
+    publish(&commit);
+    let status = command(&commit, &["writer", "status"]);
+    assert_eq!(
+        status["blocked_sources"],
+        json!(["incremental"]),
+        "{status}"
+    );
+    let purged = command(
+        &commit,
+        &["writer", "source", "purge", "incremental", "--confirm"],
+    );
+    assert_eq!(purged["purged"], true, "{purged}");
+    assert!(
+        store.head(&path).await.is_err(),
+        "the unreadable envelope is deleted"
+    );
+    publish(&commit);
+    let status = command(&commit, &["writer", "status"]);
+    assert_eq!(status["blocked_sources"], json!([]), "{status}");
+    // A second purge changes nothing and the namespace still commits.
+    command(
+        &commit,
+        &["writer", "source", "purge", "incremental", "--confirm"],
+    );
+    publish(&commit);
+    assert!(source_roots(&worker, "incremental").await.is_empty());
+}
+
 /// An unreadable envelope of one source does not stop the members snapshot nor
 /// the complete listing of another, which read the whole log (#370).
 #[tokio::test]

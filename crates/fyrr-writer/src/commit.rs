@@ -183,6 +183,42 @@ pub(crate) fn chains_of(config: &Config, kind: SyncKind, source: &str) -> Vec<(S
     found
 }
 
+/// Every envelope ID that the content and permissions chains of `source` name,
+/// walked from its cursors whether it is retired or not: what a purge of it
+/// deletes of the envelopes that do not parse.
+pub(crate) async fn named_by(
+    config: &Config,
+    head: &ServingHead,
+    source: &str,
+) -> Result<BTreeSet<String>> {
+    let (store, root) = namespace_store(config)?;
+    let manifest = previous_manifest(store.as_ref(), &root, head).await?;
+    let source = source.to_owned();
+    let mut named = BTreeSet::new();
+    for kind in [SyncKind::Content, SyncKind::Permissions] {
+        let last = crate::sync_lease::CursorLease::peek(config, &source, kind)
+            .await?
+            .and_then(|state| state.last)
+            .map(|last| last.id);
+        let applied = manifest
+            .as_ref()
+            .and_then(|m| m.chain_applied.get(&source)?.get(&kind).cloned());
+        let (_, visited) = walk::<PreparedEnvelope>(
+            config,
+            store.as_ref(),
+            &root,
+            (&source, kind),
+            last,
+            applied.as_ref(),
+            &BTreeMap::new(),
+            &|_: &str| -> Result<bool> { Ok(true) },
+        )
+        .await?;
+        named.extend(visited);
+    }
+    Ok(named)
+}
+
 /// Fails unless a walked chain names every envelope of `unreadable`.
 pub(crate) fn attributed(unreadable: &BTreeSet<String>, named: &BTreeSet<String>) -> Result<()> {
     if unreadable.is_subset(named) {
@@ -498,7 +534,13 @@ pub(crate) async fn chain_log(config: &Config, source: &str, kind: SyncKind) -> 
         .and_then(|m| m.chain_applied.get(source)?.get(&kind).cloned());
     log.left = applied.is_some();
     let (paths, resolved) = envelope_paths(config, &head).await?;
-    for (path, envelope) in read_envelopes(config, &paths).await?.0 {
+    let (read, unreadable) = read_envelopes(config, &paths).await?;
+    // An envelope that does not parse may be one of this chain's, of a
+    // sequence or generation a new cursor must exceed.
+    if !unreadable.is_empty() {
+        return Err(WriterError::PublicationInvalid);
+    }
+    for (path, envelope) in read {
         if envelope.source_id != source || envelope.kind != kind {
             continue;
         }
