@@ -30,6 +30,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # python3 -I omits it
 from benchlib import Server, free_address, machine
 
 DIMENSIONS = 128
