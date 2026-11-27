@@ -285,10 +285,13 @@ lost, so their rights changes, revocations included, are published only when
 the connector reports them again, and when a publication already carries one
 of them the source stays blocked until it is purged.
 
-An envelope in the log that does not parse is not isolated this way: `fyrr
-writer commit` and `fyrr writer status` fail with `publication_invalid` for
-every source until it is removed or put back
-([#370](https://github.com/fyrr-ai/fyrr/issues/370)).
+An envelope in the log that does not parse (corrupted or truncated on
+storage) blocks only the source whose chain names it: the committer and `fyrr
+writer status` walk every chain then, the walk that reaches it reports its
+source in `blocked_sources`, and the other sources go on. The committer logs
+`telemetry envelope=unreadable id=ID`, and the worker of that source fails
+until the envelope is put back or the source is purged. One that no chain
+names is left alone, unpublished.
 
 ## Upgrades
 

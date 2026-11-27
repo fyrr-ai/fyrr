@@ -180,6 +180,7 @@ pub async fn status(config: &Config) -> Result<serde_json::Value> {
     // What no publication resolved, without its body: the committer holds all of
     // it. One of another namespace, which the committer refuses, is not pending.
     let mut chained = BTreeMap::<String, StatusLink>::new();
+    let mut unreadable = false;
     let mut others = Vec::<StatusLink>::new();
     let mut quarantine = BTreeMap::<String, u64>::new();
     loop {
@@ -205,7 +206,16 @@ pub async fn status(config: &Config) -> Result<serde_json::Value> {
             // One decoded envelope, one manifest at a time, and a 128-path page;
             // ObjectStore's listing also retains its own bounded service page.
             let envelope: StatusEnvelope =
-                fyrr_reader::storage::read_contract(store.as_ref(), &path).await?;
+                match fyrr_reader::storage::read_contract(store.as_ref(), &path).await {
+                    Ok(envelope) => envelope,
+                    // Attributed by the chain that names it, as the committer does.
+                    Err(fyrr_reader::storage::StorageError::PublicationInvalid) => {
+                        envelopes += 1;
+                        unreadable = true;
+                        continue;
+                    }
+                    Err(error) => return Err(error.into()),
+                };
             let resolved = if ids.contains(&envelope.envelope_id) {
                 applied.contains(&envelope.envelope_id)
             } else {
@@ -260,6 +270,12 @@ pub async fn status(config: &Config) -> Result<serde_json::Value> {
         .chain(applied_chains.into_iter().filter(|(source, kind)| {
             *kind != SyncKind::Permissions || crate::commit::synced(config, source)
         }))
+        .chain(
+            unreadable
+                .then(|| crate::commit::every_chain(config, &policy))
+                .into_iter()
+                .flatten(),
+        )
         .collect();
     let (chains, links) = crate::commit::chains(
         config,

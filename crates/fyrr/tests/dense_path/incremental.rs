@@ -553,6 +553,59 @@ async fn incremental_read_only_namespace_refuses_syncs_and_commits_what_was_prep
     );
 }
 
+/// A confirmed envelope that does not parse blocks only its source: another
+/// source still publishes, and `writer status` names the blocked one (#370).
+#[tokio::test]
+#[ignore = "real CLI and local storage; scripts/ci"]
+async fn incremental_an_unreadable_envelope_blocks_only_its_source_on_storage() {
+    let (worker, commit, root) = fixture();
+    publish_initial(&worker, &commit, &root);
+    input(
+        &root,
+        json!({"epoch":2,"permissions":[[{"id":"a","revision":"p2","readers":[]},{"id":"b","revision":"p1","readers":["grp:group"]}]]}),
+    );
+    worker_sync(&worker, &["incremental", "--kind", "permissions"]);
+    // The envelope the cursor confirmed is truncated on storage.
+    let last = cursor_of(&worker, SyncKind::Permissions)
+        .await
+        .last
+        .unwrap();
+    let loaded = fyrr_core::config::load(&worker).unwrap();
+    let (store, ns) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
+    let path = ns.join("envelopes").join(format!("{}.json", last.id));
+    let bytes = store.get(&path).await.unwrap().bytes().await.unwrap();
+    store
+        .put(&path, bytes.slice(..bytes.len() / 2).into())
+        .await
+        .unwrap();
+    std::fs::write(root.join("sources/0.txt"), "fixture document other 1").unwrap();
+    root.embedding.insert_both(
+        "fixture document other 1",
+        root.embedding.vector("fixture document 0"),
+    );
+    worker_sync(&worker, &["allowed", "--kind", "content"]);
+    publish(&commit);
+    let control = source_rows(&worker, "allowed").await;
+    let row = roots(&control).iter().position(|id| id == "0.txt").unwrap();
+    assert_eq!(
+        fyrr_writer::apply::strings(&control, "searchable_text")
+            .unwrap()
+            .value(row),
+        "fixture document other 1",
+        "the other source publishes"
+    );
+    let status = command(&commit, &["writer", "status"]);
+    assert_eq!(
+        status["blocked_sources"],
+        json!(["incremental"]),
+        "{status}"
+    );
+    assert!(
+        !row_readers(&rows(&worker).await, "b").is_empty(),
+        "the blocked source keeps its rights"
+    );
+}
+
 /// A member read that repeats the published snapshot writes no envelope and
 /// publishes nothing.
 #[tokio::test]

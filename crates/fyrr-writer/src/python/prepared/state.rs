@@ -243,9 +243,16 @@ impl Preparation<'_> {
                 }
                 envelope
             } else {
-                let envelope: PreparedEnvelope = self
+                // One that does not parse is attributed by the chain that names
+                // it: the worker of that source fails when it walks it.
+                let envelope: PreparedEnvelope = match self
                     .rt
-                    .block_on(fyrr_reader::storage::read_contract(store.as_ref(), &path))?;
+                    .block_on(fyrr_reader::storage::read_contract(store.as_ref(), &path))
+                {
+                    Ok(envelope) => envelope,
+                    Err(fyrr_reader::storage::StorageError::PublicationInvalid) => continue,
+                    Err(error) => return Err(error.into()),
+                };
                 if object.e_tag.is_some() || object.version.is_some() {
                     index.put(
                         crate::commit::history::index::Evidence::Preparation,

@@ -223,10 +223,12 @@ impl RestoreHistory {
             }
         }
         let index = &self.index;
-        let mut pending = super::confirmed(config, head, pending, &|id: &str| -> Result<bool> {
-            Ok(index.contains(Evidence::Applied, id)? || index.contains(Evidence::Rejected, id)?)
-        })
-        .await?;
+        let mut pending =
+            super::confirmed(config, head, pending, false, &|id: &str| -> Result<bool> {
+                Ok(index.contains(Evidence::Applied, id)?
+                    || index.contains(Evidence::Rejected, id)?)
+            })
+            .await?;
         pending.sort_by(|a, b| (&a.source_id, a.sequence).cmp(&(&b.source_id, b.sequence)));
         Ok(pending)
     }

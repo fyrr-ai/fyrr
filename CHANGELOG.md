@@ -72,6 +72,11 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   probes inspect. A configuration that sets `{ mode = "legacy" }` is refused.
   See [tuning](docs/tuning.md).
 - A local put no longer opens a root lock file.
+- An envelope in the log that does not parse blocks only the source whose
+  chain names it, which `fyrr writer status` lists in `blocked_sources`; the
+  other sources go on publishing. Before, `writer commit` and `writer status`
+  failed with `publication_invalid` for every source. See
+  [operations](docs/operations.md#blocked-sources).
 - Content envelopes, of connectors and of the write API, count only once the
   cursor write confirmed them, as permission envelopes do: a page or a write
   whose worker died before its cursor write never publishes, and the next read

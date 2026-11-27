@@ -56,15 +56,21 @@ pub async fn pending(config: &Config, head: &ServingHead) -> Result<Vec<Prepared
                 .is_some_and(|id| applied.contains(id))
         })
         .collect();
-    for (_, envelope) in read_envelopes(config, &paths).await? {
+    let read = read_envelopes(config, &paths).await?;
+    let unreadable = read.len() < paths.len();
+    for (_, envelope) in read {
         if envelope.namespace != config.namespace.name {
             return Err(WriterError::EnvelopeNamespaceInvalid);
         }
         result.push(envelope);
     }
-    let mut result = confirmed(config, head, result, &|id: &str| -> Result<bool> {
-        Ok(applied.contains(id))
-    })
+    let mut result = confirmed(
+        config,
+        head,
+        result,
+        unreadable,
+        &|id: &str| -> Result<bool> { Ok(applied.contains(id)) },
+    )
     .await?;
     result.sort_by(|a, b| (&a.source_id, a.sequence).cmp(&(&b.source_id, b.sequence)));
     crate::telemetry::pending_envelopes(&config.namespace.name, result.len());
@@ -178,26 +184,49 @@ pub(crate) fn chains_of(config: &Config, kind: SyncKind, source: &str) -> Vec<(S
     found
 }
 
+/// Every chain of the namespace: the content of each configured source, its
+/// permissions when it syncs them, and the content of the write API.
+pub(crate) fn every_chain(config: &Config, policy: &PolicyArtifact) -> Vec<(String, SyncKind)> {
+    let mut keys: Vec<_> = config
+        .sources
+        .iter()
+        .flat_map(|source| chains_of(config, SyncKind::Content, &source.id))
+        .collect();
+    if policy.settings.namespace.write_api.is_some() {
+        keys.push((
+            fyrr_core::connector::API_SOURCE_ID.to_owned(),
+            SyncKind::Content,
+        ));
+    }
+    keys
+}
+
 /// The envelopes of `pending` that [`classify`] finds pending, with the links
 /// of a chain that the walk read by ID and no listing showed. The chain is read
 /// by ID, never from a listing. `resolved` tells an envelope that was applied
-/// or rejected; every one of `pending` is unresolved.
+/// or rejected; every one of `pending` is unresolved. `unreadable` says that
+/// the listing held an envelope that does not parse: every chain is walked
+/// then, so that the source whose chain holds it is blocked, and only that one.
 pub(crate) async fn confirmed(
     config: &Config,
     head: &ServingHead,
     pending: Vec<PreparedEnvelope>,
+    unreadable: bool,
     resolved: &(dyn Fn(&str) -> Result<bool> + Sync),
 ) -> Result<Vec<PreparedEnvelope>> {
-    let keys: BTreeSet<_> = pending
+    let mut keys: BTreeSet<_> = pending
         .iter()
         .flat_map(|e| chains_of(config, e.kind, &e.source_id))
         .collect();
-    if keys.is_empty() {
+    if keys.is_empty() && !unreadable {
         return Ok(pending);
     }
     let (store, root) = namespace_store(config)?;
     let policy: PolicyArtifact =
         fyrr_reader::storage::artifact(store.as_ref(), &root, &head.policy).await?;
+    if unreadable {
+        keys.extend(every_chain(config, &policy));
+    }
     let (listed, mut kept): (Vec<_>, Vec<_>) = pending.into_iter().partition(|e| chained(e.kind));
     let listed: BTreeMap<_, _> = listed
         .into_iter()
@@ -1506,6 +1535,9 @@ const INDEXES: &[(&str, &str, IndexType, &str)] = &[
     ),
 ];
 
+/// The envelopes at `paths`, without those that do not parse: an envelope is
+/// attributed to its source only by the chain that names it, and the walk of
+/// that chain, which reads it by ID, blocks that source alone.
 pub(crate) async fn read_envelopes(
     config: &Config,
     paths: &[Path],
@@ -1513,10 +1545,13 @@ pub(crate) async fn read_envelopes(
     let (store, _) = namespace_store(config)?;
     let mut envelopes = Vec::new();
     for path in paths {
-        envelopes.push((
-            path.clone(),
-            fyrr_reader::storage::read_contract(store.as_ref(), path).await?,
-        ));
+        match fyrr_reader::storage::read_contract(store.as_ref(), path).await {
+            Ok(envelope) => envelopes.push((path.clone(), envelope)),
+            Err(fyrr_reader::storage::StorageError::PublicationInvalid) => {
+                crate::telemetry::envelope_unreadable(path);
+            }
+            Err(error) => return Err(error.into()),
+        }
     }
     Ok(envelopes)
 }
