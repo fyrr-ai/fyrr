@@ -73,6 +73,10 @@ pub async fn run(
         let mut first = 0;
         // The head count each source's last worker started under.
         let mut started = vec![0; config.sources.len()];
+        // Consecutive failed workers per source, for the retry backoff.
+        // shortcut: in memory only, so a restart of the service retries at the
+        // base delay; keep it in the source's cursors if that ever costs.
+        let mut failures = vec![0u32; config.sources.len()];
         let mut running = Vec::<(usize, Running)>::new();
         let mut last = fyrr_core::clock::now();
         // Clock steps back so far, and the count each source's last worker started under.
@@ -96,7 +100,7 @@ pub async fn run(
                             eprintln!("writer_service event=worker_failed");
                         }
                         let intervals = &config.sources[i].intervals;
-                        let retry = [
+                        let interval = [
                             Some(intervals.content),
                             intervals.permissions,
                             intervals.members,
@@ -106,16 +110,24 @@ pub async fn run(
                         .flatten()
                         .map(|v| v.as_duration())
                         .min()
-                        .unwrap_or(Duration::from_secs(60))
-                        .min(Duration::from_secs(60));
+                        .unwrap_or(Duration::from_secs(60));
                         // The cursors' timestamps decide what is due; a worker
-                        // that failed, or reported no schedule, is retried sooner.
+                        // that failed backs off, and one that reported no schedule
+                        // is retried at the base delay.
+                        let failed =
+                            !matches!(&result, Ok(Some(outcome)) if outcome.failure().is_none());
+                        failures[i] = if failed {
+                            failures[i].saturating_add(1)
+                        } else {
+                            0
+                        };
                         let wait = match &result {
-                            Ok(Some(outcome)) if outcome.failure().is_none() => next_due(outcome),
+                            Ok(Some(outcome)) if !failed => next_due(outcome),
                             _ => None,
                         };
                         due[i] = wait.unwrap_or_else(|| {
-                            now + chrono::TimeDelta::from_std(retry).unwrap_or_default()
+                            now + chrono::TimeDelta::from_std(retry_delay(interval, failures[i]))
+                                .unwrap_or_default()
                         });
                         // A schedule computed before a clock step back is stale.
                         if started_steps[i] != steps {
@@ -132,8 +144,12 @@ pub async fn run(
                 if running.len() >= jobs {
                     break;
                 }
-                // A head that changed since the source's worker started makes it due.
-                if (due[i] > now && started[i] == heads) || running.iter().any(|(n, _)| *n == i) {
+                // A head that changed since the source's worker started makes it
+                // due, unless the source is backing off: a broken source is not
+                // retried on every publication of the others.
+                if (due[i] > now && (started[i] == heads || failures[i] > 0))
+                    || running.iter().any(|(n, _)| *n == i)
+                {
                     continue;
                 }
                 started[i] = heads;
@@ -274,8 +290,38 @@ async fn served(config: &fyrr_core::config::Config) -> Option<fyrr_core::publica
     Some(crate::python::served_identity(&head))
 }
 
+/// The wait before a source's next worker after `failures` consecutive failed
+/// ones (at least 1): 60 s, doubling with each failure, never beyond the
+/// source's shortest interval; an interval under 60 s is the whole wait.
+fn retry_delay(interval: Duration, failures: u32) -> Duration {
+    let base = Duration::from_secs(60).min(interval);
+    base.saturating_mul(2u32.saturating_pow(failures.saturating_sub(1)))
+        .min(interval)
+}
+
 /// When the source's kinds are next due, as its worker reported it.
 fn next_due(outcome: &crate::worker::Outcome) -> Option<chrono::DateTime<chrono::Utc>> {
     let report: serde_json::Value = serde_json::from_slice(outcome.result_line()?).ok()?;
     serde_json::from_value(report["next_due"].clone()).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::retry_delay;
+    use std::time::Duration;
+
+    #[test]
+    fn the_retry_delay_doubles_from_the_base_up_to_the_interval() {
+        let interval = Duration::from_secs(600);
+        let waits: Vec<u64> = (1..=6)
+            .map(|failures| retry_delay(interval, failures).as_secs())
+            .collect();
+        assert_eq!(waits, [60, 120, 240, 480, 600, 600]);
+        // An interval under the base is the whole wait, and a large count does not overflow.
+        assert_eq!(
+            retry_delay(Duration::from_secs(10), 3),
+            Duration::from_secs(10)
+        );
+        assert_eq!(retry_delay(interval, u32::MAX), interval);
+    }
 }
