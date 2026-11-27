@@ -103,6 +103,19 @@ Restricted parts of a document, such as a comment with its own audience, are
 separate records with their own readers. Public and link-only sharing,
 unknown identities and unsupported holder types grant nobody.
 
+## Score statistics
+
+The permission mask applies after Lance computes BM25 statistics over an
+index. For the indexed part of a namespace, a document's `lexical_score`
+(see [`scores`](http-api.md#returned-fields)) depends on the document count, the
+average document length and the number of documents containing each query
+term, counted over every indexed document, including those the subject cannot
+read. A caller can therefore see a visible document's score move when readable
+or unreadable documents change. This reveals aggregate term statistics only: a
+result never carries the content or id of a document the subject cannot read,
+and the mask still decides which documents appear. Documents written after the
+last index build are scored over the documents admitted for the request.
+
 ## Revocation
 
 The authorization gates themselves are described in
