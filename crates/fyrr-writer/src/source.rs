@@ -74,6 +74,7 @@ async fn holdings(
     let (paths, _) = commit::envelope_paths(config, head).await?;
     let envelopes = commit::read_envelopes(config, &paths)
         .await?
+        .0
         .into_iter()
         .filter(|(_, envelope)| envelope.source_id == source)
         .map(|(path, _)| path)

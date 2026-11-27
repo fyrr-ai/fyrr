@@ -383,6 +383,7 @@ pub(crate) async fn purged_envelopes(
     let (paths, _) = crate::commit::envelope_paths(config, head).await?;
     Ok(crate::commit::read_envelopes(config, &paths)
         .await?
+        .0
         .into_iter()
         .filter(|(_, envelope)| {
             policy

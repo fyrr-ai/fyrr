@@ -56,12 +56,7 @@ pub async fn pending(config: &Config, head: &ServingHead) -> Result<Vec<Prepared
                 .is_some_and(|id| applied.contains(id))
         })
         .collect();
-    let read = read_envelopes(config, &paths).await?;
-    let unreadable: BTreeSet<_> = paths
-        .iter()
-        .filter(|path| !read.iter().any(|(read, _)| read == *path))
-        .filter_map(|path| path.filename()?.strip_suffix(".json").map(str::to_owned))
-        .collect();
+    let (read, unreadable) = read_envelopes(config, &paths).await?;
     for (_, envelope) in read {
         if envelope.namespace != config.namespace.name {
             return Err(WriterError::EnvelopeNamespaceInvalid);
@@ -503,7 +498,7 @@ pub(crate) async fn chain_log(config: &Config, source: &str, kind: SyncKind) -> 
         .and_then(|m| m.chain_applied.get(source)?.get(&kind).cloned());
     log.left = applied.is_some();
     let (paths, resolved) = envelope_paths(config, &head).await?;
-    for (path, envelope) in read_envelopes(config, &paths).await? {
+    for (path, envelope) in read_envelopes(config, &paths).await?.0 {
         if envelope.source_id != source || envelope.kind != kind {
             continue;
         }
@@ -871,7 +866,7 @@ pub(crate) async fn cleanup_evidence(
         .try_collect()
         .await?;
     let paths: Vec<_> = paths.into_iter().map(|object| object.location).collect();
-    let envelopes = read_envelopes(config, &paths).await?;
+    let (envelopes, _) = read_envelopes(config, &paths).await?;
     let reads = envelopes
         .iter()
         .filter(|(path, _)| {
@@ -1566,26 +1561,31 @@ const INDEXES: &[(&str, &str, IndexType, &str)] = &[
     ),
 ];
 
-/// The envelopes at `paths`, without those that do not parse: an envelope is
-/// attributed to its source only by the chain that names it, and the walk of
-/// that chain, which reads it by ID, blocks that source alone. A caller that
-/// needs every envelope fails on one that no chain names ([`attributed`]).
+/// The envelopes at `paths`, and the IDs of those that do not parse: an
+/// envelope is attributed to its source only by the chain that names it, and
+/// the walk of that chain, which reads it by ID, blocks that source alone. A
+/// caller that needs every envelope fails on one that no chain names
+/// ([`attributed`]).
 pub(crate) async fn read_envelopes(
     config: &Config,
     paths: &[Path],
-) -> Result<Vec<(Path, PreparedEnvelope)>> {
+) -> Result<(Vec<(Path, PreparedEnvelope)>, BTreeSet<String>)> {
     let (store, _) = namespace_store(config)?;
     let mut envelopes = Vec::new();
+    let mut unreadable = BTreeSet::new();
     for path in paths {
         match fyrr_reader::storage::read_contract(store.as_ref(), path).await {
             Ok(envelope) => envelopes.push((path.clone(), envelope)),
             Err(fyrr_reader::storage::StorageError::PublicationInvalid) => {
                 crate::telemetry::envelope_unreadable(path);
+                if let Some(id) = path.filename().and_then(|n| n.strip_suffix(".json")) {
+                    unreadable.insert(id.to_owned());
+                }
             }
             Err(error) => return Err(error.into()),
         }
     }
-    Ok(envelopes)
+    Ok((envelopes, unreadable))
 }
 
 fn blocked_sources(rejections: &[RejectionMarker]) -> BTreeSet<String> {
