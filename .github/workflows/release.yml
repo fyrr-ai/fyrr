@@ -105,14 +105,14 @@ jobs:
           rustup toolchain install "$channel" --profile minimal --component rustfmt,clippy
           rustup default "$channel"
 
-      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
 
       - name: Read the mbx pin (mise.toml)
         id: mbx
         run: echo "version=$(sed -n 's/^mr-boxington = "\(.*\)"/\1/p' mise.toml)" >> "$GITHUB_OUTPUT"
 
       - name: Shared Cargo compilation cache
-        uses: jdx/mr-boxington-action@88acf2bb50552c7c508cbac13e5f8c576b95b1de # v1
+        uses: jdx/mr-boxington-action@b3ef673bd77c5426927fe8836c6185cdae04c2dd # v1
         with:
           version: ${{ steps.mbx.outputs.version }}
           backend: github
