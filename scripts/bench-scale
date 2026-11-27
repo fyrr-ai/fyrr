@@ -25,8 +25,8 @@ tokens name: `all` every row, `p10` 10% of them, `p1` 1%. It then times:
              admission of the subject;
   warming    dense queries while the reader still copies the generation's
              files into its mirror, until `/readyz` reports `warm_ready`:
-             their p50 and p95, and the seconds from the first query to
-             `warm_ready`. A reader whose memory budget leaves it `cold`
+             their p50 and p95, and the seconds from the end of the first
+             queries to `warm_ready`. A reader whose memory budget leaves it `cold`
              never warms; it skips this wait;
   warm       p50, p95 and p99 of `--queries` more queries on the warmed
              reader, for the lanes dense (`vector`), full-text (`query`) and
