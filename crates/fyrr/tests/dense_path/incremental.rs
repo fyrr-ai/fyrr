@@ -4162,6 +4162,44 @@ async fn incremental_content_waits_for_a_cursor_that_lost_its_chain_on_storage()
     assert_eq!(status["blocked_sources"], json!([]), "{status}");
 }
 
+/// A lost permissions cursor holds the content of its source on a committer
+/// whose configuration does not list the source: the committer walks the chain
+/// the publication applied (#431).
+#[tokio::test]
+#[ignore = "real CLI and local storage; scripts/ci"]
+async fn incremental_content_waits_for_a_lost_cursor_of_an_unlisted_source_on_storage() {
+    let (worker, commit, root) = fixture();
+    publish_initial(&worker, &commit, &root);
+    input(
+        &root,
+        json!({"epoch":2,"content":[[doc("a","r2","fixture document 2")]]}),
+    );
+    worker_sync(&worker, &["incremental", "--kind", "content"]);
+    // The committer's configuration does not list `incremental`.
+    let text = std::fs::read_to_string(&commit).unwrap();
+    let block = format!(
+        "[[sources]]\nid='incremental'\ntype='incremental-test'\npermissions='sync'\ndocument_max_bytes='64B'\n[sources.intervals]\npermissions='5m'\nmembers='5m'\n[sources.scope]\nfixture='{}'\n",
+        root.join("input.json").display()
+    );
+    assert!(text.contains(&block));
+    std::fs::write(&commit, text.replace(&block, "")).unwrap();
+    let loaded = fyrr_core::config::load(&worker).unwrap();
+    let (store, ns) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
+    store
+        .delete(&ns.join("cursors").join("incremental-permissions.json"))
+        .await
+        .unwrap();
+    publish(&commit);
+    let row = |batch: &arrow_array::RecordBatch| {
+        let row = roots(batch).iter().position(|id| id == "a").unwrap();
+        fyrr_writer::apply::strings(batch, "source_revision")
+            .unwrap()
+            .value(row)
+            .to_owned()
+    };
+    assert_eq!(row(&rows(&worker).await), "r1", "the content waits");
+}
+
 /// The envelopes of the sources other than `incremental` are removed from the
 /// log of a namespace that has no publication, which leaves it one source.
 async fn drop_other_sources(config: &Path) {

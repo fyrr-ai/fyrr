@@ -169,15 +169,16 @@ pub(crate) fn synced(config: &Config, source: &str) -> bool {
 }
 
 /// The chains the committer walks for an envelope of `kind`: its own, when
-/// the kind is chained, and the permissions chain of a source that syncs its
-/// permissions for content and a listing, so that they never publish while
-/// its tail is missing.
-pub(crate) fn chains_of(config: &Config, kind: SyncKind, source: &str) -> Vec<(String, SyncKind)> {
+/// the kind is chained, and the permissions chain of its source for content
+/// and a listing, so that they never publish while its tail is missing. The
+/// configuration does not decide it: a committer that does not list the
+/// source walks the chain the publication applied all the same.
+pub(crate) fn chains_of(kind: SyncKind, source: &str) -> Vec<(String, SyncKind)> {
     let mut found = Vec::new();
     if chained(kind) {
         found.push((source.to_owned(), kind));
     }
-    if kind != SyncKind::Members && kind != SyncKind::Permissions && synced(config, source) {
+    if kind != SyncKind::Members && kind != SyncKind::Permissions {
         found.push((source.to_owned(), SyncKind::Permissions));
     }
     found
@@ -228,13 +229,13 @@ pub(crate) fn attributed(unreadable: &BTreeSet<String>, named: &BTreeSet<String>
     }
 }
 
-/// Every chain of the namespace: the content of each configured source, its
-/// permissions when it syncs them, and the content of the write API.
+/// Every chain of the namespace: the content and permissions of each configured
+/// source, and the content of the write API.
 pub(crate) fn every_chain(config: &Config, policy: &PolicyArtifact) -> Vec<(String, SyncKind)> {
     let mut keys: Vec<_> = config
         .sources
         .iter()
-        .flat_map(|source| chains_of(config, SyncKind::Content, &source.id))
+        .flat_map(|source| chains_of(SyncKind::Content, &source.id))
         .collect();
     if policy.settings.namespace.write_api.is_some() {
         keys.push((
@@ -262,7 +263,7 @@ pub(crate) async fn confirmed(
 ) -> Result<Vec<PreparedEnvelope>> {
     let mut keys: BTreeSet<_> = pending
         .iter()
-        .flat_map(|e| chains_of(config, e.kind, &e.source_id))
+        .flat_map(|e| chains_of(e.kind, &e.source_id))
         .collect();
     if keys.is_empty() && unreadable.is_empty() {
         return Ok(pending);
