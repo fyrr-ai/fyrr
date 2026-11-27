@@ -2173,3 +2173,40 @@ async fn identity_write_api_restores_a_version_from_before_an_attribute_was_adde
         ["b"]
     );
 }
+
+/// A purge of the write API's source is not undone by a rollback: the purged
+/// rows stay deleted.
+#[tokio::test]
+#[ignore = "real writer and reader executables on local storage; scripts/ci"]
+async fn identity_write_api_rollback_keeps_a_purged_source_deleted_on_storage() {
+    let (config, root) = setup_on(Backend::Local);
+    let address = free_address();
+    configure(&config, &address, "");
+    embed(&root, &["alpha"]);
+    let writer = Writer::start(&config, &root, address).await;
+    let body = json!({"upserts": [{"id": "a", "text": "alpha", "readers": ["grp:allow"]}]});
+    assert_eq!(writer.post(WRITE_KEY, "dense-fixture", &body).await.0, 200);
+    drop(writer);
+    let api = fyrr_core::connector::API_SOURCE_ID;
+    success(&config, &["writer", "source", "purge", api, "--confirm"]);
+    assert_eq!(
+        super::incremental::source_rows(&config, api)
+            .await
+            .num_rows(),
+        0
+    );
+    let head = super::coordination::publication(&config).await.0;
+    let output = run(&config, &["writer", "rollback"]);
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("restore_unsupported"),
+        "{}",
+        report(&output)
+    );
+    assert_eq!(super::coordination::publication(&config).await.0, head);
+    assert_eq!(
+        super::incremental::source_rows(&config, api)
+            .await
+            .num_rows(),
+        0
+    );
+}

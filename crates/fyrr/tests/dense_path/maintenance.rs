@@ -227,7 +227,8 @@ async fn maintenance_pending_revoke_purge_and_verify_on_storage() {
 }
 
 /// A namespace of connector sources is not restored: a sync or a copy
-/// recovers it. The refusal writes nothing.
+/// recovers it. The refusal writes nothing, not even the lease, and so does
+/// the refusal of a copy whose configuration lists no source.
 #[tokio::test]
 #[ignore = "real CLI and local storage; scripts/ci"]
 async fn maintenance_restore_refuses_a_namespace_of_connector_sources_on_storage() {
@@ -240,16 +241,29 @@ async fn maintenance_restore_refuses_a_namespace_of_connector_sources_on_storage
     );
     worker_sync(&worker, &["incremental", "--kind", "content"]);
     publish(&commit);
-    let (head, _) = publication(&commit).await;
-    for args in [
-        vec!["writer", "rollback"],
-        vec!["writer", "restore", &first.publication_id],
-    ] {
-        let output = host_command(&commit).args(&args).output().unwrap();
-        assert!(!output.status.success(), "{args:?}");
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(stderr.contains("restore_unsupported"), "{stderr}");
-        assert_eq!(publication(&commit).await.0.content, head.content);
+    // A copy of a connector namespace, in a configuration that lists no source.
+    let (local, _local_root) = setup_on(Backend::Local);
+    command(&local, &["writer", "namespace", "create"]);
+    let synced = run(&local, &["writer", "sync"]);
+    assert!(synced.status.success(), "{}", report(&synced));
+    publish(&local);
+    let copy = super::namespace_copy::elsewhere(&local, "copy", None);
+    let text = std::fs::read_to_string(&copy).unwrap();
+    std::fs::write(&copy, &text[..text.find("[[sources]]").unwrap()]).unwrap();
+    super::namespace_copy::copied(&local, &copy);
+    let copied = publication(&copy).await.1.publication_id;
+    for (config, target) in [(&commit, &first.publication_id), (&copy, &copied)] {
+        let head = publication(config).await.0;
+        for args in [
+            vec!["writer", "rollback"],
+            vec!["writer", "restore", target],
+        ] {
+            let output = host_command(config).args(&args).output().unwrap();
+            assert!(!output.status.success(), "{args:?}");
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(stderr.contains("restore_unsupported"), "{stderr}");
+            assert_eq!(publication(config).await.0, head);
+        }
     }
 }
 
