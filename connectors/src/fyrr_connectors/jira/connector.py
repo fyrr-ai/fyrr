@@ -12,7 +12,6 @@ from ..connector import (
     ContainerGrant,
     ContentBatch,
     DocumentPermission,
-    ListingBatch,
     PermissionBatch,
     PrincipalBatch,
     SyncKind,
@@ -376,19 +375,9 @@ class Jira(Connector[Settings, Scope]):
             previous = bindings
         else:
             raise ValueError("jira_listing_did_not_converge")
-        listing_id = hashlib.sha256(json.dumps(sorted(roots)).encode()).hexdigest()
-        width = max(1, self.context.limits.max_rows)
-        parts = [sorted(roots)[i : i + width] for i in range(0, len(roots), width)] or [[]]
-        for part, values in enumerate(parts):
-            last = part == len(parts) - 1
-            yield ListingBatch(
-                listing_id=listing_id,
-                part=part,
-                last=last,
-                complete=last and self.context.next_revisions is not None,
-                root_ids=values,
-                cursor=f"{listing_id}:{part}",
-            )
+        yield from self.listing_batches(
+            sorted(roots), lambda: self.context.next_revisions is not None
+        )
 
     def _graph(self):
         if self.graph is None:

@@ -11,7 +11,6 @@ Design, the reference review and the tenant items: docs/connectors/notion.md.
 from __future__ import annotations
 
 import hashlib
-import time
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import replace
 from typing import Any
@@ -329,11 +328,8 @@ class Notion(Connector[Settings, Scope]):
     def listing(self, cursor: str | None) -> Iterator[ListingBatch]:
         live = self._open()
         started = self._client.server_time - SETTLE
-        listing_id = hashlib.sha256(f"{cursor}:{time.time_ns()}".encode()).hexdigest()
-        rows = min(LOOKUP_ROWS, self.context.limits.max_rows)
-        roots: list[str] = []
         included: set[str] = set()
-        part = 0
+        converged = False
 
         def scan(start: str, visited: set[str]) -> Iterator[str]:
             for visit in self._tree.walk(Ref("page", start), visited=visited):
@@ -350,65 +346,46 @@ class Notion(Connector[Settings, Scope]):
                     included.add(ref.id)
                     yield ref.id
 
-        def append(ids: Iterator[str]) -> Iterator[ListingBatch]:
-            nonlocal part
-            for page_id in ids:
-                roots.append(page_id)
-                if len(roots) > rows:
-                    yield ListingBatch(
-                        listing_id=listing_id,
-                        part=part,
-                        last=False,
-                        complete=False,
-                        root_ids=roots[:rows],
-                        cursor=f"{listing_id}:{part}",
-                    )
-                    del roots[:rows]
-                    part += 1
-
-        visited: set[str] = set()
-        for root in live:
-            yield from append(scan(root, visited))
-        # Ascending updates put a page edited again ahead of the scan, not
-        # behind it. Search is only a hint, so it cannot be the deletion guard.
-        converged = False
-        query = {
-            "filter": {"property": "object", "value": "page"},
-            "sort": {"direction": "ascending", "timestamp": "last_edited_time"},
-        }
-        for _ in range(4):
-            before = len(included)
-            for hints in self._client.pages("search", query):
-                for hint in hints:
-                    if hint.get("object") != "page":
-                        raise ValueError("notion_response_invalid")
-                    stamp = instant(hint.get("last_edited_time"))
-                    if stamp is None:
-                        raise ValueError("notion_response_invalid")
-                    if stamp < started:
-                        continue
-                    self._tree.refresh()
-                    yield from append(scan(ident(hint.get("id")), set()))
-            if len(included) == before:
-                converged = True
-                break
-        # Search can lag, and moves may not stamp the page on a real tenant:
-        # check every published/pending root absent from the traversal afresh.
-        # Without a revision view, never attest a deletion-safe listing.
-        next_revisions = self.context.next_revisions
-        if next_revisions is not None:
-            while revisions := next_revisions():
-                for page_id, _ in revisions:
-                    if page_id not in included:
+        def found() -> Iterator[str]:
+            nonlocal converged
+            visited: set[str] = set()
+            for root in live:
+                yield from scan(root, visited)
+            # Ascending updates put a page edited again ahead of the scan, not
+            # behind it. Search is only a hint, so it cannot be the deletion guard.
+            query = {
+                "filter": {"property": "object", "value": "page"},
+                "sort": {"direction": "ascending", "timestamp": "last_edited_time"},
+            }
+            for _ in range(4):
+                before = len(included)
+                for hints in self._client.pages("search", query):
+                    for hint in hints:
+                        if hint.get("object") != "page":
+                            raise ValueError("notion_response_invalid")
+                        stamp = instant(hint.get("last_edited_time"))
+                        if stamp is None:
+                            raise ValueError("notion_response_invalid")
+                        if stamp < started:
+                            continue
                         self._tree.refresh()
-                        yield from append(scan(ident(page_id), set()))
-        yield ListingBatch(
-            listing_id=listing_id,
-            part=part,
-            last=True,
-            complete=converged and next_revisions is not None,
-            root_ids=roots,
-            cursor=f"{listing_id}:{part}",
+                        yield from scan(ident(hint.get("id")), set())
+                if len(included) == before:
+                    converged = True
+                    break
+            # Search can lag, and moves may not stamp the page on a real tenant:
+            # check every published/pending root absent from the traversal afresh.
+            # Without a revision view, never attest a deletion-safe listing.
+            next_revisions = self.context.next_revisions
+            if next_revisions is not None:
+                while revisions := next_revisions():
+                    for page_id, _ in revisions:
+                        if page_id not in included:
+                            self._tree.refresh()
+                            yield from scan(ident(page_id), set())
+
+        yield from self.listing_batches(
+            found(), lambda: converged and self.context.next_revisions is not None
         )
 
 
