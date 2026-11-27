@@ -214,9 +214,11 @@ impl Preparation<'_> {
         };
         let (store, root) = fyrr_reader::storage::namespace_store(self.config)?;
         // Always discover new envelopes; only immutable, fingerprinted bodies are reused.
-        let objects: Vec<_> = self
-            .rt
-            .block_on(store.list(Some(&root.clone().join("envelopes"))).try_collect())?;
+        let objects: Vec<_> = self.rt.block_on(
+            store
+                .list(Some(&root.clone().join("envelopes")))
+                .try_collect(),
+        )?;
         let mut content_count = 0;
         let mut content_bytes = 0;
         // The content of this source, decided once the chain its cursor
