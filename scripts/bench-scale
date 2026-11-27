@@ -23,8 +23,15 @@ tokens name: `all` every row, `p10` 10% of them, `p1` 1%. It then times:
              `telemetry` and the reader's own storage counters (`/metrics`)
              around it. The dense one reads the index files and builds the
              admission of the subject;
-  warm       p50, p95 and p99 of `--queries` more queries, for the lanes dense
-             (`vector`), full-text (`query`) and hybrid (both);
+  warming    dense queries while the reader still copies the generation's
+             files into its mirror, until `/readyz` reports `warm_ready`:
+             their p50 and p95, and the seconds from the first query to
+             `warm_ready`. A reader whose memory budget leaves it `cold`
+             never warms; it skips this wait;
+  warm       p50, p95 and p99 of `--queries` more queries on the warmed
+             reader, for the lanes dense (`vector`), full-text (`query`) and
+             hybrid (both). Warm means a warmed reader: the queries start once
+             `/readyz` reports `warm_ready`;
   isolated   `isolated_admission`, a diagnosis and not an admission time: on
              one cold reader the first query of one subject loads the files,
              then the first query of each other subject is compared with
@@ -288,6 +295,10 @@ class Server:
 def alive(pid):
     state = Path("/proc/%d/stat" % pid).read_text().rsplit(")", 1)[1].split()[0]
     return state != "Z"
+
+
+# The longest wait for `warm_ready` after the first queries; past it the run fails.
+WARM_LIMIT = 900
 
 
 def wait_ready(server, key, pid, limit=3600):
@@ -693,6 +704,42 @@ def arm(run, corpus, memory_max_bytes, vectors, texts, stored):
                     file=sys.stderr,
                     flush=True,
                 )
+            # Dense queries until the reader is warm; they are not warm queries.
+            started, times, failed, n = time.perf_counter(), [], 0, 0
+            while True:
+                status, state, _ = read.call("GET", "/readyz", keys[subject], timeout=60)
+                if status == 200 and (state["warm_ready"] or state["state"] == "cold"):
+                    break
+                if time.perf_counter() - started > WARM_LIMIT:
+                    raise SystemExit(
+                        "%s: reader not warm %d s after its first queries (%s)"
+                        % (subject, WARM_LIMIT, state)
+                    )
+                answer, took, error = search("dense", n % args.queries + 1)
+                n += 1
+                if error:
+                    failed += 1
+                else:
+                    times.append(took)
+            out["warming"] = {
+                "seconds": round(time.perf_counter() - started, 2),
+                "reader_state": state["state"],
+                "errors": failed,
+            }
+            if times:
+                out["warming"].update(summary(times))
+            print(
+                "warming %s %.1f s, %d dense queries, p50 %s ms, state %s"
+                % (
+                    subject,
+                    out["warming"]["seconds"],
+                    len(times),
+                    out["warming"].get("p50_ms"),
+                    state["state"],
+                ),
+                file=sys.stderr,
+                flush=True,
+            )
             out["warm"] = []
             for lane in LANES:
                 times, telemetry, failed = [], [], 0
@@ -893,6 +940,18 @@ def table(report):
                     out["ready_seconds"],
                     admission.get("excess_over_warm_ms"),
                     out["recall_numpy"]["recall_at_10_mean"],
+                ),
+                file=sys.stderr,
+            )
+            warming = out.get("warming", {})
+            print(
+                "  warming %.1f s, dense p50 %s p95 %s (%s queries), then %s"
+                % (
+                    warming.get("seconds", 0),
+                    warming.get("p50_ms"),
+                    warming.get("p95_ms"),
+                    warming.get("n", 0),
+                    warming.get("reader_state"),
                 ),
                 file=sys.stderr,
             )
