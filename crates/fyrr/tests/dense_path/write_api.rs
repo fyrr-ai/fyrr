@@ -6538,6 +6538,11 @@ async fn identity_write_api_takes_current_settings_and_refuses_unknown_ones_on_s
     for settings in [
         json!({"fts": {"with_position": true}}),
         json!({"fts_position": true}),
+        // Inside a setting too, at every depth.
+        json!({"write_api": {"text_atribute": "body"}}),
+        json!({"retrieval": {"dense_weigth": 0.3}}),
+        json!({"analyzer": {"max_token_lenght": 20}}),
+        json!({"embedding": {"settings": {"roles": {"query": {"prefx": "q: "}}}}}),
     ] {
         assert_eq!(
             writer

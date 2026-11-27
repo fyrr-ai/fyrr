@@ -41,30 +41,36 @@ pub struct NamespaceSettings {
     pub namespace: PersistedSettings,
 }
 
-/// A stored document names every setting that has a default in a file.
+/// The settings whose members a stored document names too: a file may leave
+/// one out for its default, a stored document may not.
+const COMPLETE_MEMBERS: [&str; 3] = ["retrieval", "composition", "analyzer"];
+
+/// A stored document names every setting that has a default in a file, and
+/// every member of the settings in [`COMPLETE_MEMBERS`].
 fn stored_settings_required(schema: &mut schemars::Schema) {
+    let defaults = PersistedSettings::defaults();
     let mut required = vec!["embedding".to_owned()];
-    required.extend(PersistedSettings::defaults().keys().cloned());
+    required.extend(defaults.keys().cloned());
     schema.insert("required".into(), required.into());
+    for key in COMPLETE_MEMBERS {
+        let members: Vec<String> = defaults[key]
+            .as_object()
+            .map(|members| members.keys().cloned().collect())
+            .unwrap_or_default();
+        if let Some(property) = schema
+            .get_mut("properties")
+            .and_then(|properties| properties.get_mut(key))
+            .and_then(|property| property.as_object_mut())
+        {
+            property.insert("required".into(), members.into());
+        }
+    }
 }
 
 impl NamespaceSettings {
-    /// Whether a request's `settings` names only settings. A key this build
-    /// does not know would otherwise be dropped without a word.
-    pub fn names_only_settings(request: &serde_json::Value) -> bool {
-        let schema = schemars::schema_for!(NamespaceSettings);
-        match (
-            request.as_object(),
-            schema.get("properties").and_then(|known| known.as_object()),
-        ) {
-            (Some(request), Some(known)) => request.keys().all(|key| known.contains_key(key)),
-            _ => false,
-        }
-    }
-
     /// Refuses a stored document that leaves a setting out, which this build
-    /// would fill with its own default, and a `retrieval` or `composition`
-    /// that leaves out one of its members.
+    /// would fill with its own default, and a `retrieval`, `composition` or
+    /// `analyzer` that leaves out one of its members.
     fn check_complete(document: &serde_json::Value) -> Result<(), String> {
         let stored = document.get("settings").and_then(|s| s.as_object());
         let defaults = PersistedSettings::defaults();
@@ -82,7 +88,7 @@ impl NamespaceSettings {
         if let Some(key) = missing(stored, &defaults) {
             return Err(format!("settings.{key} is missing"));
         }
-        for key in ["retrieval", "composition"] {
+        for key in COMPLETE_MEMBERS {
             if let (Some(stored), Some(defaults)) = (
                 stored.get(key).and_then(|v| v.as_object()),
                 defaults.get(key).and_then(|v| v.as_object()),
