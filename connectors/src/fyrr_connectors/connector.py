@@ -19,6 +19,7 @@ from uuid import uuid4
 import pyarrow as pa
 
 from .config import ConfigModel, NoConfig
+from .validate import MAX_READERS
 
 SettingsT = TypeVar("SettingsT", bound=ConfigModel)
 ScopeT = TypeVar("ScopeT", bound=ConfigModel)
@@ -180,11 +181,12 @@ class Connector(Generic[SettingsT, ScopeT]):
         self, roots: Iterable[str], complete: Callable[[], bool]
     ) -> Iterator[ListingBatch]:
         """Cut the root IDs a `listing` found into parts of `limits.max_rows`
-        IDs under one new listing ID. `roots` is read lazily, so a listing
-        streams. `complete` is called once `roots` is exhausted and says
-        whether the listing saw every document in scope."""
+        IDs (never more than the contract allows) under one new listing ID.
+        `roots` is read lazily, so a listing streams. `complete` is called
+        once `roots` is exhausted and says whether the listing saw every
+        document in scope."""
         listing_id = uuid4().hex
-        width = max(1, self.context.limits.max_rows)
+        width = max(1, min(self.context.limits.max_rows, MAX_READERS))
         part = 0
         ids: list[str] = []
         for root in roots:

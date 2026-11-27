@@ -16,6 +16,7 @@ from fyrr_connectors import (
     runtime,
     testkit,
 )
+from fyrr_connectors.validate import MAX_READERS
 
 SENTINEL = "SENTINEL-rt-0b52"
 BUNDLED = ["github", "google-drive", "jira", "local-files", "notion", "slack"]
@@ -293,3 +294,14 @@ def test_listing_batches_cut_roots_into_parts_of_one_listing(count, parts) -> No
     assert [batch.cursor for batch in batches] == [
         f"{batches[0].listing_id}:{part}" for part in range(len(parts))
     ]
+
+
+def test_a_listing_longer_than_the_contract_allows_in_one_part_is_split(tmp_path) -> None:
+    for index in range(MAX_READERS + 1):
+        (tmp_path / f"f{index}.txt").write_text("x")
+    result = testkit.run_sync(
+        "local-files", "reconcile", scope={"paths": [str(tmp_path)]}, readers=("grp:a",)
+    )
+    parts = [document["body"]["root_ids"] for document in result.documents]
+    assert len(parts) > 1 and max(map(len, parts)) <= MAX_READERS
+    assert sum(map(len, parts)) == MAX_READERS + 1
