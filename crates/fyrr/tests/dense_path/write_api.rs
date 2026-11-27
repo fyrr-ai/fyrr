@@ -95,7 +95,8 @@ impl Writer {
                 .build()
                 .unwrap(),
         };
-        for _ in 0..400 {
+        let deadline = Instant::now() + Duration::from_secs(120);
+        while Instant::now() < deadline {
             assert!(
                 writer.child.try_wait().unwrap().is_none(),
                 "the writer exited: {}",

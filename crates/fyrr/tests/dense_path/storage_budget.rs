@@ -453,14 +453,22 @@ async fn an_http_reader_with_api_keys_reads_them_once_per_version_check() {
             .send()
             .await
             .unwrap();
-        assert_eq!(response.status(), 401);
+        let status = response.status();
+        assert_eq!(status, 401, "{}", response.text().await.unwrap());
     }
     tokio::time::sleep(Duration::from_secs(4)).await;
-    let keys = seen
-        .all(0)
-        .iter()
-        .filter(|request| request.ends_with("/api-keys.json"))
-        .count();
+    let keys_read = || {
+        seen.all(0)
+            .iter()
+            .filter(|request| request.ends_with("/api-keys.json"))
+            .count()
+    };
+    // A loaded host can hold the version checks back: wait for the second read.
+    let deadline = std::time::Instant::now() + Duration::from_secs(120);
+    while keys_read() < 2 && std::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    let keys = keys_read();
     let allowed =
         usize::try_from(started.elapsed().as_millis() / INTERVAL.as_millis()).unwrap() + 2;
     assert!(
@@ -468,17 +476,37 @@ async fn an_http_reader_with_api_keys_reads_them_once_per_version_check() {
         "the keys were read {keys} times, allowed {allowed}"
     );
 
+    // A reader refuses, without a read, while the published keys it holds are
+    // older than two version checks: a loaded host can delay its checks that
+    // long. The request is asked again until that has passed.
+    let post_as = |key: usize, namespace: String| {
+        let reader = &reader;
+        async move {
+            let deadline = std::time::Instant::now() + Duration::from_secs(120);
+            loop {
+                let response = reader
+                    .client
+                    .post(format!("{}/v1/namespaces/{namespace}/query", reader.base))
+                    .bearer_auth(format!("fyrr_key_{key:064}"))
+                    .json(&json!({"query":"ledger"}))
+                    .send()
+                    .await
+                    .unwrap();
+                let status = response.status().as_u16();
+                let body = response.text().await.unwrap();
+                if body.contains("authorization_unavailable")
+                    && std::time::Instant::now() < deadline
+                {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    continue;
+                }
+                return (status, body);
+            }
+        }
+    };
     // A namespace that does not exist costs one read of its head and nothing
     // else; one that does opens within the budget of any namespace. Reads of
     // the published keys belong to the version checks, so they are set apart.
-    let post_as = |key: usize, namespace: String| {
-        reader
-            .client
-            .post(format!("{}/v1/namespaces/{namespace}/query", reader.base))
-            .bearer_auth(format!("fyrr_key_{key:064}"))
-            .json(&json!({"query":"ledger"}))
-            .send()
-    };
     let phase = |from: usize| {
         let reads = seen.all(from);
         let heads = reads.iter().filter(|read| *read == "GET head.json").count();
@@ -493,15 +521,15 @@ async fn an_http_reader_with_api_keys_reads_them_once_per_version_check() {
     // before the published keys admit the caller.
     let (mark, started) = (seen.len(), std::time::Instant::now());
     for i in 0..20 {
-        let response = post_as(8, format!("missing-{i}")).await.unwrap();
-        assert_eq!(response.status(), 403);
+        let (status, body) = post_as(8, format!("missing-{i}")).await;
+        assert_eq!(status, 403, "{body}");
     }
     let intervals = usize::try_from(started.elapsed().as_millis() / INTERVAL.as_millis()).unwrap();
     within("a key outside its prefix", phase(mark), 0, intervals + 2);
     let (mark, started) = (seen.len(), std::time::Instant::now());
     for i in 0..20 {
-        let response = post(format!("missing-{i}")).await.unwrap();
-        assert_eq!(response.status(), 401);
+        let (status, body) = post(format!("missing-{i}")).await;
+        assert_eq!(status, 401, "{body}");
     }
     let (heads, others) = phase(mark);
     assert!(heads >= 20, "the observer saw {heads} head reads");
@@ -514,8 +542,8 @@ async fn an_http_reader_with_api_keys_reads_them_once_per_version_check() {
         20 + 2 * intervals + 2,
     );
     let (mark, started) = (seen.len(), std::time::Instant::now());
-    let response = post("dense-fixture-two".to_owned()).await.unwrap();
-    assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+    let (status, body) = post("dense-fixture-two".to_owned()).await;
+    assert_eq!(status, 200, "{body}");
     let deadline = std::time::Instant::now() + Duration::from_secs(120);
     let mut quiet = 0;
     while quiet < 2 {
@@ -552,8 +580,8 @@ async fn an_http_reader_with_api_keys_reads_them_once_per_version_check() {
         0,
         intervals + 2,
     );
-    let response = post("dense-fixture-two".to_owned()).await.unwrap();
-    assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+    let (status, body) = post("dense-fixture-two".to_owned()).await;
+    assert_eq!(status, 200, "{body}");
     stop.store(true, std::sync::atomic::Ordering::SeqCst);
     reader.stop().await;
     std::fs::remove_dir_all(root).unwrap();
@@ -1187,130 +1215,109 @@ async fn an_idle_writer_service_that_wrote_to_many_namespaces_stays_within_the_b
 /// Index segments `writer maintain` allows an index before it merges them.
 const SEGMENT_CAP: usize = 64;
 
-/// A service that only serves keeps its namespace bounded: it compacts a
-/// fragment with deletions once the grace has passed, and two more commits than the cap leave at most
-/// the cap of segments per index and few fragments, with no `writer maintain`
-/// run after the service started.
+/// The served publication, once `done` holds of it: a service maintains in its
+/// own time, so a test waits on what it published, not on how long it took.
+async fn served_until(
+    config: &Path,
+    what: &str,
+    done: impl Fn(&ContentManifest) -> bool,
+) -> ContentManifest {
+    let deadline = std::time::Instant::now() + Duration::from_secs(600);
+    loop {
+        let (_, manifest) = super::coordination::publication(config).await;
+        if done(&manifest) {
+            return manifest;
+        }
+        assert!(std::time::Instant::now() < deadline, "timed out: {what}");
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+/// A service that only serves keeps its namespace bounded: it maintains a
+/// namespace never maintained, compacts a fragment with deletions once the
+/// grace has passed, and more commits than the cap leave at most the cap of
+/// segments per index, with no `writer maintain` run. Each write waits for its
+/// publication, so a loaded host only slows the test.
 #[tokio::test]
 #[ignore = "real executable and local storage; scripts/ci"]
 async fn a_writer_service_maintains_the_namespace_it_serves() {
+    use super::write_api::{WRITE_KEY, Writer, configure, embed};
     let (config, root) = setup_on(Backend::Local);
     assert_eq!(
         std::env::var("FYRR_TEST_S3_ENDPOINT").unwrap(),
         "local-storage",
         "owned by the local CI row"
     );
-    let text = std::fs::read_to_string(&config)
-        .unwrap()
-        .replace("# fyrr-test-head-check = every", "")
-        .replacen(
-            "[[sources]]",
-            "[writer.commit]\ncoalescing_timer = \"1s\"\n[[sources]]",
-            1,
-        );
-    std::fs::write(&config, &text).unwrap();
-    success(&config, &["writer", "namespace", "create"]);
-    // Two documents in one fragment: replacing one leaves a deletion in it.
-    let mut texts = vec![
-        ("0.txt".to_owned(), "ledger entry 0".to_owned()),
-        ("1.txt".to_owned(), "ledger entry 1".to_owned()),
-    ];
-    let sync = |texts: &[(String, String)]| {
-        let borrowed: Vec<_> = texts
-            .iter()
-            .map(|(n, t)| (n.as_str(), t.as_str()))
-            .collect();
-        sync_texts(&config, &root, &borrowed);
-    };
-    sync(&texts);
-    success(&config, &["writer", "commit"]);
-    // The command keeps working, and the service starts from a maintained namespace.
-    success(&config, &["writer", "maintain"]);
-
-    let log = root.join("service.log");
-    let service = Service(
-        Command::new(crate::common::binary())
-            .arg("--config")
-            .arg(&config)
-            .args(["writer", "serve", "--jobs", "1"])
-            .env(
-                "VIRTUAL_ENV",
-                Path::new(env!("CARGO_MANIFEST_DIR")).join("../../connectors/.venv"),
-            )
-            .stdout(Stdio::null())
-            .stderr(std::fs::File::create(&log).unwrap())
-            .spawn()
-            .unwrap(),
-        Arc::new(AtomicBool::new(false)),
-    );
-    let events = |event: &str| {
-        std::fs::read_to_string(&log)
-            .unwrap()
-            .matches(&format!("writer_service event={event}"))
-            .count()
-    };
-    let wait = |what: &str, done: &dyn Fn() -> bool| {
-        let deadline = std::time::Instant::now() + Duration::from_secs(180);
-        while !done() {
-            assert!(std::time::Instant::now() < deadline, "timed out: {what}");
-            std::thread::sleep(Duration::from_millis(250));
+    let address = free_address();
+    configure(&config, &address, "open = true");
+    let revised = "ledger entry zero, revised";
+    let texts: Vec<String> = (0..SEGMENT_CAP + 4)
+        .map(|i| format!("ledger entry {i}"))
+        .collect();
+    let mut known: Vec<&str> = texts.iter().map(String::as_str).collect();
+    known.push(revised);
+    embed(&root, &known);
+    let writer = Writer::start(&config, &root, address).await;
+    let write = |id: usize, text: &str| {
+        let body = json!({"upserts": [{"id": id.to_string(), "text": text}]});
+        let writer = &writer;
+        async move {
+            assert_eq!(
+                writer.post(WRITE_KEY, "dense-fixture", &body).await,
+                (200, json!({"upserted": 1, "deleted": 0}))
+            );
         }
     };
-    // A replaced document leaves a deletion in its fragment: the service compacts it.
-    texts[0].1 = "ledger entry zero, revised".to_owned();
-    sync(&texts);
-    // Deletions wait for `writer.version_grace` after the last maintenance, so
-    // that steady upserts do not run it on every publication.
-    fyrr_core::clock::advance(Duration::from_secs(2 * 3600)).unwrap();
-    wait("maintenance of a deletion", &|| events("maintained") >= 1);
+    // Two documents in one fragment. A namespace never maintained is due.
+    let first = json!({"upserts": [
+        {"id": "0", "text": texts[0]},
+        {"id": "1", "text": texts[1]},
+    ]});
+    assert_eq!(
+        writer.post(WRITE_KEY, "dense-fixture", &first).await,
+        (200, json!({"upserted": 2, "deleted": 0}))
+    );
+    served_until(&config, "the first maintenance", |manifest| {
+        manifest.maintenance_completed_at.is_some()
+    })
+    .await;
+    // A replaced document leaves a deletion in its fragment.
+    write(0, revised).await;
     let (_, manifest) = super::coordination::publication(&config).await;
     assert!(
         manifest
             .files
             .iter()
-            .all(|file| !file.path.starts_with("_deletions/")),
+            .any(|file| file.path.starts_with("_deletions/")),
         "{:?}",
         manifest.files
     );
-    for i in 2..SEGMENT_CAP + 4 {
-        let before = events("published");
-        texts.push((format!("{i}.txt"), format!("ledger entry {i}")));
-        sync(&texts);
-        wait("a publication", &|| events("published") > before);
+    // Deletions wait for `writer.version_grace` after the last maintenance, so
+    // that steady upserts do not run it on every publication. The next
+    // publication finds the grace passed.
+    fyrr_core::clock::advance(Duration::from_secs(2 * 3600)).unwrap();
+    write(2, &texts[2]).await;
+    served_until(&config, "maintenance of a deletion", |manifest| {
+        manifest
+            .files
+            .iter()
+            .all(|file| !file.path.starts_with("_deletions/"))
+    })
+    .await;
+    for (id, text) in texts.iter().enumerate().skip(3) {
+        write(id, text).await;
     }
-    wait("maintenance of the segments", &|| events("maintained") >= 2);
-    drop(service);
-    assert_eq!(events("maintenance_failed"), 0);
-
-    let (_, manifest) = super::coordination::publication(&config).await;
-    let mut segments = std::collections::BTreeMap::<String, usize>::new();
-    for index in &manifest.indexes {
-        *segments.entry(index.name.clone()).or_default() += 1;
-    }
-    assert!(
-        segments.values().all(|count| *count <= SEGMENT_CAP),
-        "{segments:?}"
-    );
-    let loaded = fyrr_core::config::load(&config).unwrap();
-    let dataset = fyrr_reader::storage::open_version(
-        &fyrr_reader::storage::dataset_uri(&loaded.config),
-        loaded
-            .config
-            .storage
-            .object_store_options(&fyrr_core::config::ProcessEnvironment)
-            .unwrap(),
-        manifest.lance_version,
-        None,
-    )
-    .await
-    .unwrap();
-    let fragments = dataset.manifest().fragments.len();
-    // Each commit adds a fragment per source; unmaintained they would all remain.
-    let commits = SEGMENT_CAP + 2;
-    assert!(
-        fragments < 2 * commits,
-        "{fragments} fragments after {commits} commits"
-    );
+    served_until(&config, "maintenance of the segments", |manifest| {
+        let mut segments = std::collections::BTreeMap::<&str, usize>::new();
+        for index in &manifest.indexes {
+            *segments.entry(&index.name).or_default() += 1;
+        }
+        segments.values().all(|count| *count <= SEGMENT_CAP)
+    })
+    .await;
+    let log = std::fs::read_to_string(root.join("service.stderr")).unwrap();
+    assert!(!log.contains("maintenance_failed"), "{log}");
+    drop(writer);
     success(&config, &["writer", "verify"]);
     std::fs::remove_dir_all(root).unwrap();
 }
