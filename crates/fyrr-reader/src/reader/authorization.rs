@@ -314,7 +314,7 @@ impl PreparedReader {
         if subject.identity.as_ref() != Some(&self.head.identity) {
             return Err(AuthorizationUnavailable);
         }
-        if subject.expires <= fyrr_core::clock::now().timestamp() {
+        if !crate::auth::unexpired(subject.expires, fyrr_core::clock::now().timestamp()) {
             return Err(AuthorizationUnavailable);
         }
         let principal = self

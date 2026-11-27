@@ -26,9 +26,9 @@ impl PreparedReader {
         }
         if self.head.identity != sample.identity
             || self.head.policy != sample.policy
-            || sample
-                .expires
-                .is_some_and(|expiry| expiry <= fyrr_core::clock::now().timestamp())
+            || sample.expires.is_some_and(|expiry| {
+                !crate::auth::unexpired(expiry, fyrr_core::clock::now().timestamp())
+            })
         {
             return Err(SampleSkip::AuthorizationChanged);
         }

@@ -17,7 +17,12 @@ async fn uploading(config: &Config) -> Result<bool> {
     let (store, root) = namespace_store(config)?;
     let mut cursors = store.list(Some(&root.join("cursors")));
     while let Some(meta) = cursors.try_next().await? {
-        let cursor: CursorState = read_contract(store.as_ref(), &meta.location).await?;
+        let cursor: CursorState = match read_contract(store.as_ref(), &meta.location).await {
+            Ok(cursor) => cursor,
+            // One that does not parse may hold a live lease: nothing is reaped.
+            Err(fyrr_reader::storage::StorageError::PublicationInvalid) => return Ok(true),
+            Err(error) => return Err(error.into()),
+        };
         if cursor
             .lease
             .is_some_and(|lease| lease.expires_at > fyrr_core::clock::now())

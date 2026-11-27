@@ -23,7 +23,7 @@ impl PreparedReader {
         if cursor.scope().namespace != self.config.namespace.name
             || cursor.scope().subject != subject
             || cursor.scope().content_version != self.manifest.lance_version
-            || cursor.scope().expires <= fyrr_core::clock::now().timestamp()
+            || !crate::auth::unexpired(cursor.scope().expires, fyrr_core::clock::now().timestamp())
             || self
                 .head
                 .content

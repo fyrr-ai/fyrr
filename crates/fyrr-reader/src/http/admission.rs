@@ -155,7 +155,8 @@ impl Admission {
         let head = self.head().await?;
         let now = fyrr_core::clock::now();
         self.grant(subject, roles, &config.namespace.name).await?;
-        let live = head.namespace == config.namespace.name && subject.expires > now.timestamp();
+        let live = head.namespace == config.namespace.name
+            && crate::auth::unexpired(subject.expires, now.timestamp());
         // An API-key secret proves nothing until the identity binds it, so its
         // lookup comes before the namespace and expiry checks: an unbound
         // key is `Unauthorized` whatever their state.
