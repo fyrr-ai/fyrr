@@ -17,14 +17,11 @@ removed when the script ends.
 """
 
 import argparse
-import http.client
 import json
 import os
-import platform
 import random
 import secrets
 import shutil
-import socket
 import subprocess
 import sys
 import tempfile
@@ -32,6 +29,8 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+
+from benchlib import Server, free_address, machine
 
 DIMENSIONS = 128
 NAMESPACE = "bench-positions"
@@ -44,12 +43,6 @@ ROWS_URL = (
 # A Lance inverted index keeps its postings, and with them the positions, in a
 # file that ends with this name.
 POSTINGS = "invert.lance"
-
-
-def free_address():
-    with socket.socket() as probe:
-        probe.bind(("127.0.0.1", 0))
-        return "127.0.0.1:%d" % probe.getsockname()[1]
 
 
 def fetch_page(url):
@@ -163,29 +156,18 @@ def build(binary, documents, positions):
             stdout=subprocess.DEVNULL,
             stderr=(work / "writer.stderr").open("w"),
         )
-        host, port = address.split(":")
+        path = "/v1/namespaces/%s/documents" % NAMESPACE
         for _ in range(600):
             try:
-                connection = http.client.HTTPConnection(host, int(port), timeout=3600)
-                started = time.perf_counter()
-                connection.request(
-                    "POST",
-                    "/v1/namespaces/%s/documents" % NAMESPACE,
-                    body,
-                    {
-                        "Authorization": "Bearer " + key,
-                        "Content-Type": "application/json",
-                    },
+                status, answer, took = Server(address).call(
+                    "POST", path, key, body, timeout=3600
                 )
-                response = connection.getresponse()
-                answer = response.read()
-                took = time.perf_counter() - started
                 break
             except OSError:
                 time.sleep(0.1)
         else:
             raise SystemExit("the writer did not come up")
-        assert response.status == 200, (response.status, answer)
+        assert status == 200, (status, answer)
         print(
             "fts_positions=%s: wrote %d rows (%.0f s)" % (positions, len(rows), took),
             file=sys.stderr,
@@ -199,18 +181,6 @@ def build(binary, documents, positions):
         return index_files(work / "storage")
     finally:
         shutil.rmtree(work)
-
-
-def machine():
-    cpu = next(
-        (
-            line.split(":", 1)[1].strip()
-            for line in Path("/proc/cpuinfo").read_text().splitlines()
-            if line.startswith("model name")
-        ),
-        "unknown",
-    )
-    return {"kernel": platform.release(), "cpu": cpu, "logical_cpus": os.cpu_count()}
 
 
 def main():
