@@ -6548,6 +6548,8 @@ async fn identity_write_api_takes_current_settings_and_refuses_unknown_ones_on_s
         // A key that no setting has, whatever its value.
         json!({"typo": {}}),
         json!({"typo": null}),
+        // An array is no object, nor a stand-in for a `null` member.
+        json!({"write_api": []}),
     ] {
         assert_eq!(
             writer

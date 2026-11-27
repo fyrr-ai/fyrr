@@ -92,6 +92,25 @@ fn names_only(
                 .any(|branch| names_only(request, branch, root));
         }
     }
+    // A branch of a union fits the value only if its type is the value's.
+    let kind = match request {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "boolean",
+        serde_json::Value::Number(_) => "number",
+        serde_json::Value::String(_) => "string",
+        serde_json::Value::Array(_) => "array",
+        serde_json::Value::Object(_) => "object",
+    };
+    let fits = |declared: &serde_json::Value| {
+        declared == kind || (kind == "number" && declared == "integer")
+    };
+    if let Some(declared) = schema.get("type")
+        && !declared
+            .as_array()
+            .map_or_else(|| fits(declared), |types| types.iter().any(fits))
+    {
+        return false;
+    }
     let declared = schema.get("properties").and_then(Value::as_object);
     let values = schema.get("additionalProperties").filter(|v| v.is_object());
     match request {
@@ -104,20 +123,11 @@ fn names_only(
             (None, Some(values)) => members
                 .values()
                 .all(|member| names_only(member, values, root)),
-            // A value that is no object: an enum or a scalar.
-            (None, None) => {
-                !schema.contains_key("enum")
-                    && !schema.contains_key("const")
-                    && schema.get("type").is_none_or(|kind| {
-                        kind == "object"
-                            || kind
-                                .as_array()
-                                .is_some_and(|k| k.iter().any(|k| k == "object"))
-                    })
-            }
+            // An enum or a constant is no object.
+            (None, None) => !schema.contains_key("enum") && !schema.contains_key("const"),
         },
         // A struct does not stand in for an array: serde would read one.
-        _ => declared.is_none() || request.is_null(),
+        _ => declared.is_none(),
     }
 }
 
