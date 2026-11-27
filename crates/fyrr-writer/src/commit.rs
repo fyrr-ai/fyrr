@@ -328,7 +328,17 @@ pub(crate) async fn chains<L: Link>(
             .as_ref()
             .and_then(|m| m.chain_applied.get(source))
             .and_then(|kinds| kinds.get(&kind));
-        let cursor = crate::sync_lease::CursorLease::peek(config, source, kind).await?;
+        let cursor = match crate::sync_lease::CursorLease::peek(config, source, kind).await {
+            Ok(cursor) => cursor,
+            // A cursor that does not parse confirms nothing: the source is
+            // blocked until it is purged, and only that source.
+            Err(WriterError::CursorInvalid) => {
+                crate::telemetry::chain_blocked(source, kind);
+                found.insert((source.clone(), kind), Chain::Broken);
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
         // A missing cursor of a chain whose envelopes a worker wrote lost what
         // confirmed them: the source is blocked until it is purged.
         let mut lost = false;

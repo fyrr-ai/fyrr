@@ -253,10 +253,11 @@ published before its envelope is written, and stays.
 Cursor objects (`cursors/SOURCE_ID-KIND.json`) and envelopes
 (`envelopes/ID.json`) are internal: never delete, copy, edit or restore them
 by hand. When a chain from a cursor does not reach the one the publication
-applied (an envelope of it was deleted), or the cursor is missing while the log
-holds envelopes it chained, the committer blocks the source: a broken content
-chain holds its content; a broken permissions chain holds its permissions,
-content and listings, so no revocation is skipped. The other sources go on.
+applied (an envelope of it was deleted), when the cursor is missing while the
+log holds envelopes it chained, or when the cursor does not parse, the
+committer blocks the source: a broken content chain holds its content; a
+broken permissions chain holds its permissions, content and listings, so no
+revocation is skipped. The other sources go on.
 `fyrr writer status` lists it in `blocked_sources`, and the committer logs
 `telemetry chain=blocked source=SOURCE_ID kind=KIND`.
 
