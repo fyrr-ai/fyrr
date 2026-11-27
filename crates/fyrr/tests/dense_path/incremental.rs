@@ -3636,7 +3636,14 @@ async fn incremental_content_waits_for_a_confirmed_revoke_before_any_envelope_wa
         &["incremental", "--kind", "content", "--kind", "permissions"],
     );
     let revoke = permission_envelopes(&worker).await.pop().unwrap();
-    assert!(publication(&commit).await.1.chain_applied.is_empty());
+    assert!(
+        publication(&commit)
+            .await
+            .1
+            .chain_applied
+            .get("incremental")
+            .is_none_or(|kinds| !kinds.contains_key(&SyncKind::Permissions))
+    );
     let loaded = fyrr_core::config::load(&worker).unwrap();
     let (store, ns) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
     let path = ns
@@ -4329,6 +4336,12 @@ enum Step {
     Copy,
     OtherContent,
     Publish,
+    /// A content read of the source, published.
+    ContentRead,
+    /// A content read whose worker dies before the cursor write that confirms
+    /// its envelope: it never publishes, and the next read, of the same
+    /// revisions, publishes them.
+    ContentCrashAfterPut,
 }
 
 const STEPS: [(Step, u64); 13] = [
@@ -4377,6 +4390,10 @@ struct Run {
     /// The documents maintenance purged, until their content is fetched again.
     purged: [bool; 2],
     held: Option<fyrr_core::connector::CursorState>,
+    /// The content envelopes that no cursor confirmed: no publication names them.
+    lost_content: Vec<String>,
+    /// Whether the next content read repeats the revisions of a lost one.
+    redo: bool,
 }
 
 impl Drop for Run {
@@ -4672,6 +4689,52 @@ impl Run {
                 );
                 self.check().await;
             }
+            Step::ContentRead => {
+                if !std::mem::take(&mut self.redo) {
+                    self.content += 1;
+                }
+                self.trace.push(format!("content_read r{}", self.content));
+                self.input(None, None);
+                worker_sync(&self.worker, &["incremental", "--kind", "content"]);
+                self.publish().await;
+                if self.published().await {
+                    let batch = rows(&self.worker).await;
+                    let revisions = fyrr_writer::apply::strings(&batch, "source_revision").unwrap();
+                    for row in 0..batch.num_rows() {
+                        assert_eq!(
+                            revisions.value(row),
+                            format!("r{}", self.content),
+                            "the content read publishes"
+                        );
+                    }
+                }
+            }
+            Step::ContentCrashAfterPut => {
+                self.content += 1;
+                self.trace.push(format!(
+                    "content_crash_after_put_before_cursor r{}",
+                    self.content
+                ));
+                self.input(None, None);
+                let before = cursor_of(&self.worker, SyncKind::Content).await;
+                let known = envelope_ids(&self.worker).await;
+                worker_sync(&self.worker, &["incremental", "--kind", "content"]);
+                let mut after = cursor_of(&self.worker, SyncKind::Content).await;
+                let written: Vec<_> = envelope_ids(&self.worker)
+                    .await
+                    .into_iter()
+                    .filter(|id| !known.contains(id))
+                    .collect();
+                assert!(!written.is_empty(), "the read wrote its content");
+                self.lost_content.extend(written);
+                after.sequence = before.sequence;
+                after.cursor = before.cursor;
+                after.last = before.last;
+                after.updated_at = before.updated_at;
+                put_cursor(&self.worker, &after).await;
+                self.redo = true;
+                self.publish().await;
+            }
             Step::Publish | Step::AgeAndClean | Step::Copy | Step::OtherContent => {
                 self.trace.push("publish".into());
                 self.publish().await;
@@ -4792,6 +4855,13 @@ impl Run {
                 if manifest.sequence <= self.checked {
                     break;
                 }
+                for id in &self.lost_content {
+                    assert!(
+                        !manifest.envelope_ids.contains(id),
+                        "publication {} names {id}, which no cursor confirmed",
+                        manifest.sequence
+                    );
+                }
                 // A publication of maintenance, with no envelope, changes no right.
                 if !manifest.envelope_ids.is_empty() || manifest.sequence == content.sequence {
                     published.push((manifest.sequence, manifest.lance_version));
@@ -4829,6 +4899,7 @@ impl Run {
                 .1
                 .chain_applied
                 .get("incremental")
+                .and_then(|kinds| kinds.get(&SyncKind::Permissions))
                 .cloned(),
             None => None,
         };
@@ -4855,6 +4926,39 @@ impl Run {
                 "the read {id} waits behind a newer one that was rejected"
             );
             dropped |= rejected_ids.contains(&id);
+            next = link.previous;
+        }
+        // So is every link of the content chain.
+        let content_applied = match &head.content {
+            Some(_) => publication(&self.commit)
+                .await
+                .1
+                .chain_applied
+                .get("incremental")
+                .and_then(|kinds| kinds.get(&SyncKind::Content))
+                .cloned(),
+            None => None,
+        };
+        let content_cursor: Option<fyrr_core::connector::CursorState> =
+            fyrr_reader::storage::read_contract(
+                store.as_ref(),
+                &ns.clone().join("cursors").join("incremental-content.json"),
+            )
+            .await
+            .ok();
+        let mut next = content_cursor
+            .and_then(|state| state.last)
+            .map(|last| last.id);
+        while let Some(id) = next.take() {
+            if content_applied.as_ref() == Some(&id) {
+                break;
+            }
+            let link: PreparedEnvelope = fyrr_reader::storage::read_contract(
+                store.as_ref(),
+                &ns.clone().join("envelopes").join(format!("{id}.json")),
+            )
+            .await
+            .unwrap_or_else(|_| panic!("the content link {id} is not in the log"));
             next = link.previous;
         }
         let listed: Vec<_> = futures::TryStreamExt::try_collect::<Vec<_>>(
@@ -5000,6 +5104,8 @@ async fn schedule(seed: u64, genesis: bool, steps: &[Step], purge: bool) {
         last_end: None,
         purged: [false; 2],
         held: None,
+        lost_content: Vec::new(),
+        redo: false,
     };
     small_groups(&[&run.commit.clone()]);
     // The publications before the schedule are of the fixture.
@@ -5072,7 +5178,7 @@ async fn incremental_scheduled_reads_faults_cleanup_and_copy_keep_the_rights_exa
 
 /// The sequences each fault of the log needs, as one short schedule each.
 #[rustfmt::skip]
-const SCRIPTS: [(u64, bool, &[Step], bool); 8] = [
+const SCRIPTS: [(u64, bool, &[Step], bool); 11] = [
     // A revoke waits when a read after it is refused for a row over the group.
     (101, false, &[Step::ReadOk, Step::Oversize, Step::Publish], false),
     (102, true, &[Step::ReadOk, Step::Oversize, Step::Publish], false),
@@ -5087,6 +5193,10 @@ const SCRIPTS: [(u64, bool, &[Step], bool); 8] = [
     // Reads nobody published when the clock passes their age, and a purge.
     (105, false, &[Step::ReadOk, Step::ReadOk, Step::ReadFails, Step::AgeAndClean, Step::LatePut], false),
     (106, false, &[Step::ReadOk, Step::Takeover, Step::LatePut, Step::CrashAfterPut, Step::Publish, Step::ReadCrashAfterCursor, Step::Publish, Step::Copy], false),
+    // Content that no cursor confirmed, then a read of the same revisions (#331).
+    (110, false, &[Step::ContentCrashAfterPut, Step::Publish, Step::ContentRead, Step::ReadOk, Step::Publish], false),
+    (111, true, &[Step::ContentCrashAfterPut, Step::ContentCrashAfterPut, Step::ContentRead, Step::Publish], false),
+    (112, false, &[Step::ReadOk, Step::ContentCrashAfterPut, Step::CrashAfterPut, Step::ContentRead, Step::AgeAndClean, Step::ContentRead], false),
 ];
 
 const SCHEDULES: [(u64, bool); 4] = [(2, false), (3, false), (4, false), (5, true)];
@@ -5106,26 +5216,33 @@ enum ApiStep {
     /// An envelope of 0.1 at the next sequence, without a lease generation.
     Debris,
     Takeover,
+    /// A put of the worker whose lease was taken over, after the takeover.
+    LatePut,
     AgeAndClean,
 }
 
-const API_STEPS: [(ApiStep, u64); 5] = [
+const API_STEPS: [(ApiStep, u64); 6] = [
     (ApiStep::Write, 3),
     (ApiStep::CrashAfterPut, 2),
     (ApiStep::Debris, 1),
     (ApiStep::Takeover, 1),
+    (ApiStep::LatePut, 1),
     (ApiStep::AgeAndClean, 1),
 ];
 
 /// The sequences each fault needs, as one short schedule each.
 #[rustfmt::skip]
-const API_SCRIPTS: [(u64, &[ApiStep]); 3] = [
+const API_SCRIPTS: [(u64, &[ApiStep]); 5] = [
     // A write that died before its cursor write, then the one that takes its sequence.
     (201, &[ApiStep::CrashAfterPut, ApiStep::Write, ApiStep::CrashAfterPut, ApiStep::CrashAfterPut, ApiStep::Write]),
     // An envelope at the ID the next write had before lease generations.
     (202, &[ApiStep::Debris, ApiStep::Write, ApiStep::AgeAndClean, ApiStep::Write]),
     // A lease taken and given back around a crash, and cleanup of what it left.
     (203, &[ApiStep::Takeover, ApiStep::CrashAfterPut, ApiStep::Takeover, ApiStep::Write, ApiStep::AgeAndClean]),
+    // A crash in the generation of the cursor, kept by cleanup until a write follows.
+    (204, &[ApiStep::CrashAfterPut, ApiStep::AgeAndClean, ApiStep::Write, ApiStep::AgeAndClean]),
+    // A late put of the worker whose lease was taken over.
+    (205, &[ApiStep::Takeover, ApiStep::CrashAfterPut, ApiStep::LatePut, ApiStep::Write, ApiStep::LatePut, ApiStep::AgeAndClean]),
 ];
 
 const API_SCHEDULES: [u64; 2] = [6, 7];
@@ -5164,6 +5281,10 @@ struct ApiRun {
     answered: Vec<String>,
     /// The texts of writes that died before their cursor write: never visible.
     lost: Vec<String>,
+    /// Their envelopes, which no publication names.
+    lost_ids: Vec<String>,
+    /// The cursor as the worker whose lease was taken over last saw it.
+    held: Option<fyrr_core::connector::CursorState>,
     checked: u64,
 }
 
@@ -5182,6 +5303,42 @@ impl Drop for ApiRun {
 
 fn api_text(n: usize) -> String {
     format!("schedule text {n}")
+}
+
+/// The IDs of the envelopes in the log.
+async fn envelope_ids(config: &Path) -> BTreeSet<String> {
+    let loaded = fyrr_core::config::load(config).unwrap();
+    let (store, ns) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
+    futures::TryStreamExt::try_collect::<Vec<_>>(object_store::ObjectStore::list(
+        store.as_ref(),
+        Some(&ns.join("envelopes")),
+    ))
+    .await
+    .unwrap()
+    .into_iter()
+    .filter_map(|object| {
+        object
+            .location
+            .filename()
+            .and_then(|name| name.strip_suffix(".json"))
+            .map(str::to_owned)
+    })
+    .collect()
+}
+
+/// Puts `state` as the stored cursor of its source and kind, without its
+/// lease: what a worker that died before a cursor write leaves.
+async fn put_cursor(config: &Path, state: &fyrr_core::connector::CursorState) {
+    let loaded = fyrr_core::config::load(config).unwrap();
+    let (store, ns) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
+    store
+        .put(
+            &ns.join("cursors")
+                .join(format!("{}-{}.json", state.source_id, state.kind.as_str())),
+            write_contract(state).into(),
+        )
+        .await
+        .unwrap();
 }
 
 impl ApiRun {
@@ -5255,26 +5412,26 @@ impl ApiRun {
                     answer = request => panic!("a write was answered under a held lease: {answer:?}"),
                     () = confirmed => {}
                 }
-                // The cursor write never happened: the cursor is as before.
-                let cursor = loop {
-                    match fyrr_writer::sync_lease::CursorLease::acquire(
-                        &loaded.config,
-                        fyrr_core::connector::API_SOURCE_ID,
-                        SyncKind::Content,
-                    )
+                // The cursor write never happened: the cursor is as before, in
+                // the generation of the lease the envelope was written under.
+                // The worker releases its lease first, as a crash would leave it
+                // to expire.
+                while self
+                    .cursor()
                     .await
-                    {
-                        Ok(cursor) => break cursor,
-                        Err(_) => tokio::time::sleep(std::time::Duration::from_millis(20)).await,
-                    }
-                };
-                let mut state = cursor.state().await.unwrap();
-                state.sequence = before.sequence;
-                state.last = before.last;
-                cursor.write(state).await.unwrap();
-                cursor.release().await.unwrap();
+                    .lease
+                    .is_some_and(|lease| lease.expires_at > fyrr_core::clock::now())
+                {
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+                let mut after = self.cursor().await;
+                self.lost_ids.push(after.last.take().unwrap().id);
+                after.sequence = before.sequence;
+                after.last = before.last;
+                put_cursor(&self.config, &after).await;
                 lease.release().await.unwrap();
                 self.lost.push(text);
+                self.check().await;
             }
             ApiStep::Debris => {
                 self.trace
@@ -5313,6 +5470,7 @@ impl ApiRun {
             }
             ApiStep::Takeover => {
                 self.trace.push("lease_takeover".into());
+                self.held = Some(self.cursor().await);
                 let cursor = fyrr_writer::sync_lease::CursorLease::acquire(
                     &loaded.config,
                     fyrr_core::connector::API_SOURCE_ID,
@@ -5321,6 +5479,49 @@ impl ApiRun {
                 .await
                 .unwrap();
                 cursor.release().await.unwrap();
+            }
+            ApiStep::LatePut => {
+                let (Some(held), Some(lost)) = (self.held.take(), self.lost_ids.last().cloned())
+                else {
+                    self.trace.push("late_put (nothing to put)".into());
+                    return;
+                };
+                let (store, ns) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
+                let Ok(mut envelope) = fyrr_reader::storage::read_contract::<PreparedEnvelope>(
+                    store.as_ref(),
+                    &ns.clone().join("envelopes").join(format!("{lost}.json")),
+                )
+                .await
+                else {
+                    self.trace.push("late_put (its body was cleaned up)".into());
+                    return;
+                };
+                self.trace.push("late_put_of_the_old_worker".into());
+                // The body of a lost write, put as the next envelope of the old lease.
+                let generation = held.lease.as_ref().map_or(0, |lease| lease.epoch);
+                envelope.sequence = held.sequence + 1;
+                envelope.lease_generation = generation;
+                envelope.previous = held.last.map(|last| last.id);
+                envelope.envelope_id = fyrr_core::envelope::leased_envelope_id(
+                    &loaded.config.namespace.name,
+                    fyrr_core::connector::API_SOURCE_ID,
+                    SyncKind::Content,
+                    envelope.sequence,
+                    held.rejection_generation,
+                    held.cursor.as_deref(),
+                    generation,
+                );
+                envelope.created_at = fyrr_core::clock::now();
+                store
+                    .put(
+                        &ns.join("envelopes")
+                            .join(format!("{}.json", envelope.envelope_id)),
+                        write_contract(&envelope).into(),
+                    )
+                    .await
+                    .unwrap();
+                self.lost_ids.push(envelope.envelope_id);
+                self.check().await;
             }
             ApiStep::AgeAndClean => {
                 self.trace
@@ -5342,6 +5543,9 @@ impl ApiRun {
                 )
                 .await
                 .unwrap();
+                // An envelope of the cursor's own generation may still be
+                // confirmed by it, and stays.
+                let generation = self.cursor().await.lease.map_or(0, |lease| lease.epoch);
                 for object in listed {
                     let envelope: PreparedEnvelope =
                         fyrr_reader::storage::read_contract(store.as_ref(), &object.location)
@@ -5349,8 +5553,9 @@ impl ApiRun {
                             .unwrap();
                     assert!(
                         applied.contains(&envelope.envelope_id)
-                            || rejected.contains(&envelope.envelope_id),
-                        "cleanup kept {}, which no cursor confirmed",
+                            || rejected.contains(&envelope.envelope_id)
+                            || envelope.lease_generation == generation,
+                        "cleanup kept {}, which no cursor confirms",
                         envelope.envelope_id
                     );
                 }
@@ -5379,6 +5584,13 @@ impl ApiRun {
         while let Some(manifest) = futures::TryStreamExt::try_next(&mut chain).await.unwrap() {
             if manifest.sequence <= self.checked {
                 break;
+            }
+            for id in &self.lost_ids {
+                assert!(
+                    !manifest.envelope_ids.contains(id),
+                    "publication {} names {id}, which no cursor confirmed",
+                    manifest.sequence
+                );
             }
             versions.push(manifest.lance_version);
         }
@@ -5424,6 +5636,7 @@ impl ApiRun {
             .1
             .chain_applied
             .get(fyrr_core::connector::API_SOURCE_ID)
+            .and_then(|kinds| kinds.get(&SyncKind::Content))
             .cloned();
         let mut next = self.cursor().await.last.map(|last| last.id);
         while let Some(id) = next.take() {
@@ -5467,6 +5680,8 @@ async fn api_schedule(seed: u64, steps: &[ApiStep]) {
         texts: 0,
         answered: Vec::new(),
         lost: Vec::new(),
+        lost_ids: Vec::new(),
+        held: None,
         checked: 0,
     };
     // A namespace that is published has had a write.
@@ -5480,4 +5695,127 @@ async fn api_schedule(seed: u64, steps: &[ApiStep]) {
     let storage = super::namespace_copy::storage_of(&run.config);
     std::fs::remove_dir_all(storage).unwrap();
     std::fs::remove_dir_all(&*run.root).unwrap();
+}
+
+/// Removes the content cursor of `incremental`, as an operator who lost it.
+async fn lose_content_cursor(config: &Path) {
+    let loaded = fyrr_core::config::load(config).unwrap();
+    let (store, ns) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
+    store
+        .delete(&ns.join("cursors").join("incremental-content.json"))
+        .await
+        .unwrap();
+}
+
+/// A content cursor lost while a publication is in flight is made again only
+/// once it is published: the new cursor confirms what that publication
+/// applied, and the source is not blocked by a chain that misses it (#422).
+#[tokio::test]
+#[ignore = "real CLI and local storage; scripts/ci"]
+async fn incremental_a_lost_content_cursor_waits_for_a_publication_in_flight_on_storage() {
+    let (worker, commit, root) = fixture();
+    input(
+        &root,
+        json!({"epoch":1,"content":[[doc("a","r1","fixture document 0")]]}),
+    );
+    worker_sync(&worker, &["incremental", "--kind", "content"]);
+    publish(&commit);
+    input(
+        &root,
+        json!({"epoch":2,"content":[[doc("a","r2","fixture document 0")]]}),
+    );
+    worker_sync(&worker, &["incremental", "--kind", "content"]);
+    // The committer stops once the manifest of r2 is written, before the head
+    // names it, holding the namespace lease.
+    let endpoint = std::env::var("FYRR_TEST_S3_ENDPOINT").unwrap();
+    let (gate, hook) = super::corrections::RequestGate::new(|request, _, after| {
+        after && request.starts_with("PUT /local/") && request.contains("/publications/")
+    });
+    let (proxied_endpoint, proxy) = super::corrections::proxy_at_boundary(
+        endpoint,
+        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        hook,
+    );
+    let proxied = super::corrections::proxied(&commit, &proxied_endpoint);
+    let committer = std::thread::spawn(move || command(&proxied, &["writer", "commit"]));
+    gate.entered();
+    lose_content_cursor(&worker).await;
+    input(
+        &root,
+        json!({"epoch":3,"content":[[doc("a","r3","fixture document 0")]]}),
+    );
+    let refused = worker_command(&worker)
+        .args(["writer", "sync", "incremental", "--kind", "content"])
+        .output()
+        .unwrap();
+    assert!(
+        !refused.status.success(),
+        "the cursor is made under the namespace lease"
+    );
+    assert!(
+        String::from_utf8_lossy(&refused.stdout).contains("committer_busy"),
+        "{}",
+        String::from_utf8_lossy(&refused.stdout)
+    );
+    gate.release();
+    committer.join().unwrap();
+    drop(gate);
+    drop(proxy);
+    worker_sync(&worker, &["incremental", "--kind", "content"]);
+    publish(&commit);
+    let status = command(&commit, &["writer", "status"]);
+    assert_eq!(status["blocked_sources"], json!([]), "{status}");
+    assert_eq!(status["pending_envelopes"], 0, "{status}");
+    let batch = rows(&worker).await;
+    let revisions = fyrr_writer::apply::strings(&batch, "source_revision").unwrap();
+    let row = roots(&batch).iter().position(|id| id == "a").unwrap();
+    assert_eq!(revisions.value(row), "r3");
+}
+
+/// A content cursor lost after a read of it was rejected reads the source from
+/// the start: the marker of the rejection does not rewind the new cursor to
+/// where the rejected read started (#422).
+#[tokio::test]
+#[ignore = "real CLI and local storage; scripts/ci"]
+async fn incremental_a_lost_content_cursor_after_a_rejection_reads_from_the_start_on_storage() {
+    let (worker, commit, root) = fixture();
+    input(
+        &root,
+        json!({"epoch":1,"content":[[doc("a","r1","fixture document 0")]]}),
+    );
+    worker_sync(&worker, &["incremental", "--kind", "content"]);
+    publish(&commit);
+    input(
+        &root,
+        json!({"epoch":2,"content":[[doc("a","r2","fixture document 0")]]}),
+    );
+    worker_sync(&worker, &["incremental", "--kind", "content"]);
+    fyrr_core::clock::advance(std::time::Duration::from_secs(4 * 86_400)).unwrap();
+    publish(&commit);
+    let (head, _) = publication(&commit).await;
+    let loaded = fyrr_core::config::load(&commit).unwrap();
+    let (_, rejected) = fyrr_writer::commit::published_ids(&loaded.config, &head)
+        .await
+        .unwrap();
+    assert!(
+        !rejected.is_empty(),
+        "the read of r2 is rejected as expired"
+    );
+    lose_content_cursor(&worker).await;
+    input(
+        &root,
+        json!({"epoch":3,"capture_cursors":true,"content":[[doc("a","r3","fixture document 0")]]}),
+    );
+    worker_sync(&worker, &["incremental", "--kind", "content"]);
+    let captured: Value =
+        serde_json::from_slice(&std::fs::read(root.join("content-cursor.json")).unwrap()).unwrap();
+    assert!(
+        captured.is_null(),
+        "a lost content cursor reads from the start: {captured}"
+    );
+    publish(&commit);
+    let batch = rows(&worker).await;
+    let revisions = fyrr_writer::apply::strings(&batch, "source_revision").unwrap();
+    let row = roots(&batch).iter().position(|id| id == "a").unwrap();
+    assert_eq!(revisions.value(row), "r3");
 }

@@ -326,10 +326,10 @@ pub struct CursorState {
     pub updated_at: DateTime<Utc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lease: Option<crate::publication::Lease>,
-    /// The newest permissions envelope this cursor confirmed. Only the envelopes
-    /// that chain back from it, through their `previous`, are committable: the
-    /// conditional write of this state is what makes a permissions envelope
-    /// count, so a worker that lost its lease cannot publish.
+    /// The newest content or permissions envelope this cursor confirmed. Only
+    /// the envelopes that chain back from it, through their `previous`, are
+    /// committable: the conditional write of this state is what makes such an
+    /// envelope count, so a worker that lost its lease cannot publish.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last: Option<LastEnvelope>,
     /// The newest rejection generation that a complete permissions read ended.

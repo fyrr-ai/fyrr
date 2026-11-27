@@ -223,7 +223,7 @@ pub async fn status(config: &Config) -> Result<serde_json::Value> {
             if !resolved && envelope.namespace == config.namespace.name {
                 let body: &PreparedEnvelope = &envelope;
                 let link = StatusLink::from(body);
-                if link.kind == crate::commit::chain_kind(&link.source_id) {
+                if crate::commit::chained(link.kind) {
                     chained.insert(link.id.clone(), link);
                 } else {
                     others.push(link);
@@ -241,24 +241,31 @@ pub async fn status(config: &Config) -> Result<serde_json::Value> {
     // The chains the committer walks, and those of the sources whose chained
     // envelopes a publication resolved: their chain breaks when the cursor goes,
     // whatever is pending.
-    let applied_sources = crate::commit::previous_manifest(store.as_ref(), &root, &head)
+    let applied_chains = crate::commit::previous_manifest(store.as_ref(), &root, &head)
         .await?
-        .map(|manifest| manifest.chain_applied.into_keys().collect::<Vec<_>>())
+        .map(|manifest| {
+            manifest
+                .chain_applied
+                .into_iter()
+                .flat_map(|(source, kinds)| {
+                    kinds.into_keys().map(move |kind| (source.clone(), kind))
+                })
+                .collect::<Vec<_>>()
+        })
         .unwrap_or_default();
-    let sources: BTreeSet<String> = chained
+    let keys: BTreeSet<_> = chained
         .values()
         .chain(&others)
-        .filter(|e| crate::commit::chained(config, e.kind, &e.source_id))
-        .map(|e| e.source_id.clone())
-        .chain(applied_sources.into_iter().filter(|source| {
-            source == fyrr_core::connector::API_SOURCE_ID || crate::commit::synced(config, source)
+        .flat_map(|e| crate::commit::chains_of(config, e.kind, &e.source_id))
+        .chain(applied_chains.into_iter().filter(|(source, kind)| {
+            *kind != SyncKind::Permissions || crate::commit::synced(config, source)
         }))
         .collect();
     let (chains, links) = crate::commit::chains(
         config,
         &head,
         &policy,
-        &sources,
+        &keys,
         &chained,
         &|_: &str| -> Result<bool> { Ok(false) },
     )
@@ -294,10 +301,10 @@ pub async fn status(config: &Config) -> Result<serde_json::Value> {
     }
     // A source whose chain does not reach what the manifest applied publishes
     // nothing of its permissions, content or listings until it is whole again.
-    let blocked_sources: Vec<&String> = chains
+    let blocked_sources: BTreeSet<&String> = chains
         .iter()
         .filter(|(_, chain)| matches!(chain, crate::commit::Chain::Broken))
-        .map(|(source, _)| source)
+        .map(|((source, _), _)| source)
         .collect();
     let mut warnings = crate::maintenance::purge_warnings(config, &head).await?;
     // A retired source that the configuration still names: its syncs are
@@ -447,18 +454,18 @@ pub(crate) async fn cleanup_held(
     // is dead goes after `max_envelope_age`.
     let listed: BTreeMap<_, _> = envelopes
         .iter()
-        .filter(|(_, e)| {
-            e.kind == crate::commit::chain_kind(&e.source_id)
-                && e.namespace == config.namespace.name
-        })
+        .filter(|(_, e)| crate::commit::chained(e.kind) && e.namespace == config.namespace.name)
         .map(|(_, e)| (e.envelope_id.clone(), e.clone()))
         .collect();
-    let sources = listed.values().map(|e| e.source_id.clone()).collect();
+    let keys = listed
+        .values()
+        .map(|e| (e.source_id.clone(), e.kind))
+        .collect();
     let (chains, _) = crate::commit::chains(
         config,
         &head,
         &policy,
-        &sources,
+        &keys,
         &listed,
         &|id: &str| -> Result<bool> { Ok(applied.contains(id)) },
     )
@@ -471,7 +478,7 @@ pub(crate) async fn cleanup_held(
     };
     let on_chain = |envelope: &PreparedEnvelope| {
         matches!(
-            chains.get(&envelope.source_id),
+            chains.get(&(envelope.source_id.clone(), envelope.kind)),
             Some(crate::commit::Chain::Whole { ids, .. }) if ids.contains(&envelope.envelope_id)
         )
     };
@@ -489,10 +496,7 @@ pub(crate) async fn cleanup_held(
         let resolved = matches!(state, State::Applied | State::Rejected);
         // The newest chained envelope that counts is one that
         // was resolved or the cursor holds: one that is off its chain does not.
-        if envelope.kind != crate::commit::chain_kind(&envelope.source_id)
-            || resolved
-            || on_chain(envelope)
-        {
+        if !crate::commit::chained(envelope.kind) || resolved || on_chain(envelope) {
             latest
                 .entry((envelope.source_id.clone(), envelope.kind.as_str()))
                 .and_modify(|seq: &mut u64| *seq = (*seq).max(envelope.sequence))
@@ -576,7 +580,7 @@ mod tests {
     use super::*;
     use fyrr_core::{
         Contract, SchemaVersion,
-        envelope::{QuarantineEntry, envelope_id},
+        envelope::{QuarantineEntry, leased_envelope_id},
         publication::ContentPointer,
         write_contract,
     };
@@ -677,19 +681,32 @@ mod tests {
             "use real payload-bearing worker envelopes"
         );
         let marker = std::env::var("FYRR_TEST_STATUS_PRIVATE_CURSOR").unwrap();
+        // The backlog is a chain that the content cursor confirmed.
+        let mut cursor = crate::sync_lease::CursorLease::peek(&config, &seed.source_id, seed.kind)
+            .await
+            .unwrap()
+            .unwrap();
         let mut ids = Vec::new();
         for offset in 0..260 {
             let mut envelope = seed.clone();
             envelope.sequence += 1000 + offset;
             envelope.cursor.start = Some(marker.clone());
-            envelope.envelope_id = envelope_id(
+            envelope.lease_generation = cursor.lease.as_ref().unwrap().epoch;
+            envelope.previous = cursor.last.as_ref().map(|last| last.id.clone());
+            envelope.envelope_id = leased_envelope_id(
                 &envelope.namespace,
                 &envelope.source_id,
                 envelope.kind,
                 envelope.sequence,
                 envelope.rejection_generation,
                 envelope.cursor.start.as_deref(),
+                envelope.lease_generation,
             );
+            cursor.sequence = envelope.sequence;
+            cursor.last = Some(fyrr_core::connector::LastEnvelope {
+                sequence: envelope.sequence,
+                id: envelope.envelope_id.clone(),
+            });
             let EnvelopePayload::Content(content) = &mut envelope.payload else {
                 unreachable!()
             };
@@ -713,6 +730,17 @@ mod tests {
                 .unwrap();
             ids.push(envelope.envelope_id);
         }
+        store
+            .put(
+                &root.clone().join("cursors").join(format!(
+                    "{}-{}.json",
+                    seed.source_id,
+                    seed.kind.as_str()
+                )),
+                write_contract(&cursor).into(),
+            )
+            .await
+            .unwrap();
         // Put a valid alias in a different page from its canonical ID, proving
         // membership follows the decoded ID, not an assumption about filenames.
         let alias = if ids.iter().filter(|id| *id < &seed.envelope_id).count() >= STATUS_PAGE_PATHS

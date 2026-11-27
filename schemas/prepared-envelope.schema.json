@@ -63,14 +63,14 @@
       "type": "integer",
       "format": "uint64",
       "minimum": 0,
-      "description": "The generation of the cursor lease its worker held; part of the ID of a\npermissions envelope, so two workers never write the same one.\nZero on an envelope written before permissions envelopes were chained."
+      "description": "The generation of the cursor lease its worker held; part of the ID of a\ncontent or permissions envelope, so two workers never write the same\none. Zero for members and listings, which are not chained."
     },
     "previous": {
       "type": [
         "string",
         "null"
       ],
-      "description": "The permissions envelope this one follows, from the cursor\nof its worker; none for the first. The committer applies only the\nenvelopes that chain back from the one the cursor confirmed."
+      "description": "The envelope of its source and kind this one follows, from the cursor\nof its worker; none for the first. The committer applies only the\nenvelopes that chain back from the one the cursor confirmed."
     },
     "payload": {
       "$ref": "#/$defs/EnvelopePayload"

@@ -236,11 +236,11 @@ pub struct ContentManifest {
     pub envelope_evidence: EnvelopeEvidence,
     /// What the version holds.
     pub stats: PublicationStats,
-    /// The newest chained envelope of each source (the write API's content, a
-    /// connector's permissions) that this publication and every older one
-    /// resolved. The committer walks the chain of the cursor back to it.
+    /// The newest chained envelope of each source and kind (content and
+    /// permissions) that this publication and every older one resolved. The
+    /// committer walks the chain of the cursor back to it.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub chain_applied: BTreeMap<String, String>,
+    pub chain_applied: BTreeMap<String, BTreeMap<crate::connector::SyncKind, String>>,
 }
 
 /// The size of a published version and when its namespace was first published.

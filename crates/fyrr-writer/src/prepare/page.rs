@@ -20,7 +20,7 @@ pub(super) async fn content_page(
         .checked_add(1)
         .ok_or(WriterError::CursorSequenceOverflow)?;
     let id = next_id(config, state, SyncKind::Content, &source.id)?;
-    let (lease_generation, previous) = link(state, SyncKind::Content, &source.id);
+    let (lease_generation, previous) = link(state, SyncKind::Content);
     let envelope_path = root.clone().join("envelopes").join(format!("{id}.json"));
     lease.state().await?;
     for change in &changes {

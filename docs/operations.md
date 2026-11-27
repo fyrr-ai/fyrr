@@ -239,28 +239,45 @@ and cursors; each step is idempotent, so an interrupted purge is run again.
 
 ### Blocked sources
 
-The permission reads of a source form a chain: its cursor names the newest
-read, each envelope names the one before, and the publication names the
-newest one applied. An envelope that no cursor confirmed (a read that failed,
-or whose worker died before it wrote its cursor) is not on the chain and
-publishes nothing: the next read redoes it, with no operator. The writes of
-the write API form a chain the same way (`cursors/_api-content.json`): a write
-whose process died before its cursor write publishes nothing, and its client
-gets no answer and retries it.
+The content and the permission reads of a source each form a chain: its
+cursor names the newest envelope, each envelope names the one before, and the
+publication names the newest one applied. An envelope that no cursor confirmed
+(a read that failed, or whose worker died before it wrote its cursor) is not on
+the chain and publishes none of its document changes: the next read redoes it,
+with no operator. The writes of the write API form a chain the same way
+(`cursors/_api-content.json`): a write whose process died before its cursor
+write publishes none of its document changes, and its client gets no answer
+and retries it. An attribute that such a write added to the schema is
+published before its envelope is written, and stays.
 
-Cursor objects (`cursors/SOURCE_ID-permissions.json`) and envelopes
+Cursor objects (`cursors/SOURCE_ID-KIND.json`) and envelopes
 (`envelopes/ID.json`) are internal: never delete, copy, edit or restore them
-by hand. When the chain from the cursor does not reach the one the publication
+by hand. When a chain from a cursor does not reach the one the publication
 applied (an envelope of it was deleted), or the cursor is missing while the log
-holds envelopes it chained, the committer blocks the source: none of its
-permissions, content or listings publish, so no revocation is skipped, and the
-other sources go on. `fyrr writer status` lists it in `blocked_sources`, and
-the committer logs `telemetry permissions=blocked source=SOURCE_ID`. A worker
-does not make a new cursor for a source whose cursor is missing: it fails the
-read with `permission_cursor_lost` and writes nothing, so the block holds
-however often it tries. Alert on a non-empty `blocked_sources`.
+holds envelopes it chained, the committer blocks the source: a broken content
+chain holds its content; a broken permissions chain holds its permissions,
+content and listings, so no revocation is skipped. The other sources go on.
+`fyrr writer status` lists it in `blocked_sources`, and the committer logs
+`telemetry chain=blocked source=SOURCE_ID kind=KIND`.
 
-The only recovery is to purge the source (`fyrr writer source purge SOURCE_ID
+A lost content cursor (of a connector, or `cursors/_api-content.json`) heals
+itself: the next content read or write makes a new cursor, under the
+namespace lease, that confirms what the publication applied and nothing after
+it, with a lease generation above the log's. The envelopes written after it
+and never published are not confirmed. A connector loses its position too and
+reads the source again from the start; content reads are idempotent, so
+nothing is lost but the time of the rescan. The write API has no rescan: a
+write that its cursor confirmed but no publication applied before the cursor
+was lost never publishes, and its client, which got `503 outcome_unknown` or
+no answer, must write it again. Until the next read or write, the source's
+content waits.
+
+A lost permissions cursor does not heal: a worker does not make a new one for
+a source whose chain is left, it fails the read with `permission_cursor_lost`
+and writes nothing, so the block holds however often it tries. Alert on a
+non-empty `blocked_sources`.
+
+The only recovery from a broken chain is to purge the source (`fyrr writer source purge SOURCE_ID
 --confirm`), which is final, and configure it again under a new source ID: it
 reads its content and rights from the start. Putting back an older copy of a
 cursor is not supported and is not detected: the reads after the copy are

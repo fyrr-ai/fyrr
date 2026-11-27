@@ -40,10 +40,28 @@ async fn revision_callback_thread_progress_measurement_on_local_storage() {
         })
         .unwrap()
         .1;
+    // The envelopes are a chain that the content cursor confirmed: only those
+    // are waiting content.
+    let cursor_path = namespace
+        .clone()
+        .join("cursors")
+        .join("incremental-content.json");
+    let mut cursor: fyrr_core::connector::CursorState = fyrr_reader::storage::read_contract(
+        fyrr_reader::storage::namespace_store(&config)
+            .unwrap()
+            .0
+            .as_ref(),
+        &cursor_path,
+    )
+    .await
+    .unwrap();
+    let generation = cursor.lease.as_ref().unwrap().epoch;
     let mut seed = Vec::new();
     for n in 0..64 {
         let mut envelope = template.clone();
         envelope.sequence = n + 100;
+        envelope.lease_generation = generation;
+        envelope.previous = cursor.last.as_ref().map(|last| last.id.clone());
         envelope.envelope_id = fyrr_core::envelope::leased_envelope_id(
             &envelope.namespace,
             &envelope.source_id,
@@ -60,8 +78,23 @@ async fn revision_callback_thread_progress_measurement_on_local_storage() {
                 .join(format!("{}.json", envelope.envelope_id)),
             write_contract(&envelope),
         ));
+        cursor.sequence = envelope.sequence;
+        cursor.last = Some(fyrr_core::connector::LastEnvelope {
+            sequence: envelope.sequence,
+            id: envelope.envelope_id.clone(),
+        });
     }
     fyrr_reader::storage::test_store::seed_local_fixture(&config, seed).unwrap();
+    object_store::ObjectStoreExt::put(
+        fyrr_reader::storage::namespace_store(&config)
+            .unwrap()
+            .0
+            .as_ref(),
+        &cursor_path,
+        write_contract(&cursor).into(),
+    )
+    .await
+    .unwrap();
     let providers = root.join("measurement-providers");
     let checkout = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     copy_tree(&checkout.join("crates/fyrr/tests/providers"), &providers);

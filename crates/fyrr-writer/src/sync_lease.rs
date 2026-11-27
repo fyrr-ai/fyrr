@@ -118,7 +118,9 @@ impl CursorLease {
         source: &str,
     ) -> Result<CursorState> {
         let kind = SyncKind::Permissions;
-        let (left, generation) = crate::commit::permission_log(config, source).await?;
+        let crate::commit::ChainLog {
+            left, generation, ..
+        } = crate::commit::chain_log(config, source, kind).await?;
         if left {
             return Err(
                 if Self::read(config, store, path, source, kind)
@@ -140,10 +142,66 @@ impl CursorLease {
         Ok(state)
     }
 
+    /// The new content cursor of `source`, whose cursor was not there, and the
+    /// namespace lease it is written under when it replaces a lost one. A
+    /// source with nothing in the log starts new. Otherwise the new cursor
+    /// confirms what the publication applied and nothing after it, read under
+    /// the namespace lease so that no publication moves it meanwhile: the
+    /// envelopes a worker left unconfirmed are dead, and the connector reads
+    /// from the start again, which content may. It follows every lease
+    /// generation and sequence of the log, and a rejection generation above
+    /// every one of the log and its markers, so that no marker rewinds the
+    /// read it starts.
+    pub(crate) async fn new_content_cursor(
+        config: &Config,
+        source: &str,
+    ) -> Result<(CursorState, Option<Arc<crate::lease::LeaseGuard>>)> {
+        let kind = SyncKind::Content;
+        let mut state = crate::prepare::initial_cursor(config, source, kind);
+        let log = crate::commit::chain_log(config, source, kind).await?;
+        if log.sequence == 0 && log.applied.is_none() {
+            return Ok((state, None));
+        }
+        let guard = crate::lease::LeaseGuard::acquire(config).await?;
+        let built = async {
+            let log = crate::commit::chain_log(config, source, kind).await?;
+            let markers = crate::commit::rejection_markers(config, &guard.head().await?).await?;
+            let markers = markers
+                .iter()
+                .filter(|m| m.source_id == source && m.kind == kind);
+            state.sequence = log.sequence;
+            state.rejection_generation = markers
+                .clone()
+                .map(|m| m.rejection_generation)
+                .fold(log.rejection_generation, u32::max)
+                .checked_add(1)
+                .ok_or(WriterError::RejectionGenerationOverflow)?;
+            state.restore_sequence = markers
+                .map(|m| m.restore_sequence)
+                .fold(log.restore_sequence, u64::max);
+            state.last = log.applied;
+            state.lease = (log.generation > 0).then(|| fyrr_core::publication::Lease {
+                holder: String::new(),
+                epoch: log.generation,
+                expires_at: chrono::DateTime::UNIX_EPOCH,
+            });
+            Ok(state)
+        }
+        .await;
+        match built {
+            Ok(state) => Ok((state, Some(guard))),
+            Err(error) => {
+                let _ = guard.release().await;
+                Err(error)
+            }
+        }
+    }
+
     pub async fn acquire(config: &Config, source: &str, kind: SyncKind) -> Result<Arc<Self>> {
         let (store, root) = namespace_store(config)?;
         crate::commit::sources_allowed(config, store.as_ref(), &root).await?;
         let path = cursor_path(&root, source, kind);
+        let mut namespace = None;
         let (mut state, mode) =
             match Self::read(config, store.as_ref(), &path, source, kind).await? {
                 Some((state, version)) => (state, PutMode::Update(version)),
@@ -151,6 +209,11 @@ impl CursorLease {
                     Self::new_permissions_cursor(config, store.as_ref(), &path, source).await?,
                     PutMode::Create,
                 ),
+                None if kind == SyncKind::Content => {
+                    let (state, guard) = Self::new_content_cursor(config, source).await?;
+                    namespace = guard;
+                    (state, PutMode::Create)
+                }
                 None => (
                     crate::prepare::initial_cursor(config, source, kind),
                     PutMode::Create,
@@ -175,7 +238,12 @@ impl CursorLease {
                 object_store::Error::Precondition { .. }
                 | object_store::Error::AlreadyExists { .. } => WriterError::SyncBusy,
                 _ => WriterError::StorageUnavailable,
-            })?;
+            });
+        // A replaced cursor is written before publication may move again.
+        if let Some(namespace) = namespace {
+            namespace.release().await?;
+        }
+        let result = result?;
         let lease = Arc::new(Self {
             observed: fyrr_reader::storage::observed_durability(config)?,
             store: store.clone(),
@@ -304,8 +372,10 @@ impl CursorLease {
 pub(crate) mod tests {
     use super::*;
 
+    /// Of members: a new content cursor reads the manifest of the head, which
+    /// the fixture head does not have.
     pub(crate) async fn renewal_finishes_before_release(config: &Config) {
-        let mut lease = CursorLease::acquire(config, "renewal", SyncKind::Content)
+        let mut lease = CursorLease::acquire(config, "renewal", SyncKind::Members)
             .await
             .unwrap();
         let (store, entered, resume) = crate::lease::tests::delayed_store(lease.store.clone());
@@ -313,7 +383,7 @@ pub(crate) mod tests {
         let renewal = lease.keepalive();
         crate::lease::tests::finish_held_renewal(renewal, entered, resume).await;
         lease.release().await.unwrap();
-        let next = CursorLease::acquire(config, "renewal", SyncKind::Content)
+        let next = CursorLease::acquire(config, "renewal", SyncKind::Members)
             .await
             .expect("the completed renewal must not leave the cursor leased");
         assert!(next.state().await.unwrap().lease.unwrap().epoch > 1);
@@ -351,7 +421,7 @@ pub(crate) mod tests {
                 &rt,
                 &config,
                 &format!("source-{index}"),
-                SyncKind::Content,
+                SyncKind::Members,
                 |lease| {
                     if release_failed {
                         let mut state = rt.block_on(lease.state()).unwrap();

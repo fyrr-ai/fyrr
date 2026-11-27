@@ -72,6 +72,15 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   probes inspect. A configuration that sets `{ mode = "legacy" }` is refused.
   See [tuning](docs/tuning.md).
 - A local put no longer opens a root lock file.
+- Content envelopes, of connectors and of the write API, count only once the
+  cursor write confirmed them, as permission envelopes do: a page or a write
+  whose worker died before its cursor write never publishes, and the next read
+  or write redoes it. `blocked_sources` also lists a source whose content chain
+  is broken, and the committer logs `telemetry chain=blocked source=SOURCE_ID
+  kind=KIND` in place of `telemetry permissions=blocked`. A lost content
+  cursor makes a new one that confirms what was published, and the connector
+  reads the source again from the start. See
+  [operations](docs/operations.md#blocked-sources).
 - A permission read is published whole, in one publication, or not at all:
   its roots are written in parts and an envelope without roots ends the read
   and moves the cursor, and the committer writes the rows a read rewrites in

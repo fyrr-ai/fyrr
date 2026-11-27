@@ -306,11 +306,12 @@ async fn maintenance_restore_rollback_current_rights_deletes_and_cursor_recovery
     worker_sync(&worker, &["incremental", "--kind", "content"]);
     let captured: Value =
         serde_json::from_slice(&std::fs::read(root.join("content-cursor.json")).unwrap()).unwrap();
-    assert_eq!(
-        captured,
-        json!("3-0"),
-        "reset floor recovers from envelopes after cursor-cache loss"
+    // A lost content cursor confirms what was published and reads from the start.
+    assert!(
+        captured.is_null(),
+        "a lost content cursor reads the source again from the start"
     );
+    publish(&commit);
     let healthy = fetch(&mut mcp, "c");
     assert!(readable(&healthy), "{healthy}");
     assert!(!readable(&fetch(&mut mcp, "a")));

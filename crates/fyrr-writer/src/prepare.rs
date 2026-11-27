@@ -1136,7 +1136,7 @@ fn build_envelope(
         .sequence
         .checked_add(1)
         .ok_or(WriterError::CursorSequenceOverflow)?;
-    let (lease_generation, previous) = link(state, kind, source);
+    let (lease_generation, previous) = link(state, kind);
     Ok(PreparedEnvelope {
         schema_version: ENVELOPE_CONTRACT_VERSION,
         envelope_id: next_id(config, state, kind, source)?,
@@ -1158,8 +1158,8 @@ fn build_envelope(
 
 /// The lease generation and the predecessor of the envelope of `kind` that
 /// `state` puts next: none unless the kind is chained.
-fn link(state: &CursorState, kind: SyncKind, source: &str) -> (u64, Option<String>) {
-    if kind != crate::commit::chain_kind(source) {
+fn link(state: &CursorState, kind: SyncKind) -> (u64, Option<String>) {
+    if !crate::commit::chained(kind) {
         return (0, None);
     }
     (
@@ -1181,7 +1181,7 @@ fn next_id(config: &Config, state: &CursorState, kind: SyncKind, source: &str) -
         sequence,
         state.rejection_generation,
         state.cursor.as_deref(),
-        link(state, kind, source).0,
+        link(state, kind).0,
     ))
 }
 
@@ -1192,7 +1192,7 @@ fn record(state: &mut CursorState, envelope: &PreparedEnvelope) {
     if envelope.advances_cursor {
         state.cursor = Some(envelope.cursor.end.clone());
     }
-    if envelope.kind == crate::commit::chain_kind(&envelope.source_id) {
+    if crate::commit::chained(envelope.kind) {
         state.last = Some(fyrr_core::connector::LastEnvelope {
             sequence: envelope.sequence,
             id: envelope.envelope_id.clone(),
