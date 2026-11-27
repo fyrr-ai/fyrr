@@ -713,7 +713,8 @@ async fn incremental_a_purge_with_an_invalid_cursor_deletes_its_unreadable_envel
 
 /// `writer status` names a source whose permissions cursor is lost from what
 /// the publication applied, whether its configuration lists the source or not,
-/// and counts its pending envelopes as the committer does.
+/// and counts its pending envelopes as the committer does: none, since the
+/// committer holds its content on that chain (#431).
 #[tokio::test]
 #[ignore = "real CLI and local storage; scripts/ci"]
 async fn incremental_status_names_a_lost_cursor_of_an_unlisted_source_on_storage() {
@@ -733,8 +734,8 @@ async fn incremental_status_names_a_lost_cursor_of_an_unlisted_source_on_storage
         .delete(&ns.join("cursors").join("incremental-permissions.json"))
         .await
         .unwrap();
-    // A content envelope of it, which the committer does not hold on that
-    // chain, counts as pending.
+    // A content envelope of it, which the committer holds on that chain, is
+    // not pending.
     input(
         &root,
         json!({"epoch":2,"content":[[doc("c","r1","fixture document 2")]]}),
@@ -746,8 +747,9 @@ async fn incremental_status_names_a_lost_cursor_of_an_unlisted_source_on_storage
         json!(["incremental"]),
         "{status}"
     );
-    assert_eq!(status["pending_envelopes"], 1, "{status}");
+    assert_eq!(status["pending_envelopes"], 0, "{status}");
     publish(&commit);
+    assert_eq!(source_roots(&worker, "incremental").await, ["a", "b"]);
     let status = command(&commit, &["writer", "status"]);
     assert_eq!(status["pending_envelopes"], 0, "{status}");
     assert_eq!(

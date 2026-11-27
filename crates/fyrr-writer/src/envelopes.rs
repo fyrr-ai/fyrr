@@ -255,7 +255,7 @@ pub async fn status(config: &Config) -> Result<serde_json::Value> {
     let walked: BTreeSet<_> = chained
         .values()
         .chain(&others)
-        .flat_map(|e| crate::commit::chains_of(config, e.kind, &e.source_id))
+        .flat_map(|e| crate::commit::chains_of(e.kind, &e.source_id))
         .chain(
             (!unreadable.is_empty())
                 .then(|| crate::commit::every_chain(config, &policy))
