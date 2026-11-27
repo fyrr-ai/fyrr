@@ -1034,9 +1034,10 @@ impl MirrorStore {
                 && running.len() < Self::PREWARM_CONCURRENCY
                 && let Some((index, file)) = pending.next()
             {
-                if warming && *self.requests.borrow() > 0 && !self.holds(&prefix, &root, file) {
-                    // After every other failure: this one only means later.
-                    first = Some(((false, usize::MAX), Busy));
+                if warming && self.requests() > 0 && !self.holds(&prefix, &root, file) {
+                    // After every other failure, capacity included: it only
+                    // means later.
+                    first = Some(((true, usize::MAX), Busy));
                     break;
                 }
                 running.push(self.prewarm_file(&store, &prefix, &root, index, file, warming));
@@ -1053,19 +1054,16 @@ impl MirrorStore {
         }
         first.map_or(Ok(()), |(_, error)| Err(error))
     }
-    /// Whether the complete copy of `file` is here and verified in this process.
+    /// Requests that hold a pin of this mirror now.
+    pub(crate) fn requests(&self) -> usize {
+        *self.requests.borrow()
+    }
+    /// Whether a complete copy of `file` is here: filling it verifies the
+    /// copy and downloads nothing.
     fn holds(&self, prefix: &str, root: &str, file: &fyrr_core::envelope::FileRef) -> bool {
         let path = Path::from(format!("{root}/{}", file.path));
-        let Some(name) = self.blob_name(prefix, path.as_ref()) else {
-            return false;
-        };
-        let blob = self.directory.join(name);
-        Self::file_fingerprint(&blob)
-            .ok()
-            .flatten()
-            .is_some_and(|fingerprint| {
-                crate::sync::lock(&self.verified).get(&blob) == Some(&fingerprint)
-            })
+        self.blob_name(prefix, path.as_ref())
+            .is_some_and(|name| self.directory.join(name).symlink_metadata().is_ok())
     }
     /// `prewarm` that reserves each missing file's room before any request,
     /// without evicting: a file the mirror has no room for costs no request and

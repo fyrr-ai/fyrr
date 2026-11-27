@@ -818,6 +818,13 @@ mod latency {
             .await
             .unwrap();
         assert_eq!(store.requests(), 20, "the rest once no request runs");
+        // With every file here, a request stops nothing.
+        let _request = lease.request().unwrap();
+        mirror
+            .prewarm(Arc::new(store.clone()), &files)
+            .await
+            .unwrap();
+        assert_eq!(store.requests(), 20);
         std::fs::remove_dir_all(directory).unwrap();
     }
 
