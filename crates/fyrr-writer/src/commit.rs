@@ -196,10 +196,12 @@ pub(crate) async fn named_by(
     let source = source.to_owned();
     let mut named = BTreeSet::new();
     for kind in [SyncKind::Content, SyncKind::Permissions] {
-        let last = crate::sync_lease::CursorLease::peek(config, &source, kind)
-            .await?
-            .and_then(|state| state.last)
-            .map(|last| last.id);
+        // A cursor that does not parse names nothing: the purge deletes it.
+        let last = match crate::sync_lease::CursorLease::peek(config, &source, kind).await {
+            Ok(cursor) => cursor.and_then(|state| state.last).map(|last| last.id),
+            Err(WriterError::CursorInvalid) => None,
+            Err(error) => return Err(error),
+        };
         let applied = manifest
             .as_ref()
             .and_then(|m| m.chain_applied.get(&source)?.get(&kind).cloned());
@@ -328,7 +330,17 @@ pub(crate) async fn chains<L: Link>(
             .as_ref()
             .and_then(|m| m.chain_applied.get(source))
             .and_then(|kinds| kinds.get(&kind));
-        let cursor = crate::sync_lease::CursorLease::peek(config, source, kind).await?;
+        let cursor = match crate::sync_lease::CursorLease::peek(config, source, kind).await {
+            Ok(cursor) => cursor,
+            // A cursor that does not parse confirms nothing: the source is
+            // blocked until it is purged, and only that source.
+            Err(WriterError::CursorInvalid) => {
+                crate::telemetry::chain_blocked(source, kind);
+                found.insert((source.clone(), kind), Chain::Broken);
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
         // A missing cursor of a chain whose envelopes a worker wrote lost what
         // confirmed them: the source is blocked until it is purged.
         let mut lost = false;
