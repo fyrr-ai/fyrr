@@ -180,6 +180,7 @@ pub async fn status(config: &Config) -> Result<serde_json::Value> {
     // What no publication resolved, without its body: the committer holds all of
     // it. One of another namespace, which the committer refuses, is not pending.
     let mut chained = BTreeMap::<String, StatusLink>::new();
+    let mut unreadable = BTreeSet::new();
     let mut others = Vec::<StatusLink>::new();
     let mut quarantine = BTreeMap::<String, u64>::new();
     loop {
@@ -205,7 +206,19 @@ pub async fn status(config: &Config) -> Result<serde_json::Value> {
             // One decoded envelope, one manifest at a time, and a 128-path page;
             // ObjectStore's listing also retains its own bounded service page.
             let envelope: StatusEnvelope =
-                fyrr_reader::storage::read_contract(store.as_ref(), &path).await?;
+                match fyrr_reader::storage::read_contract(store.as_ref(), &path).await {
+                    Ok(envelope) => envelope,
+                    // Attributed by the chain that names it, as the committer does.
+                    Err(fyrr_reader::storage::StorageError::PublicationInvalid) => {
+                        envelopes += 1;
+                        let id = path.filename().and_then(|n| n.strip_suffix(".json"));
+                        if let Some(id) = id.filter(|id| !applied.contains(*id)) {
+                            unreadable.insert(id.to_owned());
+                        }
+                        continue;
+                    }
+                    Err(error) => return Err(error.into()),
+                };
             let resolved = if ids.contains(&envelope.envelope_id) {
                 applied.contains(&envelope.envelope_id)
             } else {
@@ -260,8 +273,14 @@ pub async fn status(config: &Config) -> Result<serde_json::Value> {
         .chain(applied_chains.into_iter().filter(|(source, kind)| {
             *kind != SyncKind::Permissions || crate::commit::synced(config, source)
         }))
+        .chain(
+            (!unreadable.is_empty())
+                .then(|| crate::commit::every_chain(config, &policy))
+                .into_iter()
+                .flatten(),
+        )
         .collect();
-    let (chains, links) = crate::commit::chains(
+    let (chains, links, named) = crate::commit::chains(
         config,
         &head,
         &policy,
@@ -270,6 +289,8 @@ pub async fn status(config: &Config) -> Result<serde_json::Value> {
         &|_: &str| -> Result<bool> { Ok(false) },
     )
     .await?;
+    // One that no chain names fails `writer status`, as it fails the commit.
+    crate::commit::attributed(&unreadable, &named)?;
     let none = BTreeSet::new();
     let facts = crate::commit::Facts {
         applied: &none,
@@ -362,6 +383,7 @@ pub(crate) async fn purged_envelopes(
     let (paths, _) = crate::commit::envelope_paths(config, head).await?;
     Ok(crate::commit::read_envelopes(config, &paths)
         .await?
+        .0
         .into_iter()
         .filter(|(_, envelope)| {
             policy
@@ -461,7 +483,7 @@ pub(crate) async fn cleanup_held(
         .values()
         .map(|e| (e.source_id.clone(), e.kind))
         .collect();
-    let (chains, _) = crate::commit::chains(
+    let (chains, _, _) = crate::commit::chains(
         config,
         &head,
         &policy,

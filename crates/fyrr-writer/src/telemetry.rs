@@ -73,6 +73,18 @@ pub(crate) fn head_write_failed(stage: HeadWriteStage, error: &Error) {
     eprintln!("telemetry head_write=failed stage={stage} category={category}");
 }
 
+/// An envelope in the log that does not parse. Its source, which no field of
+/// it can tell, is blocked by the chain that names it.
+#[allow(clippy::print_stderr)]
+pub(crate) fn envelope_unreadable(path: &object_store::path::Path) {
+    eprintln!(
+        "telemetry envelope=unreadable id={}",
+        path.filename()
+            .and_then(|name| name.strip_suffix(".json"))
+            .unwrap_or("")
+    );
+}
+
 /// A chain of content or permissions that does not reach what the manifest
 /// applied: its source is blocked, and nothing is skipped. `writer status`
 /// lists it too.

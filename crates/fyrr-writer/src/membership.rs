@@ -180,7 +180,13 @@ async fn member_input(
                 fyrr_reader::storage::StorageError::PublicationInvalid,
             )?
         } else {
-            fyrr_reader::storage::read_contract(store, &path).await?
+            // Another source's envelope that does not parse is not this
+            // snapshot's: a part of it that is missing fails below.
+            match fyrr_reader::storage::read_contract(store, &path).await {
+                Ok(item) => item,
+                Err(fyrr_reader::storage::StorageError::PublicationInvalid) => continue,
+                Err(error) => return Err(error.into()),
+            }
         };
         if item.source_id != envelope.source_id
             || item.rejection_generation != envelope.rejection_generation

@@ -56,15 +56,20 @@ pub async fn pending(config: &Config, head: &ServingHead) -> Result<Vec<Prepared
                 .is_some_and(|id| applied.contains(id))
         })
         .collect();
-    for (_, envelope) in read_envelopes(config, &paths).await? {
+    let (read, unreadable) = read_envelopes(config, &paths).await?;
+    for (_, envelope) in read {
         if envelope.namespace != config.namespace.name {
             return Err(WriterError::EnvelopeNamespaceInvalid);
         }
         result.push(envelope);
     }
-    let mut result = confirmed(config, head, result, &|id: &str| -> Result<bool> {
-        Ok(applied.contains(id))
-    })
+    let mut result = confirmed(
+        config,
+        head,
+        result,
+        &unreadable,
+        &|id: &str| -> Result<bool> { Ok(applied.contains(id)) },
+    )
     .await?;
     result.sort_by(|a, b| (&a.source_id, a.sequence).cmp(&(&b.source_id, b.sequence)));
     crate::telemetry::pending_envelopes(&config.namespace.name, result.len());
@@ -178,32 +183,103 @@ pub(crate) fn chains_of(config: &Config, kind: SyncKind, source: &str) -> Vec<(S
     found
 }
 
+/// Every envelope ID that the content and permissions chains of `source` name,
+/// walked from its cursors whether it is retired or not: what a purge of it
+/// deletes of the envelopes that do not parse.
+pub(crate) async fn named_by(
+    config: &Config,
+    head: &ServingHead,
+    source: &str,
+) -> Result<BTreeSet<String>> {
+    let (store, root) = namespace_store(config)?;
+    let manifest = previous_manifest(store.as_ref(), &root, head).await?;
+    let source = source.to_owned();
+    let mut named = BTreeSet::new();
+    for kind in [SyncKind::Content, SyncKind::Permissions] {
+        let last = crate::sync_lease::CursorLease::peek(config, &source, kind)
+            .await?
+            .and_then(|state| state.last)
+            .map(|last| last.id);
+        let applied = manifest
+            .as_ref()
+            .and_then(|m| m.chain_applied.get(&source)?.get(&kind).cloned());
+        let (_, visited) = walk::<PreparedEnvelope>(
+            config,
+            store.as_ref(),
+            &root,
+            (&source, kind),
+            last,
+            applied.as_ref(),
+            &BTreeMap::new(),
+            &|_: &str| -> Result<bool> { Ok(true) },
+        )
+        .await?;
+        named.extend(visited);
+    }
+    Ok(named)
+}
+
+/// Fails unless a walked chain names every envelope of `unreadable`.
+pub(crate) fn attributed(unreadable: &BTreeSet<String>, named: &BTreeSet<String>) -> Result<()> {
+    if unreadable.is_subset(named) {
+        Ok(())
+    } else {
+        Err(WriterError::PublicationInvalid)
+    }
+}
+
+/// Every chain of the namespace: the content of each configured source, its
+/// permissions when it syncs them, and the content of the write API.
+pub(crate) fn every_chain(config: &Config, policy: &PolicyArtifact) -> Vec<(String, SyncKind)> {
+    let mut keys: Vec<_> = config
+        .sources
+        .iter()
+        .flat_map(|source| chains_of(config, SyncKind::Content, &source.id))
+        .collect();
+    if policy.settings.namespace.write_api.is_some() {
+        keys.push((
+            fyrr_core::connector::API_SOURCE_ID.to_owned(),
+            SyncKind::Content,
+        ));
+    }
+    keys
+}
+
 /// The envelopes of `pending` that [`classify`] finds pending, with the links
 /// of a chain that the walk read by ID and no listing showed. The chain is read
 /// by ID, never from a listing. `resolved` tells an envelope that was applied
-/// or rejected; every one of `pending` is unresolved.
+/// or rejected; every one of `pending` is unresolved. `unreadable` holds the
+/// IDs of listed envelopes that do not parse: every chain is walked then, so
+/// that the source whose chain names one is blocked, and only that one. One
+/// that no chain names, a members or listing envelope among them, could hide a
+/// revoke: the commit fails as `publication_invalid`.
 pub(crate) async fn confirmed(
     config: &Config,
     head: &ServingHead,
     pending: Vec<PreparedEnvelope>,
+    unreadable: &BTreeSet<String>,
     resolved: &(dyn Fn(&str) -> Result<bool> + Sync),
 ) -> Result<Vec<PreparedEnvelope>> {
-    let keys: BTreeSet<_> = pending
+    let mut keys: BTreeSet<_> = pending
         .iter()
         .flat_map(|e| chains_of(config, e.kind, &e.source_id))
         .collect();
-    if keys.is_empty() {
+    if keys.is_empty() && unreadable.is_empty() {
         return Ok(pending);
     }
     let (store, root) = namespace_store(config)?;
     let policy: PolicyArtifact =
         fyrr_reader::storage::artifact(store.as_ref(), &root, &head.policy).await?;
+    if !unreadable.is_empty() {
+        keys.extend(every_chain(config, &policy));
+    }
     let (listed, mut kept): (Vec<_>, Vec<_>) = pending.into_iter().partition(|e| chained(e.kind));
     let listed: BTreeMap<_, _> = listed
         .into_iter()
         .map(|e| (e.envelope_id.clone(), e))
         .collect();
-    let (chains, links) = chains(config, head, &policy, &keys, &listed, resolved).await?;
+    let (chains, links, named) = chains(config, head, &policy, &keys, &listed, resolved).await?;
+    attributed(unreadable, &named)?;
     kept.extend(
         links
             .into_iter()
@@ -223,8 +299,9 @@ pub(crate) async fn confirmed(
 
 /// Walks each chain of `keys` whose source is not retired, from the newest
 /// envelope its cursor confirmed back to the newest one the manifest records as
-/// applied: what each chain is, and its links that `resolved` does not tell,
-/// oldest first. `listed` holds chained envelopes the caller has read.
+/// applied: what each chain is, its links that `resolved` does not tell, oldest
+/// first, and every ID a walk named, the one it stopped at included. `listed`
+/// holds chained envelopes the caller has read.
 pub(crate) async fn chains<L: Link>(
     config: &Config,
     head: &ServingHead,
@@ -232,11 +309,16 @@ pub(crate) async fn chains<L: Link>(
     keys: &BTreeSet<(String, SyncKind)>,
     listed: &BTreeMap<String, L>,
     resolved: &(dyn Fn(&str) -> Result<bool> + Sync),
-) -> Result<(BTreeMap<(String, SyncKind), Chain>, Vec<L>)> {
+) -> Result<(
+    BTreeMap<(String, SyncKind), Chain>,
+    Vec<L>,
+    BTreeSet<String>,
+)> {
     let (store, root) = namespace_store(config)?;
     let manifest = previous_manifest(store.as_ref(), &root, head).await?;
     let mut found = BTreeMap::new();
     let mut unresolved = Vec::new();
+    let mut named = BTreeSet::new();
     for (source, kind) in keys
         .iter()
         .filter(|(source, _)| !policy.retired_sources.contains_key(source))
@@ -270,7 +352,7 @@ pub(crate) async fn chains<L: Link>(
         let walked = if lost {
             None
         } else {
-            walk(
+            let (walked, visited) = walk(
                 config,
                 store.as_ref(),
                 &root,
@@ -280,7 +362,9 @@ pub(crate) async fn chains<L: Link>(
                 listed,
                 resolved,
             )
-            .await?
+            .await?;
+            named.extend(visited);
+            walked
         };
         let chain = match walked {
             Some(walk) => {
@@ -297,7 +381,7 @@ pub(crate) async fn chains<L: Link>(
         };
         found.insert((source.clone(), kind), chain);
     }
-    Ok((found, unresolved))
+    Ok((found, unresolved, named))
 }
 
 /// The links of a chain after `applied`, as one walk finds them.
@@ -351,7 +435,7 @@ async fn walk<L: Link>(
     applied: Option<&String>,
     listed: &BTreeMap<String, L>,
     resolved: &(dyn Fn(&str) -> Result<bool> + Sync),
-) -> Result<Option<Walk<L>>> {
+) -> Result<(Option<Walk<L>>, BTreeSet<String>)> {
     let mut found = Walk {
         ids: BTreeSet::new(),
         unresolved: Vec::new(),
@@ -359,16 +443,17 @@ async fn walk<L: Link>(
     let Some(last) = last else {
         // No cursor, or one with no confirmed envelope, is whole only when the
         // manifest has applied none: otherwise the chain it held is lost.
-        return Ok(applied.is_none().then_some(found));
+        return Ok((applied.is_none().then_some(found), BTreeSet::new()));
     };
     let mut next = Some(last);
     while let Some(id) = next.take() {
         if applied == Some(&id) {
             found.unresolved.reverse();
-            return Ok(Some(found));
+            let visited = found.ids.clone();
+            return Ok((Some(found), visited));
         }
         if !found.ids.insert(id.clone()) {
-            return Ok(None);
+            return Ok((None, found.ids));
         }
         // The listed links were read under their ID, of this namespace's kind.
         let link = match listed.get(&id) {
@@ -377,7 +462,7 @@ async fn walk<L: Link>(
                 let path = root.clone().join("envelopes").join(format!("{id}.json"));
                 let object = match store.get(&path).await {
                     Ok(object) => object,
-                    Err(object_store::Error::NotFound { .. }) => return Ok(None),
+                    Err(object_store::Error::NotFound { .. }) => return Ok((None, found.ids)),
                     Err(_) => return Err(WriterError::StorageUnavailable),
                 };
                 let bytes = object
@@ -392,12 +477,12 @@ async fn walk<L: Link>(
                     {
                         L::from(envelope)
                     }
-                    _ => return Ok(None),
+                    _ => return Ok((None, found.ids)),
                 }
             }
         };
         if link.source_id() != source || link.kind() != kind || link.lease_generation() == 0 {
-            return Ok(None);
+            return Ok((None, found.ids));
         }
         next = link.previous().cloned();
         if !resolved(&id)? {
@@ -406,10 +491,11 @@ async fn walk<L: Link>(
     }
     // The chain starts here, so it is whole unless an applied envelope was expected.
     if applied.is_some() {
-        return Ok(None);
+        return Ok((None, found.ids));
     }
     found.unresolved.reverse();
-    Ok(Some(found))
+    let visited = found.ids.clone();
+    Ok((Some(found), visited))
 }
 
 /// What the log holds of the chain of `source` and `kind`, for a cursor that
@@ -448,7 +534,13 @@ pub(crate) async fn chain_log(config: &Config, source: &str, kind: SyncKind) -> 
         .and_then(|m| m.chain_applied.get(source)?.get(&kind).cloned());
     log.left = applied.is_some();
     let (paths, resolved) = envelope_paths(config, &head).await?;
-    for (path, envelope) in read_envelopes(config, &paths).await? {
+    let (read, unreadable) = read_envelopes(config, &paths).await?;
+    // An envelope that does not parse may be one of this chain's, of a
+    // sequence or generation a new cursor must exceed.
+    if !unreadable.is_empty() {
+        return Err(WriterError::PublicationInvalid);
+    }
+    for (path, envelope) in read {
         if envelope.source_id != source || envelope.kind != kind {
             continue;
         }
@@ -761,7 +853,12 @@ pub async fn unconsumed_rejections(
             .and_then(|n| n.strip_suffix(".json"))
             .is_some_and(|id| applied.contains(id) && !rejected.contains(id))
         {
-            reads.push(fyrr_reader::storage::read_contract(store.as_ref(), &path.location).await?);
+            // One that does not parse is attributed by its chain, not here.
+            match fyrr_reader::storage::read_contract(store.as_ref(), &path.location).await {
+                Ok(envelope) => reads.push(envelope),
+                Err(fyrr_reader::storage::StorageError::PublicationInvalid) => {}
+                Err(error) => return Err(error.into()),
+            }
         }
     }
     let reads = reads.iter().collect::<Vec<_>>();
@@ -811,7 +908,7 @@ pub(crate) async fn cleanup_evidence(
         .try_collect()
         .await?;
     let paths: Vec<_> = paths.into_iter().map(|object| object.location).collect();
-    let envelopes = read_envelopes(config, &paths).await?;
+    let (envelopes, _) = read_envelopes(config, &paths).await?;
     let reads = envelopes
         .iter()
         .filter(|(path, _)| {
@@ -1506,19 +1603,31 @@ const INDEXES: &[(&str, &str, IndexType, &str)] = &[
     ),
 ];
 
+/// The envelopes at `paths`, and the IDs of those that do not parse: an
+/// envelope is attributed to its source only by the chain that names it, and
+/// the walk of that chain, which reads it by ID, blocks that source alone. A
+/// caller that needs every envelope fails on one that no chain names
+/// ([`attributed`]).
 pub(crate) async fn read_envelopes(
     config: &Config,
     paths: &[Path],
-) -> Result<Vec<(Path, PreparedEnvelope)>> {
+) -> Result<(Vec<(Path, PreparedEnvelope)>, BTreeSet<String>)> {
     let (store, _) = namespace_store(config)?;
     let mut envelopes = Vec::new();
+    let mut unreadable = BTreeSet::new();
     for path in paths {
-        envelopes.push((
-            path.clone(),
-            fyrr_reader::storage::read_contract(store.as_ref(), path).await?,
-        ));
+        match fyrr_reader::storage::read_contract(store.as_ref(), path).await {
+            Ok(envelope) => envelopes.push((path.clone(), envelope)),
+            Err(fyrr_reader::storage::StorageError::PublicationInvalid) => {
+                crate::telemetry::envelope_unreadable(path);
+                if let Some(id) = path.filename().and_then(|n| n.strip_suffix(".json")) {
+                    unreadable.insert(id.to_owned());
+                }
+            }
+            Err(error) => return Err(error.into()),
+        }
     }
-    Ok(envelopes)
+    Ok((envelopes, unreadable))
 }
 
 fn blocked_sources(rejections: &[RejectionMarker]) -> BTreeSet<String> {
@@ -2054,6 +2163,7 @@ mod chain_tests {
         )
         .await
         .unwrap()
+        .0
         .map(|walk| walk.unresolved.into_iter().map(|e| e.sequence).collect())
     }
 
@@ -2140,6 +2250,7 @@ mod chain_tests {
                 )
                 .await
                 .unwrap()
+                .0
                 .is_some(),
             );
         }

@@ -72,12 +72,21 @@ async fn holdings(
         0
     };
     let (paths, _) = commit::envelope_paths(config, head).await?;
-    let envelopes = commit::read_envelopes(config, &paths)
-        .await?
+    let (read, unreadable) = commit::read_envelopes(config, &paths).await?;
+    let mut envelopes: Vec<_> = read
         .into_iter()
         .filter(|(_, envelope)| envelope.source_id == source)
         .map(|(path, _)| path)
         .collect();
+    // One that does not parse is the source's when its chains name it.
+    if !unreadable.is_empty() {
+        let named = commit::named_by(config, head, source).await?;
+        envelopes.extend(
+            unreadable
+                .intersection(&named)
+                .map(|id| root.clone().join("envelopes").join(format!("{id}.json"))),
+        );
+    }
     let mut cursors = Vec::new();
     for kind in KINDS {
         let path = cursor_path(&root, source, kind);
@@ -197,16 +206,21 @@ pub async fn purge(config: &Config, source: &str, confirm: bool) -> Result<serde
         }
         let (store, _) = namespace_store(config)?;
         let deletion_store = store.as_ref();
-        crate::io::bounded(envelopes.iter().chain(&cursors), |path| {
-            let lease = &lease;
-            async move {
-                lease.head().await?;
-                match deletion_store.delete(path).await {
-                    Ok(()) | Err(object_store::Error::NotFound { .. }) => Ok(()),
-                    Err(_) => Err(WriterError::StorageUnavailable),
+        // The cursors go last: a purge cut short walks them again to find the
+        // envelopes of the source that do not parse.
+        for paths in [&envelopes, &cursors] {
+            crate::io::bounded(paths.iter(), |path| {
+                let lease = &lease;
+                async move {
+                    lease.head().await?;
+                    match deletion_store.delete(path).await {
+                        Ok(()) | Err(object_store::Error::NotFound { .. }) => Ok(()),
+                        Err(_) => Err(WriterError::StorageUnavailable),
+                    }
                 }
-            }
-        }).await?;
+            })
+            .await?;
+        }
         // The identity is rebuilt without the source's principal snapshot.
         commit::commit_one(config, false, &lease, Vec::new(), None).await?;
         mark(config, &lease, source, true).await?;

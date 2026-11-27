@@ -509,7 +509,7 @@ pub async fn reconcile(
         return Ok((Vec::new(), Vec::new(), true));
     }
     let (store, _) = namespace_store(config)?;
-    let (paths, _) = crate::commit::envelope_paths(config, head).await?;
+    let (paths, resolved) = crate::commit::envelope_paths(config, head).await?;
     let mut parts = BTreeMap::new();
     let mut pending = BTreeSet::new();
     for item in crate::commit::pending(config, head).await? {
@@ -520,8 +520,22 @@ pub async fn reconcile(
         }
     }
     for path in paths {
+        // An unresolved envelope that does not parse is a chain's, which the
+        // commit attributed, not this listing's. A resolved one may be a part
+        // of it: the listing fails rather than finish without its deletes.
         let item: PreparedEnvelope =
-            fyrr_reader::storage::read_contract(store.as_ref(), &path).await?;
+            match fyrr_reader::storage::read_contract(store.as_ref(), &path).await {
+                Ok(item) => item,
+                Err(fyrr_reader::storage::StorageError::PublicationInvalid)
+                    if !path
+                        .filename()
+                        .and_then(|n| n.strip_suffix(".json"))
+                        .is_some_and(|id| resolved.contains(id)) =>
+                {
+                    continue;
+                }
+                Err(error) => return Err(error.into()),
+            };
         if item.source_id != envelope.source_id
             || item.rejection_generation != envelope.rejection_generation
         {

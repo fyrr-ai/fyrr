@@ -554,6 +554,221 @@ async fn incremental_read_only_namespace_refuses_syncs_and_commits_what_was_prep
     );
 }
 
+/// A confirmed envelope that does not parse blocks only its source: another
+/// source still publishes, and `writer status` names the blocked one (#370).
+#[tokio::test]
+#[ignore = "real CLI and local storage; scripts/ci"]
+async fn incremental_an_unreadable_envelope_blocks_only_its_source_on_storage() {
+    let (worker, commit, root) = fixture();
+    publish_initial(&worker, &commit, &root);
+    input(
+        &root,
+        json!({"epoch":2,"permissions":[[{"id":"a","revision":"p2","readers":[]},{"id":"b","revision":"p1","readers":["grp:group"]}]]}),
+    );
+    worker_sync(&worker, &["incremental", "--kind", "permissions"]);
+    // The envelope the cursor confirmed is truncated on storage.
+    let last = cursor_of(&worker, SyncKind::Permissions)
+        .await
+        .last
+        .unwrap();
+    let loaded = fyrr_core::config::load(&worker).unwrap();
+    let (store, ns) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
+    let path = ns.join("envelopes").join(format!("{}.json", last.id));
+    let bytes = store.get(&path).await.unwrap().bytes().await.unwrap();
+    store
+        .put(&path, bytes.slice(..bytes.len() / 2).into())
+        .await
+        .unwrap();
+    std::fs::write(root.join("sources/0.txt"), "fixture document other 1").unwrap();
+    root.embedding.insert_both(
+        "fixture document other 1",
+        root.embedding.vector("fixture document 0"),
+    );
+    worker_sync(&worker, &["allowed", "--kind", "content"]);
+    publish(&commit);
+    let control = source_rows(&worker, "allowed").await;
+    let row = roots(&control).iter().position(|id| id == "0.txt").unwrap();
+    assert_eq!(
+        fyrr_writer::apply::strings(&control, "searchable_text")
+            .unwrap()
+            .value(row),
+        "fixture document other 1",
+        "the other source publishes"
+    );
+    let status = command(&commit, &["writer", "status"]);
+    assert_eq!(
+        status["blocked_sources"],
+        json!(["incremental"]),
+        "{status}"
+    );
+    assert!(
+        !row_readers(&rows(&worker).await, "b").is_empty(),
+        "the blocked source keeps its rights"
+    );
+}
+
+/// An unreadable members envelope is named by no chain and could hide a revoke:
+/// the commit and `writer status` fail closed, nothing is published, and once
+/// it is put back the revoke is (#370).
+#[tokio::test]
+#[ignore = "real CLI and local storage; scripts/ci"]
+async fn incremental_an_unreadable_members_envelope_fails_the_commit_on_storage() {
+    let (worker, commit, root) = fixture();
+    publish_initial(&worker, &commit, &root);
+    let fetch = || {
+        super::tools::Mcp::open(&worker)
+            .call("fetch", json!({"source_id":"incremental","root_id":"a"}))["structuredContent"]
+            ["documents"]
+            .as_array()
+            .is_some_and(|d| !d.is_empty())
+    };
+    assert!(fetch(), "a is readable before the revoke");
+    let before = publication(&commit).await.0;
+    // The snapshot removes `u` from `child`, and its envelope is truncated.
+    input(
+        &root,
+        json!({"epoch":2,"members":[{"users":[{"id":"u","email":"fixture@example.test","email_verification":"verified_corporate","active":true}],"groups":[{"id":"child","members":[]},{"id":"group","members":["grp:child"]}]}]}),
+    );
+    worker_sync(&worker, &["incremental", "--kind", "members"]);
+    let (path, _) = envelopes(&worker)
+        .await
+        .into_iter()
+        .filter(|(_, e)| e.source_id == "incremental" && e.kind == SyncKind::Members)
+        .max_by_key(|(_, e)| e.sequence)
+        .unwrap();
+    let loaded = fyrr_core::config::load(&worker).unwrap();
+    let (store, _) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
+    let bytes = store.get(&path).await.unwrap().bytes().await.unwrap();
+    store
+        .put(&path, bytes.slice(..bytes.len() / 2).into())
+        .await
+        .unwrap();
+    for args in [["writer", "commit"], ["writer", "status"]] {
+        let refused = host_command(&commit).args(args).output().unwrap();
+        assert!(!refused.status.success(), "{args:?} fails closed");
+        assert!(
+            String::from_utf8_lossy(&refused.stderr).contains("publication_invalid"),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&refused.stderr)
+        );
+    }
+    let after = publication(&commit).await.0;
+    assert_eq!(after.content, before.content, "nothing is published");
+    assert_eq!(after.identity, before.identity, "no identity is published");
+    // Put back, the snapshot publishes, and `u` loses `a`.
+    store.put(&path, bytes.into()).await.unwrap();
+    publish(&commit);
+    assert!(!fetch(), "the revoke is published");
+}
+
+/// Purging the source that an unreadable envelope blocks deletes that envelope
+/// too, which its chain names: the namespace commits again (#370).
+#[tokio::test]
+#[ignore = "real CLI and local storage; scripts/ci"]
+async fn incremental_a_purge_of_the_blocked_source_deletes_its_unreadable_envelope_on_storage() {
+    let (worker, commit, root) = fixture();
+    publish_initial(&worker, &commit, &root);
+    input(
+        &root,
+        json!({"epoch":2,"permissions":[[{"id":"a","revision":"p2","readers":[]},{"id":"b","revision":"p1","readers":["grp:group"]}]]}),
+    );
+    worker_sync(&worker, &["incremental", "--kind", "permissions"]);
+    let last = cursor_of(&worker, SyncKind::Permissions)
+        .await
+        .last
+        .unwrap();
+    let loaded = fyrr_core::config::load(&worker).unwrap();
+    let (store, ns) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
+    let path = ns.join("envelopes").join(format!("{}.json", last.id));
+    let bytes = store.get(&path).await.unwrap().bytes().await.unwrap();
+    store
+        .put(&path, bytes.slice(..bytes.len() / 2).into())
+        .await
+        .unwrap();
+    publish(&commit);
+    let status = command(&commit, &["writer", "status"]);
+    assert_eq!(
+        status["blocked_sources"],
+        json!(["incremental"]),
+        "{status}"
+    );
+    let purged = command(
+        &commit,
+        &["writer", "source", "purge", "incremental", "--confirm"],
+    );
+    assert_eq!(purged["purged"], true, "{purged}");
+    assert!(
+        store.head(&path).await.is_err(),
+        "the unreadable envelope is deleted"
+    );
+    publish(&commit);
+    let status = command(&commit, &["writer", "status"]);
+    assert_eq!(status["blocked_sources"], json!([]), "{status}");
+    // A second purge changes nothing and the namespace still commits.
+    command(
+        &commit,
+        &["writer", "source", "purge", "incremental", "--confirm"],
+    );
+    publish(&commit);
+    assert!(source_roots(&worker, "incremental").await.is_empty());
+}
+
+/// An unreadable envelope of one source does not stop the members snapshot nor
+/// the complete listing of another, which read the whole log (#370).
+#[tokio::test]
+#[ignore = "real CLI and local storage; scripts/ci"]
+async fn incremental_an_unreadable_envelope_leaves_members_and_listings_of_others_on_storage() {
+    let (worker, commit, root) = fixture();
+    publish_initial(&worker, &commit, &root);
+    // A confirmed content envelope of `allowed` is truncated on storage.
+    std::fs::write(root.join("sources/0.txt"), "fixture document other 1").unwrap();
+    root.embedding.insert_both(
+        "fixture document other 1",
+        root.embedding.vector("fixture document 0"),
+    );
+    worker_sync(&worker, &["allowed", "--kind", "content"]);
+    let loaded = fyrr_core::config::load(&worker).unwrap();
+    let (store, ns) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
+    let cursor: fyrr_core::connector::CursorState = fyrr_reader::storage::read_contract(
+        store.as_ref(),
+        &ns.clone().join("cursors").join("allowed-content.json"),
+    )
+    .await
+    .unwrap();
+    let path = ns
+        .join("envelopes")
+        .join(format!("{}.json", cursor.last.unwrap().id));
+    let bytes = store.get(&path).await.unwrap().bytes().await.unwrap();
+    store
+        .put(&path, bytes.slice(..bytes.len() / 2).into())
+        .await
+        .unwrap();
+    // `incremental` has a members snapshot and a complete listing pending.
+    let before = command(&commit, &["writer", "status"])["directory"]["identity_generation"]
+        .as_u64()
+        .unwrap();
+    input(
+        &root,
+        json!({"epoch":2,
+            "members":[{"users":[{"id":"u","email":"fixture@example.test","email_verification":"verified_corporate","active":true}],"groups":[{"id":"child","members":[]},{"id":"group","members":["grp:child"]}]}],
+            "listing":[{"last":true,"complete":true,"roots":["a"]}]}),
+    );
+    worker_sync(&worker, &["incremental", "--kind", "members"]);
+    worker_sync(&worker, &["incremental", "--kind", "reconcile", "--full"]);
+    publish(&commit);
+    let status = command(&commit, &["writer", "status"]);
+    assert_eq!(status["blocked_sources"], json!(["allowed"]), "{status}");
+    assert!(
+        status["directory"]["identity_generation"].as_u64().unwrap() > before,
+        "the members snapshot is published: {status}"
+    );
+    assert_eq!(
+        source_roots(&worker, "incremental").await,
+        ["a"],
+        "the listing is published"
+    );
+}
+
 /// A frozen namespace still takes a revoke: a permission sync is prepared and
 /// committed, and readers no longer see the document; content stays frozen
 /// (#163).
