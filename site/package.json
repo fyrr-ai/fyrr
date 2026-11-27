@@ -20,9 +20,9 @@
   "dependencies": {
     "@tailwindcss/postcss": "^4.1.0",
     "cheerio": "^1.1.0",
-    "fumadocs-core": "16.19.4",
-    "fumadocs-mdx": "15.6.3",
-    "fumadocs-ui": "16.19.4",
+    "fumadocs-core": "16.19.7",
+    "fumadocs-mdx": "15.6.4",
+    "fumadocs-ui": "16.19.7",
     "geist": "^1.9.2",
     "mdast-util-to-string": "^4.0.0",
     "next": "16.4.6",
@@ -44,7 +44,7 @@
     "playwright": "^1.65.1",
     "subset-font": "2.9.0",
     "typescript": "^7.0.2",
-    "wrangler": "4.164.0"
+    "wrangler": "4.167.0"
   },
   "packageManager": "bun@1.4.4"
 }
