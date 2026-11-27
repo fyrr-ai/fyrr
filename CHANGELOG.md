@@ -683,8 +683,10 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   content change that replaces it with `envelope_bounds_invalid`, nor does the
   commit of more deletes than a group holds before the first content: the
   rows are written in steps within those bounds, in one publication, as a
-  permission read's are. A patch of such a root is still refused
-  (`envelope_bounds_exceeded`).
+  permission read's are, the rows of a write API request too. A patch is
+  refused (`envelope_bounds_exceeded`, `409 rejected` on the write API) only
+  when the stored rows it loads are over the bounds of a group; rewritten
+  rows that grow past them now publish in steps.
 - A serving reader no longer turns its generation cold when a second
   subject's admission is built. The roots of the vector index grow a little
   after their first searches, and each admission compared that new size with

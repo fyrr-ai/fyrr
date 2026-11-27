@@ -441,9 +441,9 @@ pub async fn permissions(
 /// The rows of a root a permission replacement reads at a time.
 pub(crate) const STEP_ROWS: usize = 256;
 
-/// Rows written in steps of at most a group's rows and bytes, a row alone
-/// being a step: the rows of a step not yet written, and the fragments of
-/// those written.
+/// Rows written in steps of at most a group's rows and bytes, or of one row
+/// that is over them alone: the rows of a step not yet written, and the
+/// fragments of those written.
 #[derive(Default)]
 pub(crate) struct Steps {
     rows: Vec<RecordBatch>,
@@ -452,23 +452,27 @@ pub(crate) struct Steps {
 }
 
 impl Steps {
-    /// Holds `row`, and writes the step held first when it would be over.
-    pub(crate) async fn push(&mut self, config: &Config, row: RecordBatch) -> Result<()> {
-        let (count, bytes) = row_size(std::slice::from_ref(&row))?;
-        let bytes = bytes - ROW_OVERHEAD_BYTES;
-        if !self.rows.is_empty()
-            && (self.held.0 + count > config.writer.commit.group_max_rows
-                || ROW_OVERHEAD_BYTES
-                    .saturating_add(self.held.1)
-                    .saturating_add(bytes)
-                    > config.writer.commit.group_max_bytes.as_u64())
-        {
-            self.held = (0, 0);
-            let full = std::mem::take(&mut self.rows);
-            self.fragments.extend(write_fragments(config, full).await?);
+    /// Holds each row of `batch`, and writes the step held first when the row
+    /// would put it over.
+    pub(crate) async fn push(&mut self, config: &Config, batch: RecordBatch) -> Result<()> {
+        for row in 0..batch.num_rows() {
+            let row = batch.slice(row, 1);
+            let (count, bytes) = row_size(std::slice::from_ref(&row))?;
+            let bytes = bytes - ROW_OVERHEAD_BYTES;
+            if !self.rows.is_empty()
+                && (self.held.0 + count > config.writer.commit.group_max_rows
+                    || ROW_OVERHEAD_BYTES
+                        .saturating_add(self.held.1)
+                        .saturating_add(bytes)
+                        > config.writer.commit.group_max_bytes.as_u64())
+            {
+                self.held = (0, 0);
+                let full = std::mem::take(&mut self.rows);
+                self.fragments.extend(write_fragments(config, full).await?);
+            }
+            self.held = (self.held.0 + count, self.held.1.saturating_add(bytes));
+            self.rows.push(row);
         }
-        self.held = (self.held.0 + count, self.held.1.saturating_add(bytes));
-        self.rows.push(row);
         Ok(())
     }
 
@@ -772,5 +776,52 @@ mod tests {
             hold_rows(&config, &mut held, &batch),
             Err(WriterError::EnvelopeBoundsInvalid)
         ));
+    }
+
+    #[tokio::test]
+    async fn a_batch_of_many_rows_is_written_in_steps_within_the_bounds_of_a_group() {
+        let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target")
+            .canonicalize()
+            .unwrap()
+            .join(format!("apply-steps-{}", std::process::id()));
+        let mut config = fyrr_core::config::parse(&format!(
+            "[namespace]\nname='steps'\n[storage]\nuri='file://{}'\n\
+             [embedding]\nendpoint='http://127.0.0.1:9/v1'\n",
+            directory.display()
+        ))
+        .unwrap()
+        .config;
+        let row = |root: &str| {
+            marker_row(
+                config.embedding.dimensions,
+                config.namespace.settings.dense_element,
+                "source",
+                root,
+                &DocumentState::default(),
+            )
+            .unwrap()
+        };
+        let rows: Vec<_> = (0..5).map(|n| row(&format!("root-{n}"))).collect();
+        let (_, one) = row_size(&rows[..1]).unwrap();
+        let one = one - ROW_OVERHEAD_BYTES;
+        // Two rows fit a group, three do not; the five come as one batch, as
+        // the rows of an API envelope do.
+        config.writer.commit.group_max_bytes =
+            fyrr_core::units::ByteSize::bytes(ROW_OVERHEAD_BYTES + 2 * one + one / 2);
+        let batch = arrow_select::concat::concat_batches(&rows[0].schema(), &rows).unwrap();
+        let mut steps = Steps::default();
+        steps.push(&config, batch).await.unwrap();
+        let fragments = steps.finish(&config).await.unwrap();
+        let sizes: Vec<_> = fragments
+            .iter()
+            .map(|f| f["physical_rows"].as_u64().unwrap())
+            .collect();
+        std::fs::remove_dir_all(&directory).ok();
+        assert_eq!(
+            sizes,
+            [2, 2, 1],
+            "each step is within the bounds of a group"
+        );
     }
 }
