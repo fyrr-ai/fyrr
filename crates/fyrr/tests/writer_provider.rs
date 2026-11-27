@@ -232,23 +232,82 @@ fn saved_cursor(storage: &Path) -> Option<String> {
     None
 }
 
+/// A running writer service, stopped when dropped, also when a check fails.
+struct Service(std::process::Child);
+impl Drop for Service {
+    fn drop(&mut self) {
+        // SIGTERM lets the service stop its workers.
+        let _ = std::process::Command::new("kill")
+            .args(["-TERM", &self.0.id().to_string()])
+            .status();
+        let _ = self.0.wait();
+    }
+}
+
+/// The service's commits that published so far.
+fn publications(log: &Path) -> usize {
+    std::fs::read_to_string(log)
+        .unwrap()
+        .matches("writer_service event=published")
+        .count()
+}
+
 #[test]
 #[ignore = "real service, workers and local storage; scripts/ci"]
 fn a_failing_source_is_retried_with_growing_delays_and_a_success_resets_them() {
     let fixture = Fixture::new("sentinel-failing", "raise");
-    let text = std::fs::read_to_string(&fixture.config).unwrap().replace(
-        "[sources.settings]",
-        "[sources.intervals]\ncontent='10m'\nreconcile='10m'\n[sources.settings]",
-    );
+    // A healthy source of the namespace, whose changes publish a new head.
+    let docs = |revision: &str| {
+        fixture.sandbox.input(
+            "docs.json",
+            &json!({"cursor": revision, "documents": [{
+                "id": "doc", "title": "doc", "author": "author", "revision": revision,
+                "text": format!("text {revision}"), "readers": ["grp:fixture"],
+            }]})
+            .to_string(),
+        )
+    };
+    let docs_path = docs("r1");
+    let text = std::fs::read_to_string(&fixture.config)
+        .unwrap()
+        .replace(
+            "[sources.settings]",
+            "[sources.intervals]\ncontent='10m'\nreconcile='10m'\n[sources.settings]",
+        )
+        .replacen(
+            "[[sources]]",
+            "[writer.commit]\ncoalescing_timer='1s'\n[[sources]]",
+            1,
+        )
+        + &format!(
+            "[[sources]]\nid='other'\ntype='sentinel-docs'\npermissions='fixed'\nreaders=['grp:fixture']\n[sources.settings]\n[sources.scope]\nfixture='{}'\n",
+            docs_path.display()
+        );
     std::fs::write(&fixture.config, &text).unwrap();
+    // Publish and maintain the namespace first, so the service finds nothing
+    // to publish at its start.
+    for args in [
+        &["writer", "sync", "other"][..],
+        &["writer", "commit"][..],
+        &["writer", "maintain"][..],
+    ] {
+        let output = fixture.run(args);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
     let log = fixture.sandbox.output().join("service.log");
-    let mut service = fixture
-        .sandbox
-        .configured_command(&fixture.config, ["writer", "serve", "--jobs", "1"])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::fs::File::create(&log).unwrap())
-        .spawn()
-        .unwrap();
+    let _service = Service(
+        fixture
+            .sandbox
+            .configured_command(&fixture.config, ["writer", "serve", "--jobs", "1"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::fs::File::create(&log).unwrap())
+            .spawn()
+            .unwrap(),
+    );
     // The first worker starts at once and fails. The next waits 60 s of the
     // test clock, the one after 120 s, the one after that 240 s.
     wait_for_failures(&log, 1);
@@ -256,9 +315,29 @@ fn a_failing_source_is_retried_with_growing_delays_and_a_success_resets_them() {
     assert_eq!(failed_workers(&log), 1, "retried before 60 s");
     advance_and_settle(40);
     wait_for_failures(&log, 2);
-    advance_and_settle(100);
+    // Another source publishes a new head while the failing one waits: that
+    // does not make it due.
+    let published = publications(&log);
+    docs("r2");
+    let output = fixture.run(&["writer", "sync", "other", "--full"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    while publications(&log) == published {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the other source never published"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    assert_eq!(failed_workers(&log), 2, "a new head made the source due");
+    advance_and_settle(80);
     assert_eq!(failed_workers(&log), 2, "retried before 120 s");
-    advance_and_settle(40);
+    advance_and_settle(50);
     wait_for_failures(&log, 3);
     advance_and_settle(200);
     assert_eq!(failed_workers(&log), 3, "retried before 240 s");
@@ -285,9 +364,4 @@ fn a_failing_source_is_retried_with_growing_delays_and_a_success_resets_them() {
     assert_eq!(failed_workers(&log), 4, "retried before 60 s");
     advance_and_settle(40);
     wait_for_failures(&log, 5);
-    // SIGTERM lets the service stop its workers.
-    let _ = std::process::Command::new("kill")
-        .args(["-TERM", &service.id().to_string()])
-        .status();
-    let _ = service.wait();
 }

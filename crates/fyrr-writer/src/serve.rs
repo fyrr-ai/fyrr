@@ -144,8 +144,12 @@ pub async fn run(
                 if running.len() >= jobs {
                     break;
                 }
-                // A head that changed since the source's worker started makes it due.
-                if (due[i] > now && started[i] == heads) || running.iter().any(|(n, _)| *n == i) {
+                // A head that changed since the source's worker started makes it
+                // due, unless the source is backing off: a broken source is not
+                // retried on every publication of the others.
+                if (due[i] > now && (started[i] == heads || failures[i] > 0))
+                    || running.iter().any(|(n, _)| *n == i)
+                {
                     continue;
                 }
                 started[i] = heads;
