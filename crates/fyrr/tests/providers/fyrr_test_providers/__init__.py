@@ -73,6 +73,7 @@ class DocsConnector(Connector):
                     title=document["title"],
                     author=document["author"],
                     project=document.get("project"),
+                    status=document.get("status"),
                     labels=document.get("labels", []),
                     updated_at=(
                         datetime.fromisoformat(document["updated_at"])

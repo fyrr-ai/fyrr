@@ -137,7 +137,7 @@ The writer replaces every reader token with an HMAC-SHA256 digest keyed by
 maps each subject (the stdio user, or an OIDC subject over HTTP) to the
 hashed reader tokens it holds.
 
-Every `search`, `fetch` and `list_filters` call passes three gates:
+Every `search`, `fetch`, `list_filters` and `aggregate` call passes three gates:
 
 1. **Admission.** The reader checks the serving head, policy and
    identity. It checks the head its last version check read

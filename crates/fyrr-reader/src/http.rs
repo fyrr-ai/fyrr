@@ -615,7 +615,6 @@ async fn boundary_inner(state: HttpState, mut request: Request, next: Next) -> R
                         parts.extensions.insert(StrongRead);
                     }
                     match name {
-                        "aggregate" => crate::serve::ToolCall::aggregate(arguments),
                         "recall" => crate::serve::ToolCall::recall(arguments),
                         "search" => {
                             let (members, arguments) =

@@ -1178,3 +1178,158 @@ async fn tools_search_requires_a_phrase_as_the_json_query_does_on_storage() {
         assert_eq!(phrase_search(&reader, arguments).await, refused);
     }
 }
+
+/// The `aggregate` tool counts as the JSON `aggregate` route does, for the
+/// same key over the same publication: a root of two records counts once, a
+/// document one of two keys may not read changes only the other key's counts,
+/// an empty selection counts 0, and a selection past the row bound is `busy`.
+#[tokio::test]
+#[ignore = "real writer and reader executables on local storage; scripts/ci"]
+async fn tools_aggregate_counts_as_the_json_route_does_on_storage() {
+    const ALLOW_KEY: usize = 46;
+    const BOTH_KEY: usize = 47;
+    let (config, root) = setup();
+    let prefix = std::fs::read_to_string(&config)
+        .unwrap()
+        .split("[[sources]]")
+        .next()
+        .unwrap()
+        .to_owned();
+    let text = format!(
+        "{prefix}\n[[sources]]\nid='allowed'\ntype='sentinel-docs'\npermissions='sync'\nintervals={{ permissions='30m' }}\n[sources.scope]\nfixture='{}'\n\
+         [[identity.api_keys]]\nname='allow'\nkey={{env='FYRR_TEST_ALLOW_KEY'}}\nreaders=['grp:allow']\n\
+         [[identity.api_keys]]\nname='both'\nkey={{env='FYRR_TEST_BOTH_KEY'}}\nreaders=['grp:allow','grp:deny']\n",
+        root.join("documents.json").display()
+    );
+    std::fs::write(&config, &text).unwrap();
+    let vector: Vec<f32> = (0..1024).map(|d| ((d + 7) as f32).sin()).collect();
+    let documents: Vec<Value> = [
+        ("o1", "web", "open", "grp:allow"),
+        ("o2", "web", "open", "grp:allow"),
+        ("c1", "web", "closed", "grp:allow"),
+        ("o3", "api", "open", "grp:allow"),
+        ("hidden", "web", "open", "grp:deny"),
+    ]
+    .into_iter()
+    .map(|(id, project, status, reader)| {
+        let (first, text) = (format!("heading of {id}"), format!("body of {id}"));
+        for chunk in [&first, &text] {
+            root.embedding.insert_both(chunk, vector.clone());
+        }
+        json!({"id": id, "first_text": first, "text": text, "readers": [reader],
+               "title": id, "author": "Ada", "project": project, "status": status})
+    })
+    .collect();
+    std::fs::write(
+        root.join("documents.json"),
+        serde_json::to_vec(&json!({"documents": documents, "cursor": "one"})).unwrap(),
+    )
+    .unwrap();
+    success(&config, &["writer", "namespace", "create"]);
+    sync_fixture(&config);
+    // The writer binds each key to its readers with the key's secret.
+    for command in ["keys", "commit"] {
+        let output = super::coordination::host_command(&config)
+            .args(["writer", command])
+            .env("FYRR_TEST_ALLOW_KEY", secret(ALLOW_KEY))
+            .env("FYRR_TEST_BOTH_KEY", secret(BOTH_KEY))
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}", report(&output));
+    }
+    let reader = Reader::start_appended(&config, &root, |address, base| {
+        format!("\n[reader.http]\nlisten='{address}'\npublic_url='{base}/mcp'\n")
+    })
+    .await;
+    // The groups `/mcp` answers `key`, after asserting that the JSON route answers the same.
+    let groups = async |key: usize, arguments: Value| -> Value {
+        let token = secret(key);
+        let mcp = body(reader.call(&token, 1, "aggregate", arguments.clone()).await);
+        let response = reader
+            .client
+            .post(format!(
+                "{}/v1/namespaces/dense-fixture/aggregate",
+                reader.base
+            ))
+            .bearer_auth(&token)
+            .json(&arguments)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200, "{arguments}");
+        let json: Value = response.json().await.unwrap();
+        assert_eq!(mcp["groups"], json["groups"], "{arguments}");
+        mcp["groups"].clone()
+    };
+    let count = json!([{"op": "count"}]);
+    let web = json!({"field": "project", "op": "eq", "value": "web"});
+    let open_web = json!({"and": [web, {"field": "status", "op": "eq", "value": "open"}]});
+    for (key, open) in [(ALLOW_KEY, 2), (BOTH_KEY, 3)] {
+        assert_eq!(
+            groups(key, json!({"filter": open_web, "aggregations": count})).await,
+            json!([{"key": [], "values": [open]}])
+        );
+        assert_eq!(
+            groups(
+                key,
+                json!({"filter": web, "group_by": ["status"], "aggregations": count})
+            )
+            .await,
+            json!([{"key": ["closed"], "values": [1]}, {"key": ["open"], "values": [open]}])
+        );
+        let none = json!({"field": "project", "op": "eq", "value": "none"});
+        assert_eq!(
+            groups(key, json!({"filter": none, "aggregations": count})).await,
+            json!([{"key": [], "values": [0]}])
+        );
+    }
+    let fetched = body(
+        reader
+            .call(
+                &secret(ALLOW_KEY),
+                2,
+                "fetch",
+                json!({"source_id": "allowed", "root_id": "o1"}),
+            )
+            .await,
+    );
+    assert_eq!(
+        fetched["documents"][0]["records"].as_array().unwrap().len(),
+        2
+    );
+    assert_eq!(
+        groups(
+            ALLOW_KEY,
+            json!({"group_by": ["root_id"], "aggregations": count})
+        )
+        .await,
+        json!([
+            {"key": ["c1"], "values": [1]},
+            {"key": ["o1"], "values": [1]},
+            {"key": ["o2"], "values": [1]},
+            {"key": ["o3"], "values": [1]},
+        ])
+    );
+    error(
+        reader
+            .call(
+                &secret(ALLOW_KEY),
+                3,
+                "aggregate",
+                json!({"aggregations": []}),
+            )
+            .await,
+        "invalid_argument",
+    );
+
+    let bound = root.join("bounded.toml");
+    std::fs::write(
+        &bound,
+        text.replace("nprobes = 1", "nprobes = 1\nfilter_count_max_rows = 1"),
+    )
+    .unwrap();
+    error(
+        Mcp::open(&bound).call("aggregate", json!({"aggregations": count})),
+        "busy",
+    );
+}

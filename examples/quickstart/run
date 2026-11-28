@@ -130,7 +130,7 @@ open_mcp() {
   request 1 '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"quickstart","version":"1"}}}' |
     jq -e '.instructions | contains("call search first")' >/dev/null || fail "initialize: no instructions for the agent"
   printf '%s\n' '{"jsonrpc":"2.0","method":"notifications/initialized"}' >&"$TO_MCP"
-  [[ "$(request 9 '{"jsonrpc":"2.0","id":9,"method":"tools/list","params":{}}' | jq -c '[.tools[].name]')" == '["search","fetch","list_filters"]' ]] ||
+  [[ "$(request 9 '{"jsonrpc":"2.0","id":9,"method":"tools/list","params":{}}' | jq -c '[.tools[].name]')" == '["search","fetch","list_filters","aggregate"]' ]] ||
     fail "tools/list after the discover fallback"
 }
 close_mcp() {
