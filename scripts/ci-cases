@@ -523,11 +523,10 @@ async def pool(manifest, logs, jobs, rows):
     async def execute(row, cases):
         async with capacity:
             key = hashlib.sha256("\n".join(cases).encode()).hexdigest()[:12]
-            directory = logs / row / key
-            # Results left by an earlier pool in this log directory are not this run's.
-            if directory.exists():
-                shutil.rmtree(directory)
-            directory.mkdir(parents=True)
+            # Each attempt gets a fresh directory, so results that an earlier
+            # pool or its orphaned worker writes never land in this one.
+            (logs / row).mkdir(parents=True, exist_ok=True)
+            directory = Path(tempfile.mkdtemp(prefix=f"{key}-", dir=logs / row))
             clock = directory / "offset-ms"
             clock.write_text("0")
             clock.chmod(0o600)
@@ -559,10 +558,12 @@ async def pool(manifest, logs, jobs, rows):
                     start_new_session=True,
                 )
                 active[process.pid] = key
+                stopped = True
                 try:
                     await process.wait()
+                    stopped = False
                 finally:
-                    if process.returncode is None:
+                    if stopped:
                         # This process group was created above for this case only.
                         try:
                             os.killpg(process.pid, signal.SIGTERM)
@@ -578,9 +579,17 @@ async def pool(manifest, logs, jobs, rows):
                     row_seconds[row] += duration
                     if process.returncode:
                         broken.add(row)
-                    for case, (status, passed, failed, ignored, reason) in outcomes(
-                        directory, cases
-                    ).items():
+                    found = outcomes(directory, cases)
+                    if (
+                        not stopped
+                        and process.returncode
+                        and all(result[0] != "FAIL" for result in found.values())
+                    ):
+                        # No failed case explains this exit: none of the job's results stand.
+                        found = dict.fromkeys(
+                            found, ("FAIL", 0, 1, 0, f"worker exited {process.returncode}")
+                        )
+                    for case, (status, passed, failed, ignored, reason) in found.items():
                         result = {
                             "row": row,
                             "case": case,
@@ -594,7 +603,7 @@ async def pool(manifest, logs, jobs, rows):
                             "seconds": round(duration, 3) if len(cases) == 1 else None,
                             "elapsed_seconds": round(time.monotonic() - started, 3),
                             "finished_at": datetime.datetime.now(datetime.UTC).isoformat(),
-                            "log": str(display_logs / row / key / "runner.log"),
+                            "log": str(display_logs / row / directory.name / "runner.log"),
                         }
                         if reason:
                             result["reason"] = reason
