@@ -266,6 +266,7 @@ impl PreparedReader {
                         let row = rows.text_rows.get(&row_id).ok_or(StorageUnavailable)?;
                         crate::excerpt::highlight(
                             tokenizer.as_mut(),
+                            self.config.namespace.settings.analyzer.tokenizer,
                             query,
                             records.value(*row),
                             excerpt,

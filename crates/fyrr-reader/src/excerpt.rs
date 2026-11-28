@@ -66,8 +66,10 @@ fn query_terms(tokenizer: &mut dyn LanceTokenizer, query: &str) -> Result<Vec<St
 /// Sets the match ranges of `excerpt`, a passage of `record`: the tokens of the
 /// record, as the index analyzer cuts and reduces them, that lie whole in the
 /// passage and equal a token of `query`. A token the passage cuts is not marked.
+/// `kind` is the tokenizer `tokenizer` was built with.
 pub(crate) fn highlight(
     tokenizer: &mut dyn LanceTokenizer,
+    kind: Tokenizer,
     query: &str,
     record: &str,
     excerpt: &mut Excerpt,
@@ -88,13 +90,37 @@ pub(crate) fn highlight(
     };
     let from = skip(excerpt.start);
     let to = skip(excerpt.end - excerpt.start);
-    // No tokenizer an analyzer admits (`simple`, `whitespace`, `unicode`; not
-    // `ngram`) makes a token across whitespace, so the tokens between the
-    // whitespace around the passage are the record's, with its offsets.
-    let head = record[..from].rfind(char::is_whitespace).unwrap_or(0);
-    let tail = record[to..]
-        .find(char::is_whitespace)
-        .map_or(record.len(), |at| to + at);
+    // The record is tokenized from `head` to `tail`, outside the passage, so a
+    // token that crosses an edge of the passage starts before it or ends after
+    // it and is not marked. `simple` and `whitespace` end a token at the first
+    // character of another class (not a letter or digit; ASCII white space),
+    // whatever came before: one character beyond each edge is enough. `unicode`
+    // segments a run of Chinese, Japanese or Thai letters from the start of the
+    // run, so its slice runs from the ASCII white space before the passage to
+    // the one after it, included: no run goes on across ASCII white space, and
+    // the segmenter starts over at it. Other white space (U+00A0, U+202F) may
+    // be inside a token.
+    let (head, tail) = if matches!(kind, Tokenizer::Simple | Tokenizer::Whitespace) {
+        (
+            record[..from]
+                .char_indices()
+                .next_back()
+                .map_or(0, |(at, _)| at),
+            record[to..]
+                .chars()
+                .next()
+                .map_or(to, |c| to + c.len_utf8()),
+        )
+    } else {
+        (
+            record[..from]
+                .rfind(|c: char| c.is_ascii_whitespace())
+                .unwrap_or(0),
+            record[to..]
+                .find(|c: char| c.is_ascii_whitespace())
+                .map_or(record.len(), |at| to + at + 1),
+        )
+    };
     let mut ranges = Vec::new();
     let mut stream = tokenizer.token_stream_for_doc(&record[head..tail]);
     while ranges.len() < MAX_HIGHLIGHTS

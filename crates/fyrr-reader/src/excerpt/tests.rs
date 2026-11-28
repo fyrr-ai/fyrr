@@ -227,6 +227,7 @@ fn analyzer(stem: bool, fold: bool) -> InvertedIndexParams {
 
 /// The ranges of `query` in the passage `[start, end)` codepoints of `record`.
 fn highlights(
+    kind: Tokenizer,
     params: InvertedIndexParams,
     record: &str,
     (start, end): (usize, usize),
@@ -239,7 +240,7 @@ fn highlights(
         end: u32::try_from(end).unwrap(),
         highlights: None,
     };
-    highlight(tokenizer.as_mut(), query, record, &mut excerpt).unwrap();
+    highlight(tokenizer.as_mut(), kind, query, record, &mut excerpt).unwrap();
     excerpt.highlights.unwrap()
 }
 
@@ -249,29 +250,59 @@ fn highlights_follow_the_analyzer_in_codepoints_of_the_record() {
     let record = "😀 Runs café, running RUNNER";
     let all = (0, 27);
     assert_eq!(
-        highlights(analyzer(true, false), record, all, "run"),
+        highlights(Tokenizer::Simple, analyzer(true, false), record, all, "run"),
         [[2, 6], [13, 20]]
     );
     assert_eq!(
-        highlights(analyzer(false, false), record, all, "run"),
+        highlights(
+            Tokenizer::Simple,
+            analyzer(false, false),
+            record,
+            all,
+            "run"
+        ),
         Vec::<[u32; 2]>::new()
     );
     assert_eq!(
-        highlights(analyzer(false, false), record, all, "runner"),
+        highlights(
+            Tokenizer::Simple,
+            analyzer(false, false),
+            record,
+            all,
+            "runner"
+        ),
         [[21, 27]]
     );
     // Folding matches a multi-byte letter and keeps the offsets of the original.
     assert_eq!(
-        highlights(analyzer(false, true), record, all, "cafe RUNNER"),
+        highlights(
+            Tokenizer::Simple,
+            analyzer(false, true),
+            record,
+            all,
+            "cafe RUNNER"
+        ),
         [[7, 11], [21, 27]]
     );
     assert_eq!(
-        highlights(analyzer(false, false), record, all, "café"),
+        highlights(
+            Tokenizer::Simple,
+            analyzer(false, false),
+            record,
+            all,
+            "café"
+        ),
         [[7, 11]]
     );
     // A passage reports offsets of the record, not of itself.
     assert_eq!(
-        highlights(analyzer(true, false), record, (7, 27), "run"),
+        highlights(
+            Tokenizer::Simple,
+            analyzer(true, false),
+            record,
+            (7, 27),
+            "run"
+        ),
         [[13, 20]]
     );
 }
@@ -282,13 +313,16 @@ fn highlights_skip_a_token_the_passage_cuts() {
     // `cat` of `catapult` is no token of the index, at either edge.
     let record = "catapult cat";
     assert_eq!(
-        highlights(plain(), record, (0, 3), "cat"),
+        highlights(Tokenizer::Simple, plain(), record, (0, 3), "cat"),
         Vec::<[u32; 2]>::new()
     );
-    assert_eq!(highlights(plain(), record, (9, 12), "cat"), [[9, 12]]);
+    assert_eq!(
+        highlights(Tokenizer::Simple, plain(), record, (9, 12), "cat"),
+        [[9, 12]]
+    );
     let record = "concat é";
     assert_eq!(
-        highlights(plain(), record, (3, 6), "cat"),
+        highlights(Tokenizer::Simple, plain(), record, (3, 6), "cat"),
         Vec::<[u32; 2]>::new()
     );
     // Selection and highlight together: the window of the whole token, not the
@@ -297,6 +331,7 @@ fn highlights_skip_a_token_the_passage_cuts() {
     assert_eq!((excerpt.start, excerpt.text.as_str()), (9, "cat"));
     highlight(
         plain().build().unwrap().as_mut(),
+        Tokenizer::Simple,
         "cat",
         "catapult cat",
         &mut excerpt,
@@ -305,7 +340,10 @@ fn highlights_skip_a_token_the_passage_cuts() {
     assert_eq!(excerpt.highlights, Some(vec![[9, 12]]));
     // A token set off by punctuation or a space is whole.
     let record = "a cat, b";
-    assert_eq!(highlights(plain(), record, (2, 5), "cat"), [[2, 5]]);
+    assert_eq!(
+        highlights(Tokenizer::Simple, plain(), record, (2, 5), "cat"),
+        [[2, 5]]
+    );
 }
 
 #[test]
@@ -320,18 +358,183 @@ fn highlights_skip_part_of_a_longer_token_of_the_tokenizer() {
     };
     let record = "cat-dog cat";
     assert_eq!(
-        highlights(whitespace(), record, (0, 3), "cat"),
+        highlights(Tokenizer::Whitespace, whitespace(), record, (0, 3), "cat"),
         Vec::<[u32; 2]>::new()
     );
-    assert_eq!(highlights(whitespace(), record, (4, 11), "cat"), [[8, 11]]);
-    assert_eq!(highlights(whitespace(), record, (0, 11), "cat"), [[8, 11]]);
+    assert_eq!(
+        highlights(Tokenizer::Whitespace, whitespace(), record, (4, 11), "cat"),
+        [[8, 11]]
+    );
+    assert_eq!(
+        highlights(Tokenizer::Whitespace, whitespace(), record, (0, 11), "cat"),
+        [[8, 11]]
+    );
 }
 
 #[test]
 fn highlights_are_bounded() {
     let record = "a ".repeat(MAX_HIGHLIGHTS + 50);
     let end = record.chars().count();
-    let ranges = highlights(analyzer(false, false), &record, (0, end), "a");
+    let ranges = highlights(
+        Tokenizer::Simple,
+        analyzer(false, false),
+        &record,
+        (0, end),
+        "a",
+    );
     assert_eq!(ranges.len(), MAX_HIGHLIGHTS);
     assert_eq!(ranges[1], [2, 3]);
+}
+
+#[test]
+fn highlights_end_where_the_tokenizer_ends_a_token() {
+    // Only ASCII white space ends a token of `whitespace`, and `unicode` keeps
+    // U+202F inside one: a passage that ends before the separator holds no `cat`.
+    for (tokenizer, separator, ranges) in [
+        ("whitespace", '\u{a0}', &[[0, 3]][..]),
+        ("whitespace", '\u{b}', &[[0, 3]]),
+        ("unicode", '\u{202f}', &[[0, 3]]),
+        ("simple", '\u{a0}', &[[0, 3], [4, 7]]),
+    ] {
+        let settings = namespace(serde_json::json!({"analyzer": {"tokenizer": tokenizer}}));
+        let kind = settings.settings.analyzer.tokenizer;
+        let mut analyzer = fts_params(&settings).unwrap().build().unwrap();
+        let record = format!("cat cat{separator}dog");
+        for (cap, text) in [(11, record.as_str()), (7, "cat cat")] {
+            let mut excerpt = terms(&settings, "cat").select(&record, cap).unwrap();
+            assert_eq!((excerpt.start, excerpt.text.as_str()), (0, text));
+            highlight(analyzer.as_mut(), kind, "cat", &record, &mut excerpt).unwrap();
+            assert_eq!(excerpt.highlights.as_deref(), Some(ranges), "{tokenizer}");
+        }
+    }
+}
+
+#[test]
+fn unicode_highlights_segment_a_run_from_its_start() {
+    // The dictionary segments the run from its first letter, so a passage that
+    // starts inside the run is marked with the run's tokens, not its own.
+    let settings = namespace(serde_json::json!({"analyzer": {"tokenizer": "unicode"}}));
+    let params = fts_params(&settings).unwrap();
+    let record = "研究生命起源";
+    assert_eq!(
+        highlights(
+            Tokenizer::Unicode,
+            params.clone(),
+            record,
+            (0, 6),
+            "命 起源"
+        ),
+        [[3, 4], [4, 6]]
+    );
+    assert_eq!(
+        highlights(Tokenizer::Unicode, params, record, (2, 6), "生命"),
+        Vec::<[u32; 2]>::new()
+    );
+}
+
+/// The matches of `query` among the tokens of the whole record that lie whole in
+/// the passage `[start, end)` codepoints: what the index holds.
+fn whole_record_matches(
+    tokenizer: &mut dyn LanceTokenizer,
+    record: &str,
+    (start, end): (usize, usize),
+    query: &str,
+) -> Vec<[u32; 2]> {
+    let terms = query_terms(tokenizer, query).unwrap();
+    let bytes: Vec<usize> = record
+        .char_indices()
+        .map(|(at, _)| at)
+        .chain([record.len()])
+        .collect();
+    let codepoint = |byte: usize| u32::try_from(bytes.binary_search(&byte).unwrap()).unwrap();
+    let (from, to) = (bytes[start], bytes[end]);
+    let mut ranges = Vec::new();
+    let mut stream = tokenizer.token_stream_for_doc(record);
+    while let Some(token) = stream.try_next().unwrap() {
+        if token.offset_from >= from
+            && token.offset_to <= to
+            && terms.binary_search(&token.text).is_ok()
+            && ranges.len() < MAX_HIGHLIGHTS
+        {
+            ranges.push([codepoint(token.offset_from), codepoint(token.offset_to)]);
+        }
+    }
+    ranges
+}
+
+#[test]
+fn highlights_of_every_passage_are_the_tokens_of_the_whole_record() {
+    let analyzers = [
+        serde_json::json!({}),
+        serde_json::json!({"analyzer": {"tokenizer": "whitespace"}}),
+        serde_json::json!({"analyzer": {"tokenizer": "unicode"}}),
+        serde_json::json!({"analyzer": {"language": "english"}}),
+        serde_json::json!({"analyzer": {"tokenizer": "whitespace", "language": "english", "stop_words": []}}),
+        serde_json::json!({"analyzer": {"tokenizer": "unicode", "ascii_folding": true}}),
+    ];
+    let long = format!("cat{} cat {}cat cat", "x".repeat(45), "y".repeat(45));
+    let records = [
+        ("a cat b cat\u{a0}dog c", "cat dog"),
+        ("cat\u{3000}dog cat dog\u{3000}cat", "cat dog"),
+        ("cat\u{202f}dog cat dog\u{202f}cat", "cat dog"),
+        ("10\u{202f}000 cat 45\u{202f}PM 000", "000 cat pm 45 10"),
+        ("cat\u{b}dog cat\u{85}dog cat\u{2028}dog\u{c}cat", "cat dog"),
+        ("cat\tdog\ncat\r\ncat  dog", "cat dog"),
+        (
+            "e\u{301}cat cat\u{301} cat \u{301}cat a \u{93e}cat",
+            "cat a",
+        ),
+        (
+            "👩\u{200d}👩\u{200d}👧 cat 👨\u{200d}cat cat\u{200d}👩 cat",
+            "cat",
+        ),
+        (
+            "catapult cat-dog cat_dog cat.dog cat's concat cat",
+            "cat dog cat-dog cat's",
+        ),
+        ("cat,dog,cat-dog,cat", "cat dog cat-dog"),
+        (&long, "cat"),
+        ("Running runs RUNNER café cafe run", "run cafe"),
+        ("猫は cat 世界こんにちは cat 世界", "cat 世界"),
+        ("研究生命起源", "生命 命 起源"),
+        (" cat ", "cat"),
+        ("cat", "cat"),
+        ("cat.\u{a0}Dog ran. A cat.", "cat. cat dog"),
+        ("\"new york\" New York new-york", "\"new york\""),
+    ];
+    for extra in analyzers {
+        let namespace = namespace(extra);
+        let kind = namespace.settings.analyzer.tokenizer;
+        let mut tokenizer = fts_params(&namespace).unwrap().build().unwrap();
+        for (record, query) in records {
+            let length = record.chars().count();
+            for start in 0..=length {
+                for end in start..=length {
+                    let mut excerpt = Excerpt {
+                        text: record.chars().skip(start).take(end - start).collect(),
+                        start: u32::try_from(start).unwrap(),
+                        end: u32::try_from(end).unwrap(),
+                        highlights: None,
+                    };
+                    highlight(tokenizer.as_mut(), kind, query, record, &mut excerpt).unwrap();
+                    assert_eq!(
+                        excerpt.highlights.unwrap(),
+                        whole_record_matches(tokenizer.as_mut(), record, (start, end), query),
+                        "{kind:?} {record:?} ({start}, {end})"
+                    );
+                }
+            }
+            // And the passage `select` picks.
+            for cap in 1..=u32::try_from(length).unwrap() + 1 {
+                let mut excerpt = terms(&namespace, query).select(record, cap).unwrap();
+                let window = (excerpt.start as usize, excerpt.end as usize);
+                highlight(tokenizer.as_mut(), kind, query, record, &mut excerpt).unwrap();
+                assert_eq!(
+                    excerpt.highlights.unwrap(),
+                    whole_record_matches(tokenizer.as_mut(), record, window, query),
+                    "{kind:?} {record:?} cap {cap}"
+                );
+            }
+        }
+    }
 }

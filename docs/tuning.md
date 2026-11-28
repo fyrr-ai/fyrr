@@ -70,7 +70,7 @@ tokens of the query, so with a language a passage with `Häuser` is found by
 a token of the query, as it is not a token of the index. Highlights are the
 tokens of the whole record, so a token the edge of the excerpt cuts is not
 marked: with the `whitespace` tokenizer, an excerpt that ends at the `-` of
-`cat-dog` marks no `cat`.
+`cat-dog`, or at a no-break space (U+00A0) after `cat`, marks no `cat`.
 
 ### The size of the positions
 
@@ -321,7 +321,7 @@ the namespace's. A text is always lowercased. Every key is optional.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `tokenizer` | `simple` | `simple`: runs of letters and digits, so a run of Chinese, Japanese or Korean characters is one token. `whitespace`: runs of characters that are not white space. `unicode`: Unicode word segmentation, which finds the words of Chinese and Japanese text by a dictionary and cuts what it does not know into what it does. `ngram`: substrings of the whole value, which cross spaces. |
+| `tokenizer` | `simple` | `simple`: runs of letters and digits, so a run of Chinese, Japanese or Korean characters is one token. `whitespace`: runs of characters that are not ASCII white space (space, tab, line feed, form feed, carriage return), so a no-break space is inside a token. `unicode`: Unicode word segmentation, which finds the words of Chinese and Japanese text by a dictionary and cuts what it does not know into what it does. `ngram`: substrings of the whole value, which cross spaces. |
 | `language` | absent | One of the languages below: stems the terms and removes the stop words of that language. Absent: no stemming and no stop words. |
 | `stop_words` | absent | A list of at most 1024 words of 1–64 bytes that is removed instead of the language's. A word is compared with a term after it is lowercased and stemmed. With a `language`, `[]` removes none: stemming alone. |
 | `ascii_folding` | `false` | Folds accented letters to ASCII, `é` to `e`. |
