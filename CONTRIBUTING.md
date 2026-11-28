@@ -121,8 +121,9 @@ it to start long cases first. The longest prefix wins, and an exact entry in
 in a child process. A row marked `batch` needs no fixture: one worker runs
 its cases in one test process per test binary, with `TMPDIR` set to
 `FYRR_TEST_TMP`. Every Rust row takes each case's result from the file
-libtest's `--logfile` writes, never from test output; a selected case without
-a result there failed.
+libtest's `--logfile` writes, never from test output. A case passes only when
+that file says so and its binary's run had no harness error (launch, fixture
+cleanup) and no nonzero exit that a failed case does not explain.
 
 Run `scripts/ci --quick` before a PR. It runs all core gates, CLI and privacy
 cases, the Python SDK and example, local quickstart, and the local scenarios

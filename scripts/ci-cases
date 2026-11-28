@@ -19,6 +19,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 import tomllib
 from pathlib import Path
@@ -311,10 +312,12 @@ def validate(manifest, actual):
 
 
 def outcomes(directory, cases):
-    """Each Rust case's (status, passed, failed, ignored), from libtest's `--logfile`.
+    """Each Rust case's (status, passed, failed, ignored, reason), from libtest's `--logfile`.
 
     libtest writes one `<result> <name>` line per finished test to that file, apart
     from anything the tests print. A case without a line did not finish: it failed.
+    A `<group>.error` file names a harness error in that binary's run, which fails
+    every case of the run.
     """
     finished = {}
     for path in Path(directory).glob("*.libtest"):
@@ -322,8 +325,20 @@ def outcomes(directory, cases):
         for line in path.read_text(errors="replace").splitlines():
             # A result may carry a message (`failed: …`); test names hold no spaces.
             finished[f"{group}/{line.rsplit(' ', 1)[-1]}"] = line.split(" ", 1)[0]
+    errors = {
+        path.name.removesuffix(".error"): path.read_text(errors="replace").strip()
+        for path in Path(directory).glob("*.error")
+    }
     table = {"ok": ("pass", 1, 0, 0), "ignored": ("pass", 0, 0, 1), "ignored:": ("pass", 0, 0, 1)}
-    return {case: table.get(finished.get(case), ("FAIL", 0, 1, 0)) for case in cases}
+    results = {}
+    for case in cases:
+        error = errors.get(case.split("/", 1)[0])
+        result = finished.get(case)
+        if error is None and result in table:
+            results[case] = (*table[result], None)
+        else:
+            results[case] = ("FAIL", 0, 1, 0, error or f"libtest result: {result or 'none'}")
+    return results
 
 
 def run(spec, compiled=None):
@@ -342,14 +357,15 @@ def run(spec, compiled=None):
     rust = [case for case in spec["cases"] if not case.startswith("python:")]
     if rust:
         compiled = compiled or artifacts()
-        logs = Path(os.environ["FYRR_CI_LOG_DIR"])
-        for stale in logs.glob("*.libtest"):
+        logs = Path(os.environ.get("FYRR_CI_LOG_DIR") or tempfile.mkdtemp(prefix="fyrr-ci-"))
+        for stale in [*logs.glob("*.libtest"), *logs.glob("*.error")]:
             stale.unlink()
     # Run every group even after one fails, so each case reports its result.
     failures = []
     for group, names in groups.items():
         env = dict(os.environ)
-        if group.startswith("python:"):
+        python = group.startswith("python:")
+        if python:
             directory = group.split(":")[1]
             extras = PYTHON_PROJECTS[directory][1]
             command = ["uv", "run", "--locked", *extras, "pytest", *names]
@@ -367,48 +383,15 @@ def run(spec, compiled=None):
             env["FYRR_GATE_BINARY"] = str(ROOT / compiled["binaries"][group.split(":")[0]])
             if spec.get("batch") and "FYRR_TEST_TMP" in env:
                 env["TMPDIR"] = env["FYRR_TEST_TMP"]
-        process = subprocess.Popen(
-            command,
-            cwd=cwd,
-            env=env,
-            text=True,
-            errors="replace",
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-        )
-        lines = []
-        for line in process.stdout:
-            print(line, end="", flush=True)
-            lines.append(line)
-        if process.wait():
-            failures.append(
-                f"{group}: {len(names)} selected cases, process exited {process.returncode}"
-            )
-            continue
-        if group.startswith("python:"):
-            counts = re.findall(r"(\d+) passed", "".join(lines))
-            if not counts or int(counts[-1]) != len(names):
-                failures.append(f"{group}: expected {len(names)} passed cases, got {counts}")
-            continue
-        results = outcomes(logs, [f"{group}/{name}" for name in names])
-        missing = [case for case, result in results.items() if result[0] != "pass"]
-        if missing:
-            failures.append(f"{group}: no libtest result for {missing}")
-            continue
-        if env.get("FYRR_CI_KEEP_FIXTURES") != "1":
-            # Only this completed harness owns these local fixture roots. Keep
-            # failed runs intact, and never remove external-service data here.
-            owned = re.compile(rf"(?:storage-)?(?:dense|fyrr-history)-{process.pid}-")
-            removed = 0
-            for directory in Path(env.get("FYRR_TEST_TMP", ROOT / "target/tmp")).iterdir():
-                if (
-                    owned.match(directory.name)
-                    and directory.is_dir()
-                    and not directory.is_symlink()
-                ):
-                    shutil.rmtree(directory)
-                    removed += 1
-            print(f"ci-fixtures: removed {removed} successful roots for harness {process.pid}")
+        try:
+            failure = run_group(group, names, command, cwd, env, None if python else logs)
+        except Exception as error:
+            # A harness error fails every case of this run, even one libtest passed.
+            failure = f"{group}: {type(error).__name__}: {error}"
+            if not python:
+                (logs / f"{group}.error").write_text(failure + "\n")
+        if failure:
+            failures.append(failure)
     if rust:
         # `scripts/ci` reads the row's counts from here: one per selected case.
         results = outcomes(logs, rust).values()
@@ -416,6 +399,50 @@ def run(spec, compiled=None):
         (logs / "counts").write_text(" ".join(map(str, totals)) + "\n")
     if failures:
         raise RuntimeError("\n".join(failures))
+
+
+def run_group(group, names, command, cwd, env, logs):
+    """Run one test binary or pytest directory; return its test failure, if any.
+
+    libtest inherits stdout, so its output never passes through this process and
+    a child it leaves behind cannot hold the run open. pytest's summary line is
+    read from a pipe, as bytes.
+    """
+    if logs is None:
+        output = bytearray()
+        with subprocess.Popen(
+            command, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT
+        ) as process:
+            for line in process.stdout:
+                sys.stdout.buffer.write(line)
+                sys.stdout.buffer.flush()
+                output += line
+        if process.returncode:
+            return f"{group}: {len(names)} selected cases, process exited {process.returncode}"
+        counts = re.findall(r"(\d+) passed", output.decode(errors="replace"))
+        if not counts or int(counts[-1]) != len(names):
+            return f"{group}: expected {len(names)} passed cases, got {counts}"
+        return None
+    process = subprocess.Popen(command, cwd=cwd, env=env)
+    process.wait()
+    results = outcomes(logs, [f"{group}/{name}" for name in names])
+    missing = [case for case, result in results.items() if result[0] != "pass"]
+    if missing:
+        return f"{group}: no passing libtest result for {missing}"
+    if process.returncode:
+        # Every selected case passed, so no case explains this exit.
+        raise RuntimeError(f"process exited {process.returncode} after its cases passed")
+    if env.get("FYRR_CI_KEEP_FIXTURES") != "1":
+        # Only this completed harness owns these local fixture roots. Keep
+        # failed runs intact, and never remove external-service data here.
+        owned = re.compile(rf"(?:storage-)?(?:dense|fyrr-history)-{process.pid}-")
+        removed = 0
+        for directory in Path(env.get("FYRR_TEST_TMP", ROOT / "target/tmp")).iterdir():
+            if owned.match(directory.name) and directory.is_dir() and not directory.is_symlink():
+                shutil.rmtree(directory)
+                removed += 1
+        print(f"ci-fixtures: removed {removed} successful roots for harness {process.pid}")
+    return None
 
 
 async def pool(manifest, logs, jobs, rows):
@@ -497,7 +524,10 @@ async def pool(manifest, logs, jobs, rows):
         async with capacity:
             key = hashlib.sha256("\n".join(cases).encode()).hexdigest()[:12]
             directory = logs / row / key
-            directory.mkdir(parents=True, exist_ok=True)
+            # Results left by an earlier pool in this log directory are not this run's.
+            if directory.exists():
+                shutil.rmtree(directory)
+            directory.mkdir(parents=True)
             clock = directory / "offset-ms"
             clock.write_text("0")
             clock.chmod(0o600)
@@ -548,7 +578,7 @@ async def pool(manifest, logs, jobs, rows):
                     row_seconds[row] += duration
                     if process.returncode:
                         broken.add(row)
-                    for case, (status, passed, failed, ignored) in outcomes(
+                    for case, (status, passed, failed, ignored, reason) in outcomes(
                         directory, cases
                     ).items():
                         result = {
@@ -566,6 +596,8 @@ async def pool(manifest, logs, jobs, rows):
                             "finished_at": datetime.datetime.now(datetime.UTC).isoformat(),
                             "log": str(display_logs / row / key / "runner.log"),
                         }
+                        if reason:
+                            result["reason"] = reason
                         results[row].append(result)
                         print("ci-result " + json.dumps(result), flush=True)
 
