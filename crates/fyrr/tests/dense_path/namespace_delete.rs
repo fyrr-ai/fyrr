@@ -43,10 +43,7 @@ async fn delete_rejects_publication_after_verification_on_real_s3() {
 }
 
 async fn rejects_publication_after_verification(backend: Backend) {
-    let setup = setup_on(backend);
-    for row in 8..768 {
-        std::fs::remove_file(setup.1.join("sources").join(format!("{row}.txt"))).unwrap();
-    }
+    let setup = setup_sized(backend, 8);
     let (_, commit, root) = incremental::fixture_host_at(8, true, "dense-fixture", setup);
     let loaded = fyrr_core::config::load(&commit).unwrap();
     let (store, namespace) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
@@ -141,10 +138,7 @@ async fn rejects_publication_after_verification(backend: Backend) {
 #[tokio::test]
 #[ignore = "real CLI deletion excludes source workers"]
 async fn delete_blocks_source_workers_during_verification_on_local_storage() {
-    let setup = setup_on(Backend::Local);
-    for row in 8..768 {
-        std::fs::remove_file(setup.1.join("sources").join(format!("{row}.txt"))).unwrap();
-    }
+    let setup = setup_sized(Backend::Local, 8);
     let (_, commit, root) = incremental::fixture_host_at(8, true, "dense-fixture", setup);
     let config = fyrr_core::config::load(&commit).unwrap().config;
     let commit = quick_lease(&commit);
@@ -196,10 +190,7 @@ async fn delete_blocks_source_workers_during_verification_on_local_storage() {
 #[tokio::test]
 #[ignore = "real CLI stale deletion fence and source recovery"]
 async fn stale_delete_fence_advances_head_before_source_write_on_local_storage() {
-    let setup = setup_on(Backend::Local);
-    for row in 8..768 {
-        std::fs::remove_file(setup.1.join("sources").join(format!("{row}.txt"))).unwrap();
-    }
+    let setup = setup_sized(Backend::Local, 8);
     let (_, commit, root) = incremental::fixture_host_at(8, true, "dense-fixture", setup);
     let output = coordination::host_command(&commit)
         .args([
@@ -255,10 +246,7 @@ async fn stale_delete_fence_advances_head_before_source_write_on_local_storage()
 #[tokio::test]
 #[ignore = "real storage namespace deletion refuses an active source"]
 async fn delete_refuses_active_source_worker_on_local_storage() {
-    let setup = setup_on(Backend::Local);
-    for row in 8..768 {
-        std::fs::remove_file(setup.1.join("sources").join(format!("{row}.txt"))).unwrap();
-    }
+    let setup = setup_sized(Backend::Local, 8);
     let (_, commit, root) = incremental::fixture_host_at(8, true, "dense-fixture", setup);
     let config = fyrr_core::config::load(&commit).unwrap().config;
     let (store, namespace) = fyrr_reader::storage::namespace_store(&config).unwrap();
@@ -288,10 +276,7 @@ async fn delete_refuses_active_source_worker_on_local_storage() {
 #[ignore = "real CLI detects a late worker PUT after export listing"]
 async fn delete_refuses_envelope_arriving_after_export_listing() {
     use futures::TryStreamExt;
-    let setup = setup_on(Backend::Local);
-    for row in 8..768 {
-        std::fs::remove_file(setup.1.join("sources").join(format!("{row}.txt"))).unwrap();
-    }
+    let setup = setup_sized(Backend::Local, 8);
     let (worker, commit, root) = incremental::fixture_host_at(8, true, "dense-fixture", setup);
     let config = fyrr_core::config::load(&commit).unwrap().config;
     let (store, namespace) = fyrr_reader::storage::namespace_store(&config).unwrap();
@@ -377,11 +362,8 @@ pub(super) fn quick_lease(config: &Path) -> PathBuf {
     copy
 }
 
-fn without_sources(setup: (PathBuf, FixtureRoot)) -> (PathBuf, PathBuf, FixtureRoot) {
-    for row in 8..768 {
-        std::fs::remove_file(setup.1.join("sources").join(format!("{row}.txt"))).unwrap();
-    }
-    incremental::fixture_host_at(8, true, "dense-fixture", setup)
+fn without_sources() -> (PathBuf, PathBuf, FixtureRoot) {
+    incremental::fixture_host_at(8, true, "dense-fixture", setup_sized(Backend::Local, 8))
 }
 
 /// A running `writer serve`, stopped on drop, also when an assertion fails.
@@ -415,7 +397,7 @@ fn delete_command(commit: &Path, args: &[&str]) -> Output {
 #[ignore = "real CLI namespace deletion removes the data on local storage"]
 async fn delete_data_removes_every_object_and_the_name_is_created_again_on_local_storage() {
     use futures::TryStreamExt;
-    let (_, commit, _root) = without_sources(setup_on(Backend::Local));
+    let (_, commit, _root) = without_sources();
     let config = fyrr_core::config::load(&commit).unwrap().config;
     let commit = quick_lease(&commit);
     let name = config.namespace.name.clone();
@@ -505,7 +487,7 @@ async fn delete_data_removes_every_object_and_the_name_is_created_again_on_local
 #[ignore = "real CLI interrupted namespace deletion resumes on local storage"]
 async fn interrupted_delete_finishes_when_run_again_on_local_storage() {
     use futures::TryStreamExt;
-    let (_, commit, root) = without_sources(setup_on(Backend::Local));
+    let (_, commit, root) = without_sources();
     let config = fyrr_core::config::load(&commit).unwrap().config;
     let commit = quick_lease(&commit);
     let name = config.namespace.name.clone();
@@ -572,7 +554,7 @@ async fn interrupted_delete_finishes_when_run_again_on_local_storage() {
 async fn http_delete_needs_an_admin_key_and_the_repeated_name_on_local_storage() {
     use futures::TryStreamExt;
     use std::time::{Duration, Instant};
-    let (_, commit, root) = without_sources(setup_on(Backend::Local));
+    let (_, commit, root) = without_sources();
     let config = fyrr_core::config::load(&commit).unwrap().config;
     let name = config.namespace.name.clone();
     let (store, namespace) = fyrr_reader::storage::namespace_store(&config).unwrap();

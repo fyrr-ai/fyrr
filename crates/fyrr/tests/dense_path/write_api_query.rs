@@ -70,7 +70,7 @@ async fn indexed_answer(
 #[tokio::test]
 #[ignore = "real writer and reader executables on local storage; scripts/ci"]
 async fn identity_write_api_orders_equal_dense_scores_by_document_key_on_storage() {
-    let (config, root) = setup_on(Backend::Local);
+    let (config, root) = setup_sized(Backend::Local, 0);
     let address = free_address();
     // The dense lane answers with exactly the 10 rows asked for, so a cut
     // before the key order would keep an arbitrary 10 of the tie.
@@ -129,7 +129,7 @@ async fn identity_write_api_orders_equal_dense_scores_by_document_key_on_storage
 #[tokio::test]
 #[ignore = "real writer and reader executables on local storage; scripts/ci"]
 async fn identity_write_api_sizes_the_rescore_pool_by_the_rows_the_probes_inspect_on_storage() {
-    let (config, root) = setup_on(Backend::Local);
+    let (config, root) = setup_sized(Backend::Local, 0);
     let address = free_address();
     configure(
         &config,
@@ -172,7 +172,7 @@ async fn identity_write_api_sizes_the_rescore_pool_by_the_rows_the_probes_inspec
 #[tokio::test]
 #[ignore = "real writer and reader executables on local storage; scripts/ci"]
 async fn identity_write_api_highlights_the_tokens_an_excerpt_matches_on_storage() {
-    let (config, root) = setup_on(Backend::Local);
+    let (config, root) = setup_sized(Backend::Local, 0);
     let address = free_address();
     configure(&config, &address, "");
     let text = std::fs::read_to_string(&config).unwrap().replacen(
@@ -281,7 +281,7 @@ async fn identity_write_api_highlights_the_tokens_an_excerpt_matches_on_storage(
 #[ignore = "real writer and reader executables on local storage; scripts/ci"]
 async fn identity_write_api_text_follows_the_namespace_analyzer_on_storage() {
     use lance::index::DatasetIndexExt;
-    let (config, root) = setup_on(Backend::Local);
+    let (config, root) = setup_sized(Backend::Local, 0);
     let address = free_address();
     configure(&config, &address, "");
     let text = std::fs::read_to_string(&config).unwrap();
@@ -365,7 +365,7 @@ async fn identity_write_api_text_follows_the_namespace_analyzer_on_storage() {
 #[tokio::test]
 #[ignore = "real writer and reader executables on local storage; scripts/ci"]
 async fn identity_write_api_searches_by_a_query_vector_exact_or_approximate_on_storage() {
-    let (config, root) = setup_on(Backend::Local);
+    let (config, root) = setup_sized(Backend::Local, 0);
     let address = free_address();
     // Two dense candidates: only the request limit can fetch more.
     configure(
@@ -488,7 +488,7 @@ fn roots(answer: &(u16, Value)) -> Vec<String> {
 #[tokio::test]
 #[ignore = "real writer and reader executables on local storage; scripts/ci"]
 async fn identity_write_api_fuses_the_sub_queries_of_a_query_as_it_asks_on_storage() {
-    let (config, root) = setup_on(Backend::Local);
+    let (config, root) = setup_sized(Backend::Local, 0);
     let address = free_address();
     // At most three documents in an answer to `queries`, whatever the limit.
     configure(
@@ -648,7 +648,7 @@ async fn identity_write_api_fuses_the_sub_queries_of_a_query_as_it_asks_on_stora
 #[ignore = "real writer and reader executables on local storage; scripts/ci"]
 async fn identity_write_api_answers_sub_queries_with_their_own_filters_limits_and_ranking_on_storage()
  {
-    let (config, root) = setup_on(Backend::Local);
+    let (config, root) = setup_sized(Backend::Local, 0);
     let address = free_address();
     // At most four documents in an answer that is not fused.
     configure(
@@ -859,7 +859,7 @@ async fn identity_write_api_answers_sub_queries_with_their_own_filters_limits_an
 #[tokio::test]
 #[ignore = "real writer and reader executables on local storage; scripts/ci"]
 async fn identity_write_api_narrows_a_query_by_the_tokens_of_a_full_text_attribute_on_storage() {
-    let (config, root) = setup_on(Backend::Local);
+    let (config, root) = setup_sized(Backend::Local, 0);
     let address = free_address();
     configure(&config, &address, "");
     embed(&root, &["alpha", "bravo", "alpha beta"]);
@@ -1015,7 +1015,7 @@ async fn identity_write_api_narrows_a_query_by_the_tokens_of_a_full_text_attribu
 #[tokio::test]
 #[ignore = "real writer and reader executables on local storage; scripts/ci"]
 async fn identity_write_api_ranks_a_text_query_by_several_full_text_attributes_on_storage() {
-    let (config, root) = setup_on(Backend::Local);
+    let (config, root) = setup_sized(Backend::Local, 0);
     let address = free_address();
     // Two lexical candidates: the top two documents of a ranking, whatever the
     // number of elements of an array that match.
@@ -1247,7 +1247,7 @@ async fn identity_write_api_ranks_a_text_query_by_several_full_text_attributes_o
 #[tokio::test]
 #[ignore = "real writer and reader executables on local storage; scripts/ci"]
 async fn identity_write_api_boosts_a_ranking_by_an_attribute_and_by_recency_on_storage() {
-    let (config, root) = setup_on(Backend::Local);
+    let (config, root) = setup_sized(Backend::Local, 0);
     let address = free_address();
     configure(&config, &address, "");
     embed(&root, &["alpha"]);
@@ -1407,7 +1407,7 @@ async fn identity_write_api_boosts_a_ranking_by_an_attribute_and_by_recency_on_s
 #[tokio::test]
 #[ignore = "real writer and reader executables on local storage; scripts/ci"]
 async fn identity_write_api_caps_the_hits_per_attribute_value_on_storage() {
-    let (config, root) = setup_on(Backend::Local);
+    let (config, root) = setup_sized(Backend::Local, 0);
     let address = free_address();
     configure(&config, &address, "");
     embed(&root, &["alpha"]);
@@ -1573,7 +1573,7 @@ async fn identity_write_api_caps_the_hits_per_attribute_value_on_storage() {
 #[ignore = "real writer and reader executables on local storage; scripts/ci"]
 async fn identity_write_api_reranks_as_a_query_asks_within_the_spend_limit_on_storage() {
     let provider = super::rerank::Provider::open().await;
-    let (config, root) = setup_on(Backend::Local);
+    let (config, root) = setup_sized(Backend::Local, 0);
     let address = free_address();
     // Room for five provider calls of at most 10 millionths of a dollar.
     configure(
@@ -1730,7 +1730,7 @@ async fn identity_write_api_reranks_as_a_query_asks_within_the_spend_limit_on_st
 #[tokio::test]
 #[ignore = "real writer and reader executables on local storage; scripts/ci"]
 async fn identity_write_api_searches_named_vector_attributes_on_storage() {
-    let (config, root) = setup_on(Backend::Local);
+    let (config, root) = setup_sized(Backend::Local, 0);
     let address = free_address();
     // Two dense candidates: only the request limit can fetch more.
     configure(
@@ -1968,7 +1968,7 @@ async fn identity_write_api_searches_named_vector_attributes_on_storage() {
 /// under both element types and below the number of vectors an index is trained
 /// from, where the search scans, and above it, where the index answers.
 async fn multi_vector_case(element: &str, background: usize) {
-    let (config, root) = setup_on(Backend::Local);
+    let (config, root) = setup_sized(Backend::Local, 0);
     let address = free_address();
     // Not an open namespace: its readers are enforced.
     configure(&config, &address, "");
@@ -2190,7 +2190,7 @@ async fn identity_write_api_searches_multi_vector_attributes_on_storage() {
     for (element, background) in [("f16", 0), ("f32", 0), ("f16", 100)] {
         multi_vector_case(element, background).await;
     }
-    let (config, root) = setup_on(Backend::Local);
+    let (config, root) = setup_sized(Backend::Local, 0);
     let address = free_address();
     configure(&config, &address, "open = true");
     let writer = Writer::start(&config, &root, address).await;
@@ -2217,7 +2217,7 @@ async fn identity_write_api_searches_multi_vector_attributes_on_storage() {
 #[tokio::test]
 #[ignore = "real writer and reader executables on local storage; scripts/ci"]
 async fn identity_write_api_requires_a_phrase_of_the_text_on_storage() {
-    let (config, root) = setup_on(Backend::Local);
+    let (config, root) = setup_sized(Backend::Local, 0);
     let address = free_address();
     configure(&config, &address, "");
     let text = std::fs::read_to_string(&config).unwrap().replacen(
@@ -2321,7 +2321,7 @@ async fn identity_write_api_requires_a_phrase_of_the_text_on_storage() {
 #[tokio::test]
 #[ignore = "real writer and reader executables on local storage; scripts/ci"]
 async fn identity_write_api_refuses_a_phrase_on_a_namespace_without_positions_on_storage() {
-    let (config, root) = setup_on(Backend::Local);
+    let (config, root) = setup_sized(Backend::Local, 0);
     let address = free_address();
     configure(&config, &address, "");
     embed(&root, &["alpha"]);

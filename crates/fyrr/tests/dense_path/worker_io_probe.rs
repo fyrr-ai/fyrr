@@ -23,10 +23,7 @@ fn copy_tree(source: &Path, target: &Path) {
 #[tokio::test]
 #[ignore = "diagnostic: threaded provider around a real revision callback"]
 async fn revision_callback_thread_progress_measurement_on_local_storage() {
-    let setup = setup_on(Backend::Local);
-    for n in 8..768 {
-        std::fs::remove_file(setup.1.join("sources").join(format!("{n}.txt"))).unwrap();
-    }
+    let setup = setup_sized(Backend::Local, 8);
     let (worker, commit, root) = incremental::fixture_host_at(8, true, "dense-fixture", setup);
     incremental::publish_initial(&worker, &commit, &root);
     let config = fyrr_core::config::load(&worker).unwrap().config;

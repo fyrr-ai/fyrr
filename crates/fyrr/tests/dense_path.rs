@@ -151,22 +151,30 @@ fn setup() -> (PathBuf, FixtureRoot) {
 }
 
 fn setup_on(backend: Backend) -> (PathBuf, FixtureRoot) {
+    setup_sized(backend, 768)
+}
+
+/// A fixture whose sources directory holds only the first `documents` of the
+/// 768 texts; all of them stay registered, since a case may submit one later.
+fn setup_sized(backend: Backend, documents: usize) -> (PathBuf, FixtureRoot) {
     let root = common::target_tmp().join(format!(
         "dense-{}-{}-{:?}",
         std::process::id(),
         fyrr_core::clock::now().timestamp_micros(),
         std::thread::current().id()
     ));
-    setup_at_on(root, backend)
+    setup_at_on(root, backend, documents)
 }
 
-fn setup_at_on(root: PathBuf, backend: Backend) -> (PathBuf, FixtureRoot) {
+fn setup_at_on(root: PathBuf, backend: Backend, documents: usize) -> (PathBuf, FixtureRoot) {
     let root = FixtureRoot::new(root);
     let sources = root.join("sources");
     std::fs::create_dir_all(&sources).expect("fixture directory");
     for row in 0..768 {
         let text = format!("fixture document {row}");
-        std::fs::write(sources.join(format!("{row}.txt")), &text).expect("fixture text");
+        if row < documents {
+            std::fs::write(sources.join(format!("{row}.txt")), &text).expect("fixture text");
+        }
         let vector: Vec<f32> = (0..1024)
             .map(|d| (((row + 1) * (d + 7)) as f32).sin())
             .collect();

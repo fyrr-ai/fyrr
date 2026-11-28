@@ -12,10 +12,7 @@ use std::collections::BTreeSet;
 #[tokio::test]
 #[ignore = "real worker and local storage; scripts/ci"]
 async fn incremental_unchanged_upsert_still_protects_pending_reconciliation_on_storage() {
-    let setup = setup();
-    for row in 8..768 {
-        std::fs::remove_file(setup.1.join("sources").join(format!("{row}.txt"))).unwrap();
-    }
+    let setup = setup_sized(Backend::selected(), 8);
     let (worker, commit, root) = fixture_host_at(8, true, "presence-fixture", setup);
     input(
         &root,
@@ -118,10 +115,7 @@ fn sync_fields(worker: &Path) {
 #[ignore = "real worker and local storage; scripts/ci"]
 async fn incremental_connector_fields_are_typed_columns_on_storage() {
     use arrow_array::{ListArray, TimestampMicrosecondArray};
-    let setup = setup();
-    for row in 8..768 {
-        std::fs::remove_file(setup.1.join("sources").join(format!("{row}.txt"))).unwrap();
-    }
+    let setup = setup_sized(Backend::selected(), 8);
     let (worker, commit, root) = fixture_host_at(8, true, "typed-fixture", setup);
     field_documents(&root);
     sync_fields(&worker);
@@ -189,10 +183,7 @@ async fn incremental_connector_fields_are_typed_columns_on_storage() {
 #[tokio::test]
 #[ignore = "real worker, HTTP reader and local storage; scripts/ci"]
 async fn incremental_connector_title_has_a_full_text_index_on_storage() {
-    let setup = setup();
-    for row in 8..768 {
-        std::fs::remove_file(setup.1.join("sources").join(format!("{row}.txt"))).unwrap();
-    }
+    let setup = setup_sized(Backend::selected(), 8);
     let table = "\n[[identity.api_keys]]\nname='title'\nkey={env='FYRR_TEST_TITLE_KEY'}\nreaders=['grp:group']\n";
     let text = std::fs::read_to_string(&setup.0).unwrap();
     std::fs::write(&setup.0, format!("{text}{table}")).unwrap();
@@ -267,10 +258,7 @@ async fn incremental_connector_title_has_a_full_text_index_on_storage() {
 #[tokio::test]
 #[ignore = "real worker and local storage; scripts/ci"]
 async fn incremental_reader_refuses_a_policy_of_an_earlier_fyrr_by_name_on_storage() {
-    let setup = setup();
-    for row in 8..768 {
-        std::fs::remove_file(setup.1.join("sources").join(format!("{row}.txt"))).unwrap();
-    }
+    let setup = setup_sized(Backend::selected(), 8);
     let (worker, _commit, root) = fixture_host_at(8, true, "earlier-fixture", setup);
     let loaded = fyrr_core::config::load(&worker).unwrap();
     let Some(fyrr_core::config::StorageBackend::Local { root: storage }) =

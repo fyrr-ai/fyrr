@@ -197,7 +197,7 @@ pub(super) fn hits(config: &Path, query: &str) -> Vec<String> {
 #[tokio::test]
 #[ignore = "real writer and reader executables on local storage; scripts/ci"]
 async fn identity_write_api_upserts_searches_fetches_deletes_and_refuses_on_storage() {
-    let (config, root) = setup_on(Backend::Local);
+    let (config, root) = setup_sized(Backend::Local, 0);
     let address = free_address();
     configure(&config, &address, "");
     embed(&root, &["blue shirt", "red hat", "green coat"]);
@@ -408,7 +408,7 @@ pub(super) async fn run_when_free(config: &Path, args: &[&str]) -> Value {
 #[ignore = "real writer and reader executables on local storage; scripts/ci"]
 async fn identity_write_api_patches_a_document_and_keeps_what_it_does_not_name_on_storage() {
     use arrow_array::Array;
-    let (config, root) = setup_on(Backend::Local);
+    let (config, root) = setup_sized(Backend::Local, 0);
     let address = free_address();
     configure(&config, &address, "");
     embed(&root, &["blue shirt", "red hat", "green coat"]);
@@ -597,7 +597,7 @@ async fn identity_write_api_patches_a_document_and_keeps_what_it_does_not_name_o
 #[tokio::test]
 #[ignore = "real writer and reader executables on local storage; scripts/ci"]
 async fn identity_write_api_deletes_and_patches_the_documents_that_match_a_filter_on_storage() {
-    let (config, root) = setup_on(Backend::Local);
+    let (config, root) = setup_sized(Backend::Local, 0);
     let address = free_address();
     configure(&config, &address, "");
     embed(
@@ -848,7 +848,7 @@ async fn identity_write_api_deletes_and_patches_the_documents_that_match_a_filte
 #[ignore = "real writer and reader executables on local storage; scripts/ci"]
 async fn identity_write_api_refuses_a_filter_that_matches_too_many_documents_on_storage() {
     use fyrr_core::limits::write::MAX_FILTER_WRITE_DOCUMENTS as MAX;
-    let (config, root) = setup_on(Backend::Local);
+    let (config, root) = setup_sized(Backend::Local, 0);
     let address = free_address();
     configure(&config, &address, "open = true");
     let writer = Writer::start(&config, &root, address).await;
@@ -922,7 +922,7 @@ async fn identity_write_api_refuses_a_filter_that_matches_too_many_documents_on_
 #[tokio::test]
 #[ignore = "real writer and reader executables on local storage; scripts/ci"]
 async fn identity_write_api_applies_a_change_only_when_its_condition_holds_on_storage() {
-    let (config, root) = setup_on(Backend::Local);
+    let (config, root) = setup_sized(Backend::Local, 0);
     let address = free_address();
     configure(&config, &address, "");
     embed(&root, &["blue shirt", "red hat", "green coat"]);
@@ -1115,7 +1115,7 @@ async fn identity_write_api_applies_a_change_only_when_its_condition_holds_on_st
 #[tokio::test]
 #[ignore = "real writer and reader executables on local storage; scripts/ci"]
 async fn identity_write_api_lets_one_of_many_unpublished_requests_win_its_condition_on_storage() {
-    let (config, root) = setup_on(Backend::Local);
+    let (config, root) = setup_sized(Backend::Local, 0);
     let address = free_address();
     configure(&config, &address, "");
     embed(&root, &["blue shirt"]);
@@ -1207,7 +1207,7 @@ async fn identity_write_api_lets_one_of_many_unpublished_requests_win_its_condit
 #[tokio::test]
 #[ignore = "real writer and reader executables on local storage; scripts/ci"]
 async fn identity_write_api_freezes_a_namespace_and_commits_what_it_accepted_before_on_storage() {
-    let (config, root) = setup_on(Backend::Local);
+    let (config, root) = setup_sized(Backend::Local, 0);
     let address = free_address();
     configure(&config, &address, "open = true");
     embed(&root, &["blue shirt", "red hat", "green coat"]);
@@ -1341,7 +1341,7 @@ async fn identity_write_api_freezes_a_namespace_and_commits_what_it_accepted_bef
 #[tokio::test]
 #[ignore = "real writer and reader executables on local storage; scripts/ci"]
 async fn identity_write_api_deletes_the_namespace_of_the_path_only_on_storage() {
-    let (config, root) = setup_on(Backend::Local);
+    let (config, root) = setup_sized(Backend::Local, 0);
     let address = free_address();
     configure(&config, &address, "open = true");
     embed(&root, &["blue shirt", "red hat"]);
@@ -1412,7 +1412,7 @@ async fn identity_write_api_deletes_the_namespace_of_the_path_only_on_storage() 
 #[ignore = "real writer and reader executables on local storage; scripts/ci"]
 async fn identity_write_api_patches_the_text_with_its_vector_on_storage() {
     use arrow_array::Array;
-    let (config, root) = setup_on(Backend::Local);
+    let (config, root) = setup_sized(Backend::Local, 0);
     let text = std::fs::read_to_string(&config).unwrap();
     let (from, to) = (
         text.find("[embedding]").unwrap(),
@@ -1488,7 +1488,7 @@ async fn identity_write_api_patches_the_text_with_its_vector_on_storage() {
 #[tokio::test]
 #[ignore = "real writer and reader executables on local storage; scripts/ci"]
 async fn identity_write_api_writes_to_many_namespaces_from_one_process_on_storage() {
-    let (config, root) = setup_on(Backend::Local);
+    let (config, root) = setup_sized(Backend::Local, 0);
     let address = free_address();
     configure(&config, &address, "open = true");
     let names = ["dense-fixture", "shop-a", "shop-b", "shop-c", "shop-d"];
@@ -1555,7 +1555,7 @@ pub(super) fn vector(n: usize, dimensions: usize) -> Vec<f32> {
 #[tokio::test]
 #[ignore = "real writer and reader executables on local storage; scripts/ci"]
 async fn identity_write_api_stores_the_vectors_a_caller_supplies_on_storage() {
-    let (config, root) = setup_on(Backend::Local);
+    let (config, root) = setup_sized(Backend::Local, 0);
     let address = free_address();
     configure(&config, &address, "open = true");
     let writer = Writer::start(&config, &root, address).await;
@@ -1607,7 +1607,7 @@ async fn identity_write_api_stores_the_vectors_a_caller_supplies_on_storage() {
 #[tokio::test]
 #[ignore = "real writer and reader executables on local storage; scripts/ci"]
 async fn identity_write_api_without_embedding_settings_takes_only_vectors_on_storage() {
-    let (config, root) = setup_on(Backend::Local);
+    let (config, root) = setup_sized(Backend::Local, 0);
     let text = std::fs::read_to_string(&config).unwrap();
     let (from, to) = (
         text.find("[embedding]").unwrap(),
@@ -1702,7 +1702,7 @@ async fn identity_write_api_without_embedding_settings_takes_only_vectors_on_sto
 #[tokio::test]
 #[ignore = "real writer executable on local storage; scripts/ci"]
 async fn identity_write_api_ends_a_first_publication_of_identical_vectors_on_storage() {
-    let (config, root) = setup_on(Backend::Local);
+    let (config, root) = setup_sized(Backend::Local, 0);
     let address = free_address();
     configure(&config, &address, "open = true");
     let writer = Writer::start(&config, &root, address).await;
@@ -1734,7 +1734,7 @@ async fn identity_write_api_ends_a_first_publication_of_identical_vectors_on_sto
 #[tokio::test]
 #[ignore = "real writer executable on local storage; scripts/ci"]
 async fn identity_write_api_refuses_whole_and_keeps_connector_namespaces_apart_on_storage() {
-    let (config, root) = setup_on(Backend::Local);
+    let (config, root) = setup_sized(Backend::Local, 0);
     // A namespace fed by connectors takes no API write, whichever process asks.
     success(&config, &["writer", "namespace", "create"]);
     let combined = std::fs::read_to_string(&config).unwrap()
@@ -1764,7 +1764,7 @@ async fn identity_write_api_refuses_whole_and_keeps_connector_namespaces_apart_o
 #[tokio::test]
 #[ignore = "real writer and reader executables on local storage; scripts/ci"]
 async fn identity_write_api_open_namespace_is_read_by_every_subject_on_storage() {
-    let (config, root) = setup_on(Backend::Local);
+    let (config, root) = setup_sized(Backend::Local, 0);
     let address = free_address();
     configure(&config, &address, "open = true");
     embed(&root, &["blue shirt", "red hat"]);
@@ -1799,7 +1799,7 @@ fn peak_memory(pid: u32) -> u64 {
 #[ignore = "real writer executable on local storage, 240 MiB body; scripts/ci"]
 #[allow(clippy::print_stderr)]
 async fn identity_write_api_largest_body_stays_under_the_worker_memory_limit_on_storage() {
-    let (config, root) = setup_on(Backend::Local);
+    let (config, root) = setup_sized(Backend::Local, 0);
     let address = free_address();
     configure(&config, &address, "");
     embed(&root, &["same text", "small text"]);
@@ -1911,7 +1911,7 @@ async fn identity_write_api_largest_body_stays_under_the_worker_memory_limit_on_
 #[ignore = "real writer and reader executables on local storage; scripts/ci"]
 async fn identity_write_api_maintains_a_sparse_vector_attribute_on_storage() {
     const ROWS: usize = 1_100;
-    let (config, root) = setup_on(Backend::Local);
+    let (config, root) = setup_sized(Backend::Local, 0);
     let address = free_address();
     configure(&config, &address, "");
     let writer = Writer::start(&config, &root, address).await;
@@ -1961,7 +1961,7 @@ async fn identity_write_api_maintains_a_sparse_vector_attribute_on_storage() {
 #[tokio::test]
 #[ignore = "real writer and reader executables on local storage; scripts/ci"]
 async fn identity_write_api_builds_a_vector_index_when_the_first_vector_arrives_on_storage() {
-    let (config, root) = setup_on(Backend::Local);
+    let (config, root) = setup_sized(Backend::Local, 0);
     let address = free_address();
     configure(&config, &address, "open = true");
     let writer = Writer::start(&config, &root, address).await;
@@ -2013,7 +2013,7 @@ async fn identity_write_api_builds_a_vector_index_when_the_first_vector_arrives_
 #[tokio::test]
 #[ignore = "real writer and reader executables on local storage; scripts/ci"]
 async fn identity_write_api_takes_current_settings_and_refuses_unknown_ones_on_storage() {
-    let (config, root) = setup_on(Backend::Local);
+    let (config, root) = setup_sized(Backend::Local, 0);
     let address = free_address();
     configure(&config, &address, "");
     let writer = Writer::start(&config, &root, address).await;

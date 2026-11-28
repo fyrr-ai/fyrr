@@ -51,7 +51,7 @@ fn nearness(metric: &str, query: &[f32], row: &[f32]) -> f32 {
 async fn metric_recall(metric: &str, element: &str) {
     const ROWS: usize = 200;
     const QUERIES: usize = 12;
-    let (config, root) = setup_on(Backend::Local);
+    let (config, root) = setup_sized(Backend::Local, 0);
     let address = free_address();
     configure(&config, &address, "open = true");
     let text = std::fs::read_to_string(&config).unwrap();
@@ -255,7 +255,7 @@ async fn identity_write_api_holds_recall_under_dot_on_32_bit_vectors_on_storage(
 #[tokio::test]
 #[ignore = "real writer and reader executables on local storage; scripts/ci"]
 async fn identity_write_api_orders_a_listing_by_attributes_on_storage() {
-    let (config, root) = setup_on(Backend::Local);
+    let (config, root) = setup_sized(Backend::Local, 0);
     let address = free_address();
     configure(&config, &address, "");
     let texts = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot"];
@@ -344,7 +344,7 @@ async fn identity_write_api_orders_a_listing_by_attributes_on_storage() {
 #[tokio::test]
 #[ignore = "real writer and reader executables on local storage; scripts/ci"]
 async fn identity_write_api_aggregates_the_documents_a_caller_reads_on_storage() {
-    let (config, root) = setup_on(Backend::Local);
+    let (config, root) = setup_sized(Backend::Local, 0);
     let address = free_address();
     configure(&config, &address, "");
     let texts = ["alpha", "bravo", "charlie", "delta", "echo"];
@@ -543,7 +543,7 @@ async fn identity_write_api_aggregates_the_documents_a_caller_reads_on_storage()
 #[tokio::test]
 #[ignore = "real writer and reader executables on local storage; scripts/ci"]
 async fn identity_write_api_reports_recall_to_an_admin_key_on_storage() {
-    let (config, root) = setup_on(Backend::Local);
+    let (config, root) = setup_sized(Backend::Local, 0);
     let address = free_address();
     configure(&config, &address, "");
     let texts = ["alpha", "bravo", "charlie", "delta", "echo"];
@@ -664,7 +664,7 @@ async fn identity_write_api_reports_recall_to_an_admin_key_on_storage() {
 #[tokio::test]
 #[ignore = "real writer and reader executables on local storage; scripts/ci"]
 async fn identity_write_api_filters_strings_by_prefix_substring_and_expression_on_storage() {
-    let (config, root) = setup_on(Backend::Local);
+    let (config, root) = setup_sized(Backend::Local, 0);
     let address = free_address();
     configure(&config, &address, "");
     let texts = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot"];
@@ -777,7 +777,7 @@ async fn identity_write_api_filters_strings_by_prefix_substring_and_expression_o
 #[tokio::test]
 #[ignore = "real writer and reader executables on local storage; scripts/ci"]
 async fn identity_write_api_stores_filters_and_orders_the_other_attribute_types_on_storage() {
-    let (config, root) = setup_on(Backend::Local);
+    let (config, root) = setup_sized(Backend::Local, 0);
     let address = free_address();
     configure(&config, &address, "");
     let texts = ["alpha", "bravo", "charlie", "delta", "echo"];
@@ -1123,7 +1123,7 @@ async fn identity_write_api_stores_filters_and_orders_the_other_attribute_types_
 #[ignore = "real writer and reader executables on local storage; scripts/ci"]
 async fn identity_write_api_returns_the_attributes_vectors_and_scores_a_query_asks_for_on_storage()
 {
-    let (config, root) = setup_on(Backend::Local);
+    let (config, root) = setup_sized(Backend::Local, 0);
     let address = free_address();
     configure(&config, &address, "");
     let texts = ["alpha", "bravo", "charlie", "golf"];
@@ -1301,7 +1301,7 @@ async fn identity_write_api_returns_the_attributes_vectors_and_scores_a_query_as
 #[ignore = "real writer and reader executables on local storage; scripts/ci"]
 #[allow(clippy::print_stderr)]
 async fn identity_write_api_pages_a_listing_and_scans_by_the_document_key_on_storage() {
-    let (config, root) = setup_on(Backend::Local);
+    let (config, root) = setup_sized(Backend::Local, 0);
     let address = free_address();
     configure(&config, &address, "");
     embed(&root, &["alpha"]);
@@ -1426,7 +1426,7 @@ async fn identity_write_api_pages_a_listing_and_scans_by_the_document_key_on_sto
 #[ignore = "real writer and reader executables on local storage; scripts/ci"]
 async fn identity_write_api_changes_the_schema_of_a_live_namespace_on_storage() {
     use std::collections::BTreeSet;
-    let (config, root) = setup_on(Backend::Local);
+    let (config, root) = setup_sized(Backend::Local, 0);
     let address = free_address();
     configure(&config, &address, "");
     // The maintenance of this test is the one it runs (`configure` builds on 2 threads).
@@ -1660,7 +1660,7 @@ async fn identity_write_api_changes_the_schema_of_a_live_namespace_on_storage() 
 #[ignore = "real writer and reader executables on local storage; scripts/ci"]
 async fn identity_write_api_rebuilds_a_full_text_index_for_a_changed_analyzer_on_storage() {
     use lance::index::DatasetIndexExt;
-    let (config, root) = setup_on(Backend::Local);
+    let (config, root) = setup_sized(Backend::Local, 0);
     let address = free_address();
     configure(&config, &address, "");
     // The maintenance of this test is the one it runs (`configure` builds on 2 threads).
@@ -1829,7 +1829,7 @@ fn listing(config: &Path, filter: Value) -> Vec<String> {
 #[tokio::test]
 #[ignore = "real writer and reader executables on local storage; scripts/ci"]
 async fn identity_write_api_keeps_the_columns_of_added_attributes_in_table_order_on_storage() {
-    let (config, root) = setup_on(Backend::Local);
+    let (config, root) = setup_sized(Backend::Local, 0);
     let address = free_address();
     configure(&config, &address, "");
     embed(&root, &["alpha", "bravo", "charlie"]);
@@ -1915,7 +1915,7 @@ async fn identity_write_api_keeps_the_columns_of_added_attributes_in_table_order
 #[tokio::test]
 #[ignore = "real writer and reader executables on local storage; scripts/ci"]
 async fn identity_write_api_infers_undeclared_attributes_on_storage() {
-    let (config, root) = setup_on(Backend::Local);
+    let (config, root) = setup_sized(Backend::Local, 0);
     let address = free_address();
     configure(&config, &address, "");
     embed(&root, &["alpha", "bravo", "charlie", "delta", "echo"]);
@@ -2067,7 +2067,7 @@ async fn identity_write_api_infers_undeclared_attributes_on_storage() {
 #[tokio::test]
 #[ignore = "real writer and reader executables on local storage; scripts/ci"]
 async fn identity_write_api_bounds_the_inferred_attributes_on_storage() {
-    let (config, root) = setup_on(Backend::Local);
+    let (config, root) = setup_sized(Backend::Local, 0);
     let address = free_address();
     configure(&config, &address, "");
     // Indexes of the attributes are not built here: that is maintenance's work.
@@ -2126,7 +2126,7 @@ async fn identity_write_api_bounds_the_inferred_attributes_on_storage() {
 #[tokio::test]
 #[ignore = "real writer and reader executables on local storage; scripts/ci"]
 async fn identity_write_api_restores_a_version_from_before_an_attribute_was_added_on_storage() {
-    let (config, root) = setup_on(Backend::Local);
+    let (config, root) = setup_sized(Backend::Local, 0);
     let address = free_address();
     configure(&config, &address, "");
     embed(&root, &["alpha"]);
