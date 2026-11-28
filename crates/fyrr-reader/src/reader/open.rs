@@ -70,7 +70,10 @@ impl PreparedReader {
             policy_cache,
             identity_cache,
             head_cache,
-        ) = if let Some((session, mirror, cache, queries, policies, identities, heads)) = shared {
+            head,
+        ) = if let Some((session, mirror, cache, queries, policies, identities, heads, head)) =
+            shared
+        {
             (
                 session.upgrade(),
                 mirror,
@@ -79,6 +82,7 @@ impl PreparedReader {
                 policies,
                 identities,
                 heads,
+                Some(head),
             )
         } else {
             (
@@ -103,13 +107,19 @@ impl PreparedReader {
                 Arc::default(),
                 Arc::default(),
                 crate::storage::HeadCache::new(config),
+                None,
             )
         };
         mirror.bind_dataset(&dataset_uri(config))?;
         let control_backend = store;
         let store = mirror.wrap("control", control_backend.clone());
         // The generation's own head: requests of it never check an older one.
-        let head: ServingHead = head_cache.read_fresh(store.as_ref(), &root).await?;
+        // A version check passes the head it decided on, so the open cannot
+        // read a namespace that replaced it since.
+        let head: ServingHead = match head {
+            Some(head) => head,
+            None => head_cache.read_fresh(store.as_ref(), &root).await?,
+        };
         if head.namespace != config.namespace.name {
             return Err(AuthorizationUnavailable);
         }
@@ -362,6 +372,7 @@ impl PreparedReader {
             needed,
             preparation_reservation.warm_bytes(),
             shared_session,
+            &manifest.incarnation,
         )?;
         let dataset = Arc::new(
             open_version(

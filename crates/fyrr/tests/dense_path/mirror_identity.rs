@@ -290,6 +290,185 @@ async fn running_reader_never_serves_a_replaced_namespace_incarnation(backend: B
     std::fs::remove_dir_all(root).unwrap();
 }
 
+/// A namespace created again reaches the Lance version of the one it
+/// replaced with more rows; the running reader serves all of them, with a
+/// native cache as large as a restart's in a budget that holds one
+/// warm generation of the fixture but not two.
+#[tokio::test]
+#[ignore = "real executable and local storage; scripts/ci"]
+async fn running_reader_serves_a_replaced_namespace_at_the_same_lance_version_on_local_storage() {
+    let (config, root) = setup_on(Backend::Local);
+    std::fs::write(
+        &config,
+        std::fs::read_to_string(&config).unwrap().replace(
+            "[reader]",
+            "[reader]\nversion_check_interval = '1s'\nmemory_max_bytes = '640MiB'",
+        ),
+    )
+    .unwrap();
+    let vector: Vec<f32> = (0..1024).map(|d| ((d + 7) as f32).sin()).collect();
+    root.embedding.insert_both("ledger", vector);
+
+    success(&config, &["writer", "namespace", "create"]);
+    sync_texts(
+        &config,
+        &root,
+        &[("kept.txt", KEPT), ("doomed.txt", DOOMED)],
+    );
+    success(&config, &["writer", "commit"]);
+    let first = super::coordination::publication(&config).await.1;
+    let log = root.join("reader.stderr");
+    let mut client = super::tools::Mcp::open_logged(&config, &log);
+    let (id, hits) = served(&mut client).unwrap();
+    assert_eq!(id, first.publication_id);
+    assert!(hits.contains(DOOMED), "{hits}");
+    // The first incarnation's warm generation holds most of the budget.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    while !std::fs::read_to_string(&log)
+        .unwrap()
+        .contains("telemetry namespace=warmed")
+    {
+        assert!(std::time::Instant::now() < deadline, "never warmed");
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+
+    export_and_delete(&config, &root).await;
+    success(&config, &["writer", "namespace", "create"]);
+    sync_texts(
+        &config,
+        &root,
+        &[
+            ("kept.txt", KEPT),
+            ("extra.txt", EXTRA),
+            ("second.txt", SECOND),
+        ],
+    );
+    success(&config, &["writer", "commit"]);
+    let second = super::coordination::publication(&config).await.1;
+    assert_ne!(second.publication_id, first.publication_id);
+    assert_eq!(second.lance_version, first.lance_version);
+    let hits = await_publication(&mut client, &second.publication_id, &[DOOMED]);
+    assert!(
+        hits.contains(KEPT) && hits.contains(EXTRA) && hits.contains(SECOND),
+        "{hits}"
+    );
+    drop(client);
+    let log = std::fs::read_to_string(&log).unwrap();
+    assert!(!log.contains("native_cache=degraded"), "{log}");
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// A namespace replaced between a version check's head read and the open of
+/// the version it found: the running reader serves the replacement only from
+/// its own indexes, as a reader started afterwards does.
+#[tokio::test]
+#[ignore = "real executable and local storage; scripts/ci"]
+async fn running_reader_opens_the_head_its_version_check_read_on_local_storage() {
+    use super::corrections::{RequestGate, proxy_at_boundary};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let (config, root) = setup_sized(Backend::Local, 0);
+    let vector: Vec<f32> = (0..1024).map(|d| ((d + 7) as f32).sin()).collect();
+    root.embedding.insert_both("ledger", vector);
+    success(&config, &["writer", "namespace", "create"]);
+    sync_texts(&config, &root, &[("kept.txt", KEPT), ("common.txt", FIRST)]);
+    success(&config, &["writer", "commit"]);
+    let first = super::coordination::publication(&config).await.1;
+    // Holds the reader's first read of the head at sequence 2, after storage answered.
+    let (gate, hook) = RequestGate::new(|request, body, after| {
+        if !after || !request.starts_with("GET ") || !request.contains("/head.json ") {
+            return false;
+        }
+        let Some(split) = body.windows(4).position(|w| w == b"\r\n\r\n") else {
+            return false;
+        };
+        serde_json::from_slice::<Value>(&body[split + 4..])
+            .is_ok_and(|head| head["content"]["sequence"] == 2)
+    });
+    let stop = Arc::new(AtomicBool::new(false));
+    let (endpoint, proxy) = proxy_at_boundary("local-storage".into(), stop.clone(), hook);
+    let observed = root.join("observed.toml");
+    let text = std::fs::read_to_string(&config)
+        .unwrap()
+        .replace("local-storage", &endpoint)
+        .replace("# fyrr-test-head-check = every", "");
+    std::fs::write(&observed, text).unwrap();
+    let mut reader = super::tools::Mcp::open(&observed);
+    let (id, hits) = served(&mut reader).unwrap();
+    assert_eq!(id, first.publication_id);
+    assert!(hits.contains(KEPT) && hits.contains(FIRST), "{hits}");
+
+    let interim = [
+        ("kept.txt", KEPT),
+        ("common.txt", FIRST),
+        ("interim.txt", EXTRA),
+    ];
+    sync_texts(&config, &root, &interim);
+    success(&config, &["writer", "commit"]);
+    reader.signal("HUP");
+    gate.entered();
+    let quick = super::namespace_delete::quick_lease(&config);
+    success(
+        &quick,
+        &[
+            "writer",
+            "namespace",
+            "delete",
+            "--delete-data",
+            "dense-fixture",
+        ],
+    );
+    success(&config, &["writer", "namespace", "create"]);
+    let replacement = [
+        ("kept.txt", KEPT),
+        ("common.txt", FIRST),
+        ("new.txt", SECOND),
+    ];
+    sync_texts(&config, &root, &replacement);
+    success(&config, &["writer", "commit"]);
+    let new = super::coordination::publication(&config).await.1;
+    assert_eq!(first.lance_version, new.lance_version);
+    assert_ne!(first.incarnation, new.incarnation);
+    gate.release();
+
+    let root_ids = |hits: String| {
+        let rows: Vec<Value> = serde_json::from_str(&hits).unwrap();
+        let mut ids: Vec<String> = rows
+            .into_iter()
+            .map(|row| row["root_id"].as_str().unwrap().to_owned())
+            .collect();
+        ids.sort();
+        ids
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let mut live = Vec::new();
+    while live.len() < 2 {
+        if let Ok((id, hits)) = served(&mut reader)
+            && id == new.publication_id
+        {
+            live.push(root_ids(hits));
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "new publication not served twice"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let fresh = {
+        let mut reader = super::tools::Mcp::open(&config);
+        let (id, hits) = served(&mut reader).unwrap();
+        assert_eq!(id, new.publication_id);
+        root_ids(hits)
+    };
+    assert_eq!(fresh, ["common.txt", "kept.txt", "new.txt"]);
+    stop.store(true, Ordering::SeqCst);
+    drop(reader);
+    drop(gate);
+    drop(proxy);
+    std::fs::remove_dir_all(root).unwrap();
+    assert_eq!(live, vec![fresh.clone(), fresh]);
+}
+
 /// The shipped behaviour: requests check the serving head the reader's last
 /// version check read. A running reader may answer from the publication it
 /// holds until its next check, then follows the head: to a new publication,

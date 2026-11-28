@@ -187,6 +187,7 @@ pub(super) fn prepare_version(
                     context.policy_cache.clone(),
                     context.identity_cache.clone(),
                     context.head_cache.clone(),
+                    head,
                 )),
                 context.budget.clone(),
                 None,

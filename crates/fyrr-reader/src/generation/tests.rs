@@ -42,6 +42,7 @@ fn handover_reclaims_session_cache_and_admits_a_larger_publication() {
         (186 * mib * 4 / 5, 0),
         old.warm_bytes(),
         None,
+        "",
     )
     .unwrap();
     assert_eq!(cache.bytes(), 144 * mib);
@@ -64,6 +65,7 @@ fn handover_reclaims_session_cache_and_admits_a_larger_publication() {
         (200 * mib, 0),
         new.warm_bytes(),
         weak.upgrade(),
+        "",
     )
     .unwrap();
     assert_eq!(cache.bytes(), 96 * mib);
@@ -214,4 +216,31 @@ fn default_workers_reserve_private_row_state_and_share_native_capacity() {
         PreparationReservation::cold_bytes(&config, rows),
         base + 17 * rows * 64
     );
+}
+
+/// A namespace created again never reads through the session of the one it
+/// replaced. Without room for a session of its own, it asks for the drain
+/// that releases the old one, as a restart would have.
+#[test]
+fn a_replaced_namespace_gets_its_own_session_or_the_handover() {
+    let mib = 1024 * 1024u64;
+    let pool = |cap: u64| crate::generation::MemoryPool {
+        cap,
+        permits: Arc::new(tokio::sync::Semaphore::new((cap / 4096) as usize)),
+        spent: Default::default(),
+    };
+    let needed = (64 * mib, 64 * mib);
+    let tight = pool(256 * mib);
+    let old = NativeSession::acquire(tight.clone(), needed, 0, None, "first").unwrap();
+    assert_eq!(old.bytes(), 160 * mib);
+    let same = NativeSession::acquire(tight.clone(), needed, 0, Some(old.clone()), "first");
+    assert!(Arc::ptr_eq(&same.unwrap(), &old));
+    let replaced = NativeSession::acquire(tight, needed, 0, Some(old.clone()), "second");
+    assert_eq!(replaced.unwrap_err(), PreparationBudgetExhausted);
+
+    let roomy = pool(512 * mib);
+    let old = NativeSession::acquire(roomy.clone(), needed, 0, None, "first").unwrap();
+    let new = NativeSession::acquire(roomy, needed, 0, Some(old.clone()), "second").unwrap();
+    assert!(!Arc::ptr_eq(&new, &old));
+    assert_eq!(new.bytes(), 160 * mib);
 }

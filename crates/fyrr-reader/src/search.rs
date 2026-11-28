@@ -415,6 +415,7 @@ type SharedReaderResources = (
     crate::storage::ArtifactCache<PolicyArtifact>,
     crate::storage::ArtifactCache<IdentityArtifact>,
     crate::storage::HeadCache,
+    ServingHead,
 );
 
 /// The SQL predicate and mask belong to one completed request-filter scan.
