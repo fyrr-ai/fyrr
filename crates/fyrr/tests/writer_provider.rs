@@ -205,7 +205,8 @@ fn wait_for_failures(log: &Path, count: usize) -> chrono::DateTime<chrono::Utc> 
     while failed_workers(log) < count {
         assert!(
             std::time::Instant::now() < deadline,
-            "worker {count} never failed"
+            "worker {count} never failed; service log:\n{}",
+            std::fs::read_to_string(log).unwrap()
         );
         std::thread::sleep(std::time::Duration::from_millis(200));
     }
@@ -234,8 +235,8 @@ fn advance_to_and_settle(since: chrono::DateTime<chrono::Utc>, by: i64) {
     std::thread::sleep(std::time::Duration::from_secs(3));
 }
 
-/// The cursor's position in the namespace's storage, once a worker has saved one.
-fn saved_cursor(storage: &Path) -> Option<String> {
+/// The content cursor in the namespace's storage, once a worker has saved one.
+fn saved_cursor(storage: &Path) -> Option<serde_json::Value> {
     let mut stack = vec![storage.to_owned()];
     while let Some(dir) = stack.pop() {
         for entry in std::fs::read_dir(dir).unwrap().flatten() {
@@ -243,13 +244,20 @@ fn saved_cursor(storage: &Path) -> Option<String> {
             if path.is_dir() {
                 stack.push(path);
             } else if path.ends_with("cursors/fixture-content.json") {
-                let state: serde_json::Value =
-                    serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
-                return state["cursor"].as_str().map(str::to_owned);
+                return Some(serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap());
             }
         }
     }
     None
+}
+
+/// Waits up to 120 s of real time until `done`, else fails naming `what`.
+fn wait_until(what: &str, done: impl Fn() -> bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    while !done() {
+        assert!(std::time::Instant::now() < deadline, "{what}");
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
 }
 
 /// A running writer service, stopped when dropped, also when a check fails.
@@ -346,14 +354,9 @@ fn a_failing_source_is_retried_with_growing_delays_and_a_success_resets_them() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
-    while publications(&log) == published {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the other source never published"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(200));
-    }
+    wait_until("the other source never published", || {
+        publications(&log) > published
+    });
     std::thread::sleep(std::time::Duration::from_secs(3));
     assert_eq!(failed_workers(&log), 2, "a new head made the source due");
     advance_to_and_settle(failed, 80);
@@ -367,18 +370,24 @@ fn a_failing_source_is_retried_with_growing_delays_and_a_success_resets_them() {
     std::fs::write(&fixture.config, healed).unwrap();
     advance_to(failed, 260);
     let storage = fixture.sandbox.output().join("storage");
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
-    while saved_cursor(&storage).as_deref() != Some("printed") {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the recovered source never ran"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(200));
-    }
+    let cursor = || saved_cursor(&storage).unwrap_or_default();
+    wait_until("the recovered source never ran", || {
+        cursor()["cursor"] == "printed"
+    });
+    // The worker read its configuration when it started. Every later one
+    // reads the failing one, also one that the new head makes due at once.
+    std::fs::write(&fixture.config, &text).unwrap();
+    // The cursor moves with each page, before the worker records the read as
+    // complete. A clock step past the lease's expiry in between would lose
+    // the lease and fail the read, so the clock moves only after the release.
+    wait_until("the recovered read never ended", || {
+        let expires: chrono::DateTime<chrono::Utc> =
+            serde_json::from_value(cursor()["lease"]["expires_at"].clone()).unwrap();
+        expires <= fyrr_core::clock::now()
+    });
     assert_eq!(failed_workers(&log), 3, "a recovered source failed");
     // The success reset the delay: when the source fails again after its
     // interval, the retry waits 60 s, not 480 s.
-    std::fs::write(&fixture.config, &text).unwrap();
     fyrr_core::clock::advance(std::time::Duration::from_secs(11 * 60)).unwrap();
     let failed = wait_for_failures(&log, 4);
     advance_to_and_settle(failed, 40);
