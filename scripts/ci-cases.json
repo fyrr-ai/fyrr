@@ -620,7 +620,7 @@
     "kind": "rust",
     "backend": "local",
     "owns": {
-      "full:fyrr:test:dense_path/history_integrity::": {"tier": "full", "seconds": 16.951}
+      "full:fyrr:test:dense_path/history_integrity::": {"tier": "full", "seconds": 36.256}
     },
     "children": {
       "full:fyrr-writer:lib:fyrr_writer/commit::history::sequence_tests::cached_history_checks_sequence_at_joins_on_storage": {
