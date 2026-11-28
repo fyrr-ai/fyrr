@@ -59,6 +59,10 @@ pub(crate) struct NativeSession {
     pub(crate) session: Arc<lance::session::Session>,
     pub(crate) capacity: (u64, u64),
     permit: tokio::sync::OwnedSemaphorePermit,
+    /// The namespace incarnation whose datasets the session's caches hold.
+    /// They key index metadata by dataset URI and Lance version, which a
+    /// namespace created again at the same URI reuses for other rows.
+    incarnation: String,
 }
 impl NativeSession {
     pub(crate) fn acquire(
@@ -66,8 +70,13 @@ impl NativeSession {
         needed: (u64, u64),
         warm_bytes: u64,
         existing: Option<Arc<Self>>,
+        incarnation: &str,
     ) -> Result<Arc<Self>> {
+        let replaced = existing
+            .as_ref()
+            .is_some_and(|session| session.incarnation != incarnation);
         if let Some(session) = &existing
+            && !replaced
             && session.capacity.0 >= needed.0
             && session.capacity.1 >= needed.1
         {
@@ -82,6 +91,11 @@ impl NativeSession {
         if let Some(session) = existing
             && (capacity.0 < needed.0 || capacity.1 < needed.1)
         {
+            // The old incarnation's session cannot serve this one. The drain
+            // releases it, and the open after it is the open of a restart.
+            if replaced {
+                return Err(PreparationBudgetExhausted);
+            }
             let alone =
                 Self::allocation(needed, pool.cap.saturating_sub(reserve.saturating_mul(2)));
             if alone.0 >= needed.0 && alone.1 >= needed.1 {
@@ -100,6 +114,7 @@ impl NativeSession {
             )),
             capacity,
             permit,
+            incarnation: incarnation.to_owned(),
         }))
     }
     fn allocation(needed: (u64, u64), available: u64) -> (u64, u64) {

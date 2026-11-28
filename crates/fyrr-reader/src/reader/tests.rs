@@ -627,6 +627,7 @@ fn pruning_old_admissions_releases_only_unheld_reservations() {
         (0, 0),
         0,
         None,
+        "",
     )
     .unwrap();
     let claim = cache.reserve(&key, 4096, 1).unwrap();
