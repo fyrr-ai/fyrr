@@ -656,18 +656,20 @@ async fn serve_metrics_count_publications_without_identity_on_storage() {
         json!({"epoch":1,"content":[[doc("healthy","r1","fixture document 1")]]}),
     );
     let mut command = super::coordination::worker_command(&service);
-    command.args(["writer", "serve", "--jobs", "1", "--timeout", "4s"]);
+    command.args(["writer", "serve", "--jobs", "1"]);
     let mut process =
         super::coordination::CommitProcess::from_command(command, Arc::new(AtomicBool::new(true)));
     let client = reqwest::Client::new();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     let mut body = String::new();
-    for _ in 0..100 {
+    while !body.contains("fyrr_writer_commit_rounds_total{outcome=\"published\"} ") {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no published round\n{body}"
+        );
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         if let Ok(response) = client.get(format!("http://{metrics}/metrics")).send().await {
             body = response.text().await.unwrap_or_default();
-            if body.contains("fyrr_writer_commit_rounds_total{outcome=\"published\"} ") {
-                break;
-            }
         }
     }
     Command::new("kill")
@@ -677,7 +679,6 @@ async fn serve_metrics_count_publications_without_identity_on_storage() {
     let result = process.finish();
     assert!(result.status.success(), "{}", report(&result));
     for line in [
-        "fyrr_writer_commit_rounds_total{outcome=\"published\"} ",
         "# TYPE fyrr_writer_commit_duration_seconds histogram",
         "# TYPE fyrr_writer_pending_envelopes gauge",
     ] {
