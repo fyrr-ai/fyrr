@@ -387,20 +387,21 @@ async fn serve_isolates_failed_providers_while_publishing_on_storage() {
         json!({"epoch":1,"content":[[doc("healthy","r1","fixture document 1")]]}),
     );
     let mut command = super::coordination::worker_command(&service);
-    command.args(["writer", "serve", "--jobs", "5", "--timeout", "4s"]);
+    // The default worker timeout keeps the hanging provider hung while the healthy one publishes.
+    command.args(["writer", "serve", "--jobs", "5"]);
     let mut process =
         super::coordination::CommitProcess::from_command(command, Arc::new(AtomicBool::new(true)));
-    let mut observed = false;
-    for _ in 0..100 {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while !root.join("hanger/entered").exists()
+        || !super::incremental::roots(&super::incremental::rows(&commit).await)
+            .contains(&"healthy".to_owned())
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "a failed provider blocked healthy publication"
+        );
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        let rows = super::incremental::rows(&commit).await;
-        if super::incremental::roots(&rows).contains(&"healthy".to_owned()) {
-            observed = true;
-            break;
-        }
     }
-    assert!(observed, "a failed provider blocked healthy publication");
-    assert!(root.join("hanger/entered").exists());
     Command::new("kill")
         .args(["-TERM", &process.child().id().to_string()])
         .status()
