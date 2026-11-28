@@ -40,11 +40,12 @@ pub fn test_providers() -> PathBuf {
     repo().join("crates/fyrr/tests/providers")
 }
 
-/// Cargo's scratch directory for these tests, by its real path. Local storage
-/// refuses a root below a symlink, and `target/` may be a link to a build
-/// volume.
+/// The fixture directory `scripts/ci` sets (`FYRR_TEST_TMP`), else Cargo's
+/// scratch directory, by its real path. Local storage refuses a root below a
+/// symlink, and `target/` may be a link to a build volume.
 pub fn target_tmp() -> PathBuf {
-    Path::new(env!("CARGO_TARGET_TMPDIR"))
+    std::env::var_os("FYRR_TEST_TMP")
+        .map_or_else(|| env!("CARGO_TARGET_TMPDIR").into(), PathBuf::from)
         .canonicalize()
         .unwrap()
 }
