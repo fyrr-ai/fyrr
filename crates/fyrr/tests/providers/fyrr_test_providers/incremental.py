@@ -50,6 +50,12 @@ class Incremental(Connector):
                 json.dumps(cursor)
             )
         for index, documents in enumerate(data.get("content", [])):
+            if data.get("pause_content_at") == index:
+                # The read waits here until the test removes the file.
+                paused = Path(self.context.scope.fixture).with_name("paused")
+                paused.write_text("paused")
+                while paused.exists():
+                    time.sleep(0.05)
             changes = []
             for doc in documents:
                 common = {

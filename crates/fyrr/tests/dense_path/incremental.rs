@@ -4477,6 +4477,124 @@ async fn incremental_a_newer_read_rejected_for_its_age_never_goes_before_the_old
     assert!(row_readers(&batch, "a").is_empty() && row_readers(&batch, "b").is_empty());
 }
 
+/// A replacement is committed after the older content of its source, never
+/// before it. A read whose first batch is over the rows of a group goes on
+/// while the committer rejects that batch alone, and puts a revision of `a`
+/// and one of `b` behind it. The replacement of the rejected batch writes a
+/// newer revision of `a` in its first part and fails before its last, so the
+/// rejection stays to be replaced. The next commit applies the three in the
+/// order they were read: the reader serves the newest revision of `a`, and
+/// the chain names the replacement.
+#[tokio::test]
+#[ignore = "real CLI and local storage; scripts/ci"]
+async fn incremental_a_replacement_is_committed_after_the_older_content_of_its_source_on_storage() {
+    let (worker, commit, root) = fixture();
+    publish_initial(&worker, &commit, &root);
+    let text = std::fs::read_to_string(&commit).unwrap().replace(
+        "[reader]",
+        "[writer]\nenvelope_max_rows=1\n[writer.commit]\ngroup_max_rows=3\n[reader]",
+    );
+    std::fs::write(&commit, text).unwrap();
+    let before = newest_content(&worker).await.sequence;
+    let over = ["c", "d", "e", "f"]
+        .iter()
+        .enumerate()
+        .map(|(n, id)| doc(id, "r2", &format!("fixture document {}", 10 + n)))
+        .collect::<Vec<_>>();
+    input(
+        &root,
+        json!({"epoch":2,"pause_content_at":1,"content":[over,
+            [doc("a","r6","fixture document 6")],[doc("b","r7","fixture document 7")]]}),
+    );
+    let mut reading = worker_command(&worker)
+        .args(["writer", "sync", "incremental", "--kind", "content"])
+        .spawn()
+        .unwrap();
+    let paused = root.join("paused");
+    let started = std::time::Instant::now();
+    while !paused.exists() || newest_content(&worker).await.sequence == before {
+        if started.elapsed() > std::time::Duration::from_secs(60) {
+            reading.kill().unwrap();
+            panic!(
+                "the read did not pause after its first batch: paused {}, newest {}",
+                paused.exists(),
+                newest_content(&worker).await.sequence
+            );
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    let rejected = newest_content(&worker).await;
+    publish(&commit);
+    assert_eq!(
+        resolved(&commit, &rejected.envelope_id).await,
+        (false, true)
+    );
+    std::fs::remove_file(&paused).unwrap();
+    assert!(reading.wait().unwrap().success());
+    let mut older: Vec<_> = envelopes(&worker)
+        .await
+        .into_iter()
+        .map(|(_, e)| e)
+        .filter(|e| {
+            e.source_id == "incremental"
+                && e.kind == SyncKind::Content
+                && e.sequence > rejected.sequence
+        })
+        .collect();
+    older.sort_by_key(|e| e.sequence);
+    assert_eq!(older.len(), 2);
+    // The replacement is split into parts of two rows: the two sections of
+    // `a`, then `y`, which cannot be embedded, so the read fails after its
+    // first part was put.
+    let text = std::fs::read_to_string(&worker).unwrap().replace(
+        "[reader]",
+        "[writer]\nenvelope_max_rows=2\n[writer.commit]\ngroup_max_rows=2\n[reader]",
+    );
+    std::fs::write(&worker, text).unwrap();
+    input(
+        &root,
+        json!({"epoch":5,"content":[[
+            {"id":"a","revision":"r8","texts":["fixture document 5","fixture document 8"],
+                "section_readers":[["grp:group"],["grp:group"]]},
+            doc("y","r8","unregistered text")]]}),
+    );
+    let failed = worker_command(&worker)
+        .args(["writer", "sync", "incremental", "--kind", "content"])
+        .output()
+        .unwrap();
+    assert!(!failed.status.success(), "the replacement was to fail");
+    let replacement = newest_content(&worker).await;
+    assert!(replacement.rejection_generation > rejected.rejection_generation);
+    assert!(!replacement.advances_cursor, "a part, not a complete read");
+    assert_eq!(replacement.previous.as_ref(), Some(&older[1].envelope_id));
+    publish(&commit);
+    let mut states = Vec::new();
+    for envelope in older.iter().chain([&replacement]) {
+        states.push(resolved(&commit, &envelope.envelope_id).await);
+    }
+    assert_eq!(
+        revisions(&rows(&worker).await, "a"),
+        ["r8", "r8"],
+        "applied, rejected: {states:?}"
+    );
+    assert_eq!(states, [(true, false); 3]);
+    assert_eq!(
+        publication(&commit).await.1.chain_applied["incremental"][&SyncKind::Content],
+        replacement.envelope_id
+    );
+}
+
+/// The content envelope of `incremental` with the highest sequence.
+async fn newest_content(config: &Path) -> PreparedEnvelope {
+    envelopes(config)
+        .await
+        .into_iter()
+        .map(|(_, e)| e)
+        .filter(|e| e.source_id == "incremental" && e.kind == SyncKind::Content)
+        .max_by_key(|e| e.sequence)
+        .unwrap()
+}
+
 /// The head decides what is rejected, not a marker on storage: the marker of an
 /// envelope that no publication names, as a committer that lost its lease or
 /// died before it published may leave, rejects nothing. The envelope is

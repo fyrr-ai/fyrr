@@ -1142,30 +1142,39 @@ async fn commit_group_with_rejections(
     // Reject over-age authorization inputs first so their rejections become visible
     // before later reads of either kind. Valid authorization reads still precede content.
     // Source fairness applies after priority; valid sequences stay ordered within a kind.
-    // Keep age priorities fixed while the sorter compares envelopes.
+    // Keep age priorities fixed while the sorter compares envelopes. Each source
+    // and kind takes the least priority of its envelopes, so sequence orders it.
     let now = fyrr_core::clock::now();
+    let mut priorities = std::collections::BTreeMap::new();
+    for e in &pending {
+        let priority = if e.kind.is_authorization()
+            && (now - e.created_at)
+                .to_std()
+                .is_ok_and(|age| age > config.writer.max_envelope_age.as_duration())
+        {
+            0
+        } else if unresolved.iter().any(|m| {
+            m.source_id == e.source_id
+                && m.kind == e.kind
+                && e.rejection_generation > m.rejection_generation
+        }) {
+            1
+        } else {
+            match e.kind {
+                fyrr_core::connector::SyncKind::Permissions => 2,
+                fyrr_core::connector::SyncKind::Members => 3,
+                fyrr_core::connector::SyncKind::Reconcile => 4,
+                fyrr_core::connector::SyncKind::Content => 5,
+            }
+        };
+        priorities
+            .entry((e.source_id.clone(), e.kind))
+            .and_modify(|least: &mut u8| *least = (*least).min(priority))
+            .or_insert(priority);
+    }
     pending.sort_by_key(|e| {
         (
-            if e.kind.is_authorization()
-                && (now - e.created_at)
-                    .to_std()
-                    .is_ok_and(|age| age > config.writer.max_envelope_age.as_duration())
-            {
-                0
-            } else if unresolved.iter().any(|m| {
-                m.source_id == e.source_id
-                    && m.kind == e.kind
-                    && e.rejection_generation > m.rejection_generation
-            }) {
-                1
-            } else {
-                match e.kind {
-                    fyrr_core::connector::SyncKind::Permissions => 2,
-                    fyrr_core::connector::SyncKind::Members => 3,
-                    fyrr_core::connector::SyncKind::Reconcile => 4,
-                    fyrr_core::connector::SyncKind::Content => 5,
-                }
-            },
+            priorities[&(e.source_id.clone(), e.kind)],
             (order[&e.source_id] + count - (crate::narrow_usize(rotation) % count)) % count,
             e.sequence,
         )
