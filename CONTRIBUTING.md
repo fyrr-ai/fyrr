@@ -135,6 +135,10 @@ Keycloak and long maintenance/history campaigns. Cases excluded by the tier
 are `n/e` in `case-plan.json` and row results; wholly excluded rows are `n/e`
 in `summary.txt`. A mixed row counts only its selected cases as passed.
 
+The `flaky` row (`on_demand`) holds known timing-flaky cases by exact id: no
+tier runs it and `summary.txt` lists it as `n/e`; run it with
+`scripts/ci --row=flaky`. A case leaves it only with a fix of its root cause.
+
 PRs and pushes to main run `--quick`. Changes confined to
 `examples/quickstart/` run the local quickstart row when successful CI has
 cached a binary for their exact base commit on main. A cache miss runs the
