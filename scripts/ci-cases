@@ -101,13 +101,15 @@ def build():
                 # replace the executable another case is about to launch.
                 destination = BUILD.parent / variant / "fyrr"
                 destination.parent.mkdir(parents=True, exist_ok=True)
-                # copy2 carries size and mtime, so an unchanged binary matches
-                # on stat alone; filecmp reads bytes only when the sizes agree
-                # but the mtimes do not.
-                if not destination.exists() or not filecmp.cmp(
-                    item["executable"], destination
+                # Copy only a changed binary. Compare bytes: a cache restore
+                # can keep size and mtime. The snapshot is a plain executable.
+                temporary = destination.with_suffix(".tmp")
+                temporary.unlink(missing_ok=True)
+                if (
+                    destination.is_symlink()
+                    or not os.access(destination, os.X_OK)
+                    or not filecmp.cmp(item["executable"], destination, shallow=False)
                 ):
-                    temporary = destination.with_suffix(".tmp")
                     shutil.copy2(item["executable"], temporary)
                     temporary.replace(destination)
                 result["binaries"][variant] = str(destination.relative_to(ROOT))
