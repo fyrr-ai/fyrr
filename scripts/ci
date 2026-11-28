@@ -124,13 +124,12 @@ step() {
   log="$LOGS/$(printf '%02d' "$STEP")-$(tr -c 'a-z0-9\n' '-' <<<"${name,,}" | tr -s '-' | sed 's/^-//; s/-$//').log"
   log "step $STEP: $name"
   local started=$SECONDS status=pass passed=- failed=- ignored=-
+  rm -f "$LOGS/counts"
   "$@" >"$log" 2>&1 || status=FAIL
   case "$kind" in
     cargo)
-      read -r passed failed ignored < <(
-        sed -nE 's/^test result: [A-Za-z]+\. ([0-9]+) passed; ([0-9]+) failed; ([0-9]+) ignored;.*/\1 \2 \3/p' "$log" |
-          awk '{p += $1; f += $2; i += $3} END {print p + 0, f + 0, i + 0}'
-      )
+      # `ci-cases run` counts each selected case once, from libtest's logfile.
+      read -r passed failed ignored < <(cat "$LOGS/counts" 2>/dev/null || echo 0 0 0)
       ;;
     pytest)
       read -r passed failed ignored < <(
@@ -235,7 +234,7 @@ run_row() {
     (umask 077; printf '0' > "$FYRR_TEST_CLOCK_FILE") || return 1
   fi
   scenario_setup "$1" || return 1
-  "$ROOT/scripts/ci-cases" run "$1" "${CASE_IDS[@]}"
+  FYRR_CI_LOG_DIR="$LOGS" "$ROOT/scripts/ci-cases" run "$1" "${CASE_IDS[@]}"
 }
 
 cases_start() {
