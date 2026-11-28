@@ -573,8 +573,8 @@ curl https://fyrr.example.com/v1/namespaces/main/query \
 
 `POST /v1/namespaces/{namespace}/aggregate` computes aggregates over the
 documents the caller may read and `filter` selects, optionally per group. The
-MCP [`aggregate`](mcp-tools.md#aggregate) tool takes the same arguments and
-answers the same.
+MCP [`aggregate`](mcp-tools.md#aggregate) tool takes the same arguments,
+except `consistency`, and answers the same.
 
 | Member | Meaning |
 | --- | --- |
