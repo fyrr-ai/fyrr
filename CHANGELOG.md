@@ -158,6 +158,9 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Added
 
+- The `writer_service event=worker_failed` line of `fyrr writer serve` carries
+  `at=` (when the service saw the worker fail) and `retry_at=` (when it runs
+  the source again), both RFC 3339 in UTC.
 - The MCP `search` tool takes `phrase`, as the JSON `query` route does: the
   tokens of its `text` occur in a hit next to one another, in a namespace with
   `fts_positions`. `tools/list` describes it.

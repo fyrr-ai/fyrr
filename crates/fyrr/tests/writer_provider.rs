@@ -188,88 +188,79 @@ async fn prepared_timeout_names_flag_and_rerun_preserves_durable_work_on_storage
     );
 }
 
-/// The service's workers that failed so far.
-fn failed_workers(log: &Path) -> usize {
-    std::fs::read_to_string(log)
-        .unwrap()
-        .matches("writer_service event=worker_failed")
-        .count()
+/// A failed worker as the service logged it: the service's clock at the
+/// failure, and when the service retries the source.
+struct Failure {
+    at: chrono::DateTime<chrono::Utc>,
+    retry_at: chrono::DateTime<chrono::Utc>,
 }
 
-/// Waits until `count` workers have failed, as the log shows it, and returns
-/// the test clock when the test saw it. Fails once the test clock reaches
-/// `by` first. The service schedules the retry from its own reading of the
-/// clock, taken before it logged the failure, so the retry is due at most its
-/// delay after the returned time.
-fn wait_for_failures(
-    log: &Path,
-    count: usize,
-    by: chrono::DateTime<chrono::Utc>,
-) -> chrono::DateTime<chrono::Utc> {
+/// The service's failed workers so far, in the order it logged them.
+fn failures(log: &Path) -> Vec<Failure> {
+    let time = |line: &str, key: &str| {
+        let value = line
+            .split_whitespace()
+            .find_map(|field| field.strip_prefix(key))
+            .unwrap_or_else(|| panic!("no {key} in {line:?}"));
+        chrono::DateTime::parse_from_rfc3339(value)
+            .unwrap()
+            .with_timezone(&chrono::Utc)
+    };
+    std::fs::read_to_string(log)
+        .unwrap()
+        .lines()
+        .filter(|line| line.contains("writer_service event=worker_failed "))
+        .map(|line| Failure {
+            at: time(line, "at="),
+            retry_at: time(line, "retry_at="),
+        })
+        .collect()
+}
+
+/// Waits up to 120 s of real time until `count` workers have failed, and
+/// returns the last of them.
+fn wait_for_failures(log: &Path, count: usize) -> Failure {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
     loop {
-        let now = fyrr_core::clock::now();
-        if failed_workers(log) >= count {
-            return now;
+        if let Some(failure) = failures(log).into_iter().nth(count - 1) {
+            return failure;
         }
         assert!(
-            now < by,
-            "worker {count} did not fail by {by}; service log:\n{}",
+            std::time::Instant::now() < deadline,
+            "worker {count} never failed; service log:\n{}",
             std::fs::read_to_string(log).unwrap()
         );
         std::thread::sleep(std::time::Duration::from_millis(200));
     }
 }
 
-/// Moves the test clock to `by` seconds after `since`. The clock is real time
-/// plus the test's offset, so a step relative to an observed event does not
-/// count the real time the test spent since then.
-fn advance_to(since: chrono::DateTime<chrono::Utc>, by: i64) {
-    let target = since + chrono::TimeDelta::seconds(by);
-    let step = (target - fyrr_core::clock::now())
+/// Moves the test clock to `time`, unless real time already passed it.
+fn advance_to(time: chrono::DateTime<chrono::Utc>) {
+    let step = (time - fyrr_core::clock::now())
         .to_std()
-        .unwrap_or_else(|_| {
-            panic!(
-                "real time alone passed {by} s after the observed event; the check would not hold"
-            )
-        });
+        .unwrap_or_default();
     fyrr_core::clock::advance(step).unwrap();
 }
 
-/// The test clock time the test allows from a retry falling due until it sees
-/// the worker fail: the worker's start and run, which take real time.
-const SLACK: i64 = 20;
-
-/// Checks that no worker beyond the `count` failed ones started before
-/// `delay` seconds after the failure seen at `failed`. The test clock moves
-/// to 10 s before the delay, and real time carries it to about 2 s before:
-/// a retry due sooner has those 8 s to fail.
-fn not_retried_before(log: &Path, count: usize, failed: chrono::DateTime<chrono::Utc>, delay: i64) {
-    advance_to(failed, delay - 10);
-    std::thread::sleep(std::time::Duration::from_secs(8));
-    let seen = failed_workers(log);
-    assert!(
-        fyrr_core::clock::now() < failed + chrono::TimeDelta::seconds(delay - 1),
-        "real time passed the {delay} s delay; the check would not hold"
+/// Checks that failed worker `count` schedules its retry exactly `delay`
+/// seconds later, moves the test clock there, and returns the retry's failure,
+/// which must not come before it.
+fn retried_after(log: &Path, count: usize, failure: &Failure, delay: i64) -> Failure {
+    assert_eq!(
+        failure.retry_at - failure.at,
+        chrono::TimeDelta::seconds(delay),
+        "worker {count} retries after {delay} s"
     );
-    assert_eq!(seen, count, "retried before {delay} s");
-}
-
-/// Moves the test clock to `delay` seconds after the failure seen at
-/// `failed`, waits for the retry to fail, and returns when the test saw it.
-/// The retry must fail before `delay + SLACK` s on the test clock, so real
-/// time spent waiting cannot hide a longer delay.
-fn retried_after(
-    log: &Path,
-    count: usize,
-    failed: chrono::DateTime<chrono::Utc>,
-    delay: i64,
-) -> chrono::DateTime<chrono::Utc> {
-    advance_to(failed, delay);
-    wait_for_failures(
-        log,
-        count,
-        failed + chrono::TimeDelta::seconds(delay + SLACK),
-    )
+    advance_to(failure.retry_at);
+    let retry = wait_for_failures(log, count + 1);
+    assert!(
+        retry.at >= failure.retry_at,
+        "worker {} failed at {}, before its retry at {}",
+        count + 1,
+        retry.at,
+        failure.retry_at
+    );
+    retry
 }
 
 /// The content cursor in the namespace's storage, once a worker has saved one.
@@ -373,18 +364,13 @@ fn a_failing_source_is_retried_with_growing_delays_and_a_success_resets_them() {
             .spawn()
             .unwrap(),
     );
-    // The first worker starts at once and fails. The next waits 60 s of the
-    // test clock, the one after 120 s, the one after that 240 s. Each step is
-    // measured from the failure the test saw, and bounded from both sides.
-    let failed = wait_for_failures(
-        &log,
-        1,
-        fyrr_core::clock::now() + chrono::TimeDelta::seconds(120),
-    );
-    not_retried_before(&log, 1, failed, 60);
-    let failed = retried_after(&log, 2, failed, 60);
+    // The first worker starts at once and fails. The service logs when it
+    // retries each failure: 60 s later, then 120 s, then 240 s.
+    let failed = wait_for_failures(&log, 1);
+    let failed = retried_after(&log, 1, &failed, 60);
     // Another source publishes a new head while the failing one waits: that
-    // does not make it due.
+    // does not make it due, so no worker fails before the retry the service
+    // logged, which `retried_after` checks.
     let published = publications(&log);
     docs("r2");
     let output = fixture.run(&["writer", "sync", "other", "--full"]);
@@ -397,19 +383,20 @@ fn a_failing_source_is_retried_with_growing_delays_and_a_success_resets_them() {
         publications(&log) > published
     });
     std::thread::sleep(std::time::Duration::from_secs(3));
-    assert_eq!(failed_workers(&log), 2, "a new head made the source due");
-    not_retried_before(&log, 2, failed, 120);
-    let failed = retried_after(&log, 3, failed, 120);
-    not_retried_before(&log, 3, failed, 240);
+    assert_eq!(failures(&log).len(), 2, "a new head made the source due");
+    let failed = retried_after(&log, 2, &failed, 120);
+    assert_eq!(
+        failed.retry_at - failed.at,
+        chrono::TimeDelta::seconds(240),
+        "worker 3 retries after 240 s"
+    );
     // The source recovers for one worker only: the provider succeeds in the
     // run that removes this file, and fails in every other.
     fixture.sandbox.input("heal", "");
-    advance_to(failed, 240);
+    advance_to(failed.retry_at);
     let storage = fixture.sandbox.output().join("storage");
     let cursor = || saved_cursor(&storage).unwrap_or_default();
-    let by = failed + chrono::TimeDelta::seconds(240 + SLACK);
     wait_until("the recovered source never ran", || {
-        assert!(fyrr_core::clock::now() < by, "not retried by {by}");
         cursor()["cursor"] == "printed"
     });
     // The cursor moves with each page, before the worker records the read as
@@ -420,15 +407,15 @@ fn a_failing_source_is_retried_with_growing_delays_and_a_success_resets_them() {
             serde_json::from_value(cursor()["lease"]["expires_at"].clone()).unwrap();
         expires <= fyrr_core::clock::now()
     });
-    assert_eq!(failed_workers(&log), 3, "a recovered source failed");
+    assert_eq!(failures(&log).len(), 3, "a recovered source failed");
     // The success reset the delay: when the source fails again after its
-    // interval, the retry waits 60 s, not 480 s.
+    // interval, the retry waits 60 s, not 480 s, and grows from there.
     fyrr_core::clock::advance(std::time::Duration::from_secs(11 * 60)).unwrap();
-    let failed = wait_for_failures(
-        &log,
-        4,
-        fyrr_core::clock::now() + chrono::TimeDelta::seconds(120),
+    let failed = wait_for_failures(&log, 4);
+    let failed = retried_after(&log, 4, &failed, 60);
+    assert_eq!(
+        failed.retry_at - failed.at,
+        chrono::TimeDelta::seconds(120),
+        "worker 5 retries after 120 s"
     );
-    not_retried_before(&log, 4, failed, 60);
-    retried_after(&log, 5, failed, 60);
 }
