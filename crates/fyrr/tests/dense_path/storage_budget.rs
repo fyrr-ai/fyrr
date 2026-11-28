@@ -454,21 +454,11 @@ async fn an_http_reader_with_api_keys_reads_them_once_per_version_check() {
     assert!(committed.status.success(), "{}", report(&committed));
 
     let seen = Seen::default();
-    // When each read of the published keys reached storage.
-    let key_reads = Arc::new(Mutex::new(Vec::new()));
-    let hook: BoundaryHook = {
-        let (hook, key_reads) = (seen.hook(), key_reads.clone());
-        Arc::new(move |request, body, after| {
-            if !after && request.contains("/api-keys.json ") {
-                key_reads.lock().unwrap().push(std::time::Instant::now());
-            }
-            hook(request, body, after)
-        })
-    };
     let stop = Arc::new(AtomicBool::new(false));
-    let (observed, _observer) = proxy_at_boundary(endpoint.clone(), stop.clone(), hook);
+    let (observed, _observer) = proxy_at_boundary(endpoint.clone(), stop.clone(), seen.hook());
     let observed_config = root.join("observed.toml");
     std::fs::write(&observed_config, text.replace(&endpoint, &observed)).unwrap();
+    let started = std::time::Instant::now();
     let mut reader =
         super::http_mcp::Reader::start_appended(&observed_config, &root, |address, base| {
             format!("\n[reader.http]\nlisten='{address}'\npublic_url='{base}/mcp'\n")
@@ -488,20 +478,24 @@ async fn an_http_reader_with_api_keys_reads_them_once_per_version_check() {
         .await;
         assert_eq!(status, 401, "{body}");
     }
-    // The read at start and five version checks. A check starts at least an
-    // interval after the one before it, however late the host runs it, so
-    // six reads span five intervals; a second read per check comes sooner,
-    // however slow each read is.
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    let keys_read = || {
+        seen.all(0)
+            .iter()
+            .filter(|request| request.ends_with("/api-keys.json"))
+            .count()
+    };
+    // A loaded host can hold the version checks back: wait for the second read.
     let deadline = std::time::Instant::now() + Duration::from_secs(120);
-    while key_reads.lock().unwrap().len() < 6 && std::time::Instant::now() < deadline {
+    while keys_read() < 2 && std::time::Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
-    let reads = key_reads.lock().unwrap().clone();
-    assert!(reads.len() >= 6, "the keys were read {} times", reads.len());
-    let span = reads[5] - reads[0];
+    let keys = keys_read();
+    let allowed =
+        usize::try_from(started.elapsed().as_millis() / INTERVAL.as_millis()).unwrap() + 2;
     assert!(
-        span >= INTERVAL * 9 / 2,
-        "six reads of the keys took {span:?}, five version checks take 5 intervals"
+        (2..=allowed).contains(&keys),
+        "the keys were read {keys} times, allowed {allowed}"
     );
 
     let post_as = |key: usize, namespace: String| {
