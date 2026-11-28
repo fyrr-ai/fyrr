@@ -716,6 +716,12 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Fixed
 
+- Excerpt highlights mark only whole tokens of the record. With a tokenizer
+  other than `simple`, an excerpt whose edge cut a token could mark part of
+  it: with `whitespace`, an excerpt ending at the `-` of `cat-dog` marked
+  `cat`. The cut was judged by alphanumeric characters; it is now judged by
+  the namespace's tokenizer.
+
 - A root whose rows are over `writer.commit.group_max_rows` or
   `group_max_bytes` no longer fails `fyrr writer restore` or the commit of a
   content change that replaces it with `envelope_bounds_invalid`, nor does the
