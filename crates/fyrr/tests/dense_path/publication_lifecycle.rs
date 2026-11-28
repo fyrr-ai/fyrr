@@ -693,7 +693,12 @@ async fn serve_metrics_count_publications_without_identity_on_storage() {
             "no published round\n{body}"
         );
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        if let Ok(response) = client.get(format!("http://{metrics}/metrics")).send().await {
+        // The request and its body share the time left before the deadline.
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        let request = client
+            .get(format!("http://{metrics}/metrics"))
+            .timeout(left);
+        if let Ok(response) = request.send().await {
             body = response.text().await.unwrap_or_default();
         }
     }
