@@ -6531,3 +6531,84 @@ async fn incremental_a_members_part_over_age_rejects_the_rest_of_its_read_beside
  {
     members_part_over_age(true).await;
 }
+
+/// A members part of a rejected read that lands after the rejection (a worker
+/// still writing it) is refused by the fence, and the replacement read, of a
+/// newer rejection generation, is still applied.
+#[tokio::test]
+#[ignore = "real CLI and local storage; scripts/ci"]
+async fn incremental_a_late_part_of_a_rejected_members_read_spares_its_replacement_on_storage() {
+    let (worker, commit, root) = fixture();
+    publish_initial(&worker, &commit, &root);
+    let members = async || {
+        let mut found: Vec<_> = envelopes(&worker)
+            .await
+            .into_iter()
+            .filter(|(_, e)| e.source_id == "incremental" && e.kind == SyncKind::Members)
+            .collect();
+        found.sort_by_key(|(_, e)| (e.rejection_generation, e.sequence));
+        found
+    };
+    let known: BTreeSet<_> = members()
+        .await
+        .into_iter()
+        .map(|(_, e)| e.envelope_id)
+        .collect();
+    input(
+        &root,
+        json!({"epoch":2,"members":[
+        {"last":false,"users":[{"id":"u","email":"fixture@example.test","email_verification":"verified_corporate","active":true}],
+         "groups":[{"id":"child","members":[]}]},
+        {"last":true,"groups":[{"id":"group","members":["grp:child"]}]}]}),
+    );
+    worker_sync(&worker, &["incremental", "--kind", "members"]);
+    let read: Vec<_> = members()
+        .await
+        .into_iter()
+        .filter(|(_, e)| !known.contains(&e.envelope_id))
+        .collect();
+    assert_eq!(read.len(), 2, "{read:?}");
+    // The last part is not stored yet when the commit lists: hide it.
+    let loaded = fyrr_core::config::load(&worker).unwrap();
+    let (store, _) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
+    let (late_path, late) = read[1].clone();
+    let late_bytes = store.get(&late_path).await.unwrap().bytes().await.unwrap();
+    store.delete(&late_path).await.unwrap();
+    age(&worker, &read[0].1.envelope_id, 4).await;
+    publish(&commit);
+    assert_eq!(
+        resolved(&commit, &read[0].1.envelope_id).await,
+        (false, true)
+    );
+    let known: BTreeSet<_> = members()
+        .await
+        .into_iter()
+        .map(|(_, e)| e.envelope_id)
+        .collect();
+    worker_sync(&worker, &["incremental", "--kind", "members"]);
+    let replacement: Vec<_> = members()
+        .await
+        .into_iter()
+        .map(|(_, e)| e)
+        .filter(|e| !known.contains(&e.envelope_id))
+        .collect();
+    assert!(!replacement.is_empty());
+    assert!(
+        replacement
+            .iter()
+            .all(|e| e.rejection_generation > late.rejection_generation)
+    );
+    // The late part lands now.
+    store.put(&late_path, late_bytes.into()).await.unwrap();
+    publish(&commit);
+    let late_state = resolved(&commit, &late.envelope_id).await;
+    let mut states = Vec::new();
+    for e in &replacement {
+        states.push(resolved(&commit, &e.envelope_id).await);
+    }
+    assert_eq!(late_state, (false, true), "late part");
+    assert!(
+        states.iter().all(|s| *s == (true, false)),
+        "replacement (applied, rejected): {states:?}"
+    );
+}

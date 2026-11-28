@@ -188,8 +188,8 @@ pub(crate) async fn commit_one(
 }
 
 /// When an authorization envelope (permissions or members) of a source is
-/// rejected, every envelope of that source and kind that no publication resolved
-/// is rejected in the same one: those outside the group and those accepted in it,
+/// rejected, every envelope of that source and kind and of no newer rejection
+/// generation that no publication resolved is rejected in the same one: those outside the group and those accepted in it,
 /// held back with the content or not. A replacement then starts where the oldest
 /// of them did, never after one that is lost, and a read is never applied
 /// without one of its parts. `envelopes` are those of this pass, which lose what
@@ -197,7 +197,7 @@ pub(crate) async fn commit_one(
 async fn reject_rewound(
     config: &Config,
     head: &ServingHead,
-    rewinding: &BTreeSet<(String, SyncKind)>,
+    rewinding: &BTreeMap<(String, SyncKind), u32>,
     envelopes: &mut Vec<PreparedEnvelope>,
     rejected: &mut Vec<String>,
 ) -> Result<()> {
@@ -205,13 +205,21 @@ async fn reject_rewound(
         return Ok(());
     }
     for waiting in pending(config, head).await? {
-        if rewinding.contains(&(waiting.source_id.clone(), waiting.kind)) {
+        if rewound(rewinding, &waiting) {
             crate::apply::reject(config, &waiting, "authorization_rewind_required", rejected)
                 .await?;
         }
     }
     envelopes.retain(|e| !rejected.contains(&e.envelope_id));
     Ok(())
+}
+
+/// Whether `envelope` belongs to a read that a rejection of its source and kind
+/// rewinds: a replacement, of a newer rejection generation, is spared.
+fn rewound(rewinding: &BTreeMap<(String, SyncKind), u32>, envelope: &PreparedEnvelope) -> bool {
+    rewinding
+        .get(&(envelope.source_id.clone(), envelope.kind))
+        .is_some_and(|generation| envelope.rejection_generation <= *generation)
 }
 
 fn content_groups(envelopes: &[PreparedEnvelope]) -> Vec<Vec<&PreparedEnvelope>> {
@@ -353,18 +361,18 @@ async fn accept_envelopes(
 ) -> Result<(
     Vec<PreparedEnvelope>,
     Vec<String>,
-    BTreeSet<(String, SyncKind)>,
+    BTreeMap<(String, SyncKind), u32>,
 )> {
     let mut rejected = head.rejected_envelope_ids.clone();
     let mut accepted = Vec::new();
-    // The sources and authorization kinds with an envelope rejected in this pass.
-    let mut rewinding = BTreeSet::new();
+    // The sources and authorization kinds with an envelope rejected in this
+    // pass, with the newest rejection generation rejected.
+    let mut rewinding = BTreeMap::new();
     for envelope in envelopes {
         // An authorization envelope that follows a rejected one of its source
         // and kind was prepared on the cursor the rejected one moved, or is a
         // later part of its read: it is rejected and read again.
-        let key = (envelope.source_id.clone(), envelope.kind);
-        let reason = if rewinding.contains(&key) {
+        let reason = if rewound(&rewinding, &envelope) {
             Some("authorization_rewind_required")
         } else {
             refusal(config, head, current_policy, markers, &envelope).await?
@@ -372,7 +380,10 @@ async fn accept_envelopes(
         if let Some(reason) = reason {
             crate::apply::reject(config, &envelope, reason, &mut rejected).await?;
             if envelope.kind.is_authorization() {
-                rewinding.insert(key);
+                let generation = rewinding
+                    .entry((envelope.source_id.clone(), envelope.kind))
+                    .or_insert(envelope.rejection_generation);
+                *generation = (*generation).max(envelope.rejection_generation);
             }
         } else {
             accepted.push(envelope);
