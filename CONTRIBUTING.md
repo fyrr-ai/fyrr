@@ -105,7 +105,8 @@ make room for another checkout. Each case owns its fixtures; failed
 fixtures and all logs remain for diagnosis (`FYRR_CI_KEEP_FIXTURES=1` also
 keeps successful fixtures). When `/dev/shm` is a writable tmpfs, fixtures
 are in `/dev/shm/fyrr-<hash of the checkout>` (`FYRR_TEST_TMP`); the next
-top-level run removes those of exited test processes, and a reboot all. Never share a
+top-level run removes them when no process of the checkout uses them, and a
+reboot always. Never share a
 writable `CARGO_TARGET_DIR` or run two top-level CI processes in one
 checkout. Compiler actions can be shared across worktrees; their Cargo
 outputs stay private. The shared store is kept under 40 GiB (`MBX_GC_MAX_SIZE`).

@@ -80,28 +80,25 @@ LOGS="$(realpath -m -- "${FYRR_CI_LOG_DIR:-$ROOT/target/ci-logs/$STAMP}")"
 mkdir -p "$LOGS" "$ROOT/target/tmp"
 # Fixture roots live in RAM when it can hold them: a test proves which syncs fyrr
 # asks for, never the device, and a loaded disk stalls each sync for seconds.
-# A top-level run drops the roots of checkouts that are gone and, in its own,
-# the roots of test processes that have exited; the record is written once, by
-# rename, so no reader sees it empty.
+# A top-level run drops the roots of checkouts that are gone, and its own roots
+# when no process uses them; the record is written once, by rename.
 if [[ -w /dev/shm && "$(stat -f -c %T /dev/shm)" == tmpfs ]] &&
-  ! findmnt -no OPTIONS /dev/shm | grep -qw noexec &&
+  ! findmnt -no OPTIONS -T /dev/shm | grep -qw noexec &&
   (($(df --output=avail -B1M /dev/shm | tail -1) >= 2048)); then
   export FYRR_TEST_TMP="/dev/shm/fyrr-$(printf '%s' "$ROOT" | sha256sum | cut -c1-12)"
+  mkdir -p "$FYRR_TEST_TMP"
+  [[ -O "$FYRR_TEST_TMP" && ! -L "$FYRR_TEST_TMP" ]] || die "$FYRR_TEST_TMP is not a directory of this user"
+  chmod 0700 "$FYRR_TEST_TMP"
   if [[ -z "$CASE_ROW" ]]; then
     for dir in /dev/shm/fyrr-*; do
       [[ -O "$dir" && -d "$dir" && ! -L "$dir" ]] || continue
       owner="$(cat "$dir/root" 2>/dev/null)" || continue
       if [[ -n "$owner" && ! -d "$owner" ]]; then rm -rf -- "$dir"; fi
     done
-    for dir in "$FYRR_TEST_TMP"/*; do
-      if [[ "${dir##*/}" =~ ^(storage-)?(dense|fyrr-history)-([0-9]+)- ]] && ! kill -0 "${BASH_REMATCH[3]}" 2>/dev/null; then
-        rm -rf -- "$dir"
-      fi
-    done
+    if ! grep -qszFx "FYRR_TEST_TMP=$FYRR_TEST_TMP" /proc/[0-9]*/environ; then
+      find "$FYRR_TEST_TMP" -mindepth 1 -maxdepth 1 ! -name root -exec rm -rf -- {} +
+    fi
   fi
-  mkdir -p "$FYRR_TEST_TMP"
-  [[ -O "$FYRR_TEST_TMP" && ! -L "$FYRR_TEST_TMP" ]] || die "$FYRR_TEST_TMP is not a directory of this user"
-  chmod 0700 "$FYRR_TEST_TMP"
   [[ -s "$FYRR_TEST_TMP/root" ]] || { printf '%s\n' "$ROOT" >"$FYRR_TEST_TMP/root.$$" && mv -f "$FYRR_TEST_TMP/root.$$" "$FYRR_TEST_TMP/root"; }
 fi
 exec > >(tee "$LOGS/ci.log") 2>&1
