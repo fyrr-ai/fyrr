@@ -33,6 +33,18 @@ agents must do on top of it.
   never give an idle writer an object-store write.
 - Measure on small namespaces unless the change is about scale.
 
+## Before you open a pull request
+
+Show these in the pull request; reviewers check them first.
+
+- A new or changed test fails without the change: revert or mutate the fix
+  and show the failing run.
+- A change to a read or commit path reads no more than main: compare the
+  object-store requests or reads per operation against main (the storage
+  budget tests, or a counted run).
+- Code that splits, matches or highlights text handles non-ASCII input and
+  window or token boundaries: run it on such inputs.
+
 ## Issues
 
 An issue is ready for an agent when it says what is wrong (with a number
