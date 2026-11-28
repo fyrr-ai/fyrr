@@ -458,12 +458,20 @@ async fn an_http_reader_with_api_keys_reads_them_once_per_version_check() {
     let (observed, _observer) = proxy_at_boundary(endpoint.clone(), stop.clone(), seen.hook());
     let observed_config = root.join("observed.toml");
     std::fs::write(&observed_config, text.replace(&endpoint, &observed)).unwrap();
-    let started = std::time::Instant::now();
     let mut reader =
         super::http_mcp::Reader::start_appended(&observed_config, &root, |address, base| {
             format!("\n[reader.http]\nlisten='{address}'\npublic_url='{base}/mcp'\n")
         })
         .await;
+    let keys_read = || {
+        seen.all(0)
+            .iter()
+            .filter(|request| request.ends_with("/api-keys.json"))
+            .count()
+    };
+    // Counted from here, after the read at start: a loaded start then adds
+    // nothing to the reads allowed.
+    let (started, at_start) = (std::time::Instant::now(), keys_read());
     // Requests that carry a key nobody published read no keys.
     let secret = format!("fyrr_key_{:064}", 7);
     for _ in 0..20 {
@@ -478,22 +486,17 @@ async fn an_http_reader_with_api_keys_reads_them_once_per_version_check() {
         .await;
         assert_eq!(status, 401, "{body}");
     }
-    let keys_read = || {
-        seen.all(0)
-            .iter()
-            .filter(|request| request.ends_with("/api-keys.json"))
-            .count()
-    };
-    // A loaded host can hold the version checks back: wait for the second read.
+    // Five checks, so that a second read per check exceeds the reads its
+    // interval allows; a loaded host can hold the checks back.
     let deadline = std::time::Instant::now() + Duration::from_secs(120);
-    while keys_read() < 2 && std::time::Instant::now() < deadline {
+    while keys_read() < at_start + 5 && std::time::Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
-    let keys = keys_read();
+    let keys = keys_read() - at_start;
     let allowed =
         usize::try_from(started.elapsed().as_millis() / INTERVAL.as_millis()).unwrap() + 2;
     assert!(
-        (2..=allowed).contains(&keys),
+        (5..=allowed).contains(&keys),
         "the keys were read {keys} times, allowed {allowed}"
     );
 
@@ -1040,10 +1043,13 @@ fn watch_idle(
             "the writer service exited"
         );
         if idle >= TICKS || published > 0 {
-            // The service's watch of the head reads it every second whatever
-            // the committer does, and a tick may be under way at either end.
+            // The budget follows the window's length, not the logged ticks:
+            // the 1 s coalescing timer starts at most `seconds + 1` ticks in
+            // it, one more may be under way at its start, and the service's
+            // watch of the head reads it every second whatever the committer
+            // does. A committer that ticks faster than its timer exceeds it.
             let seconds = usize::try_from(window.as_secs()).unwrap();
-            return (settled, mark, requests, idle.max(seconds) + 1, published);
+            return (settled, mark, requests, seconds + 2, published);
         }
         assert!(
             window < Duration::from_secs(120),
