@@ -9,6 +9,7 @@ import asyncio
 import collections
 import contextlib
 import datetime
+import filecmp
 import hashlib
 import json
 import math
@@ -100,9 +101,19 @@ def build():
                 # replace the executable another case is about to launch.
                 destination = BUILD.parent / variant / "fyrr"
                 destination.parent.mkdir(parents=True, exist_ok=True)
+                # Copy only a changed binary. Compare bytes: a cache restore
+                # can keep size and mtime. The snapshot is a plain executable.
                 temporary = destination.with_suffix(".tmp")
-                shutil.copy2(item["executable"], temporary)
-                temporary.replace(destination)
+                temporary.unlink(missing_ok=True)
+                filecmp.clear_cache()
+                if (
+                    destination.is_symlink()
+                    or not os.access(destination, os.R_OK | os.X_OK)
+                    or destination.stat().st_nlink > 1
+                    or not filecmp.cmp(item["executable"], destination, shallow=False)
+                ):
+                    shutil.copy2(item["executable"], temporary)
+                    temporary.replace(destination)
                 result["binaries"][variant] = str(destination.relative_to(ROOT))
     if not {"full", "reader"} <= result["binaries"].keys():
         raise ValueError("Cargo did not produce every required binary")
