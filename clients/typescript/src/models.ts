@@ -15,7 +15,7 @@ export interface DeleteNamespaceRequest {
 
 /**
  * The body of `POST /v1/namespaces/{namespace}/query`: the arguments of the
- * `search` tool, `consistency` and eleven members that are no tool arguments.
+ * `search` tool, `consistency` and ten members that are no tool arguments.
  */
 export interface QueryRequest {
   /** Query text, 1-4096 UTF-8 bytes. Omit only for a filter-only listing with order=updated_at or order_by. */
@@ -65,6 +65,8 @@ export interface QueryRequest {
   exclude?: DocumentKey[] | null;
   /** Filter tree of `and`, `or`, `not` and comparisons; a hit also matches the arguments above. */
   filter?: Filter | null;
+  /** With query, queries, vector or vectors: the tokens of `text` occur in the document next to one another in this order; also required of a hit, like filter. Needs `fts_positions` on the namespace. Not with a listing or `sub_queries`. */
+  phrase?: Phrase | null;
   /** Deadline in milliseconds; default 10000. */
   deadline_ms?: number | null;
   /** Defaults to `cached`. */
@@ -81,8 +83,6 @@ export interface QueryRequest {
   query_match?: TermMatch | null;
   /** With `query` or `queries`: 1-8 attributes with a full-text index that the text ranking scores, each with a weight; default `searchable_text`. A string array attribute stands alone. */
   query_attributes?: QueryAttribute[] | null;
-  /** With `query`, `queries` or a vector ranking: the tokens of `text` occur in the document next to one another in this order; also required of a hit, like `filter`. Needs `fts_positions`. Not with a listing or `sub_queries`. */
-  phrase?: Phrase | null;
   /** Conditions on full-text attributes, each also required of a hit, like `filter`. Not with a listing. */
   contains?: Contains[] | null;
   /** 1-8 terms added to the relevance score of a text or vector ranking: a weight times a function of an attribute. Not with a listing, `sub_queries` or `fusion`. */
@@ -162,6 +162,19 @@ export interface Comparison {
  * elements of an array attribute and apply to nothing else.
  */
 export type Op = "eq" | "ne" | "in" | "not_in" | "lt" | "lte" | "gt" | "gte" | "contains" | "not_contains" | "starts_with" | "not_starts_with" | "matches" | "not_matches" | "contains_any" | "contains_all" | "contains_none";
+
+/**
+ * The `phrase` argument of `search` and the JSON `query` request: a condition on the text of the
+ * document, also required of a hit, like `filter`. The tokens of `text`, as the
+ * full-text analyzer cuts them, occur in the document in this order. Needs a
+ * namespace with `fts_positions`.
+ */
+export interface Phrase {
+  /** 1-4096 UTF-8 bytes. */
+  text: string;
+  /** Tokens allowed between two tokens of the phrase; only 0 (adjacent) until a newer Lance. */
+  slop?: number | null;
+}
 
 /** How current the version is that a `query` or `fetch` answer is read from. */
 export type Consistency = "cached" | "strong";
@@ -260,19 +273,6 @@ export interface QueryAttribute {
   attribute: string;
   /** 0.000001 to 100; default 1. */
   weight?: number | null;
-}
-
-/**
- * The `phrase` member of a JSON `query` request: a condition on the text of the
- * document, also required of a hit, like `filter`. The tokens of `text`, as the
- * full-text analyzer cuts them, occur in the document in this order. Needs a
- * namespace with `fts_positions`.
- */
-export interface Phrase {
-  /** 1-4096 UTF-8 bytes. */
-  text: string;
-  /** Tokens allowed between two tokens of the phrase; only 0 (adjacent) until a newer Lance. */
-  slop?: number | null;
 }
 
 /**

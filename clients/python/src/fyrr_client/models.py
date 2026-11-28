@@ -21,7 +21,7 @@ class DeleteNamespaceRequest(TypedDict):
 
 class QueryRequest(TypedDict):
     """The body of `POST /v1/namespaces/{namespace}/query`: the arguments of the
-    `search` tool, `consistency` and eleven members that are no tool arguments.
+    `search` tool, `consistency` and ten members that are no tool arguments.
     """
     query: NotRequired[str | None]
     """Query text, 1-4096 UTF-8 bytes. Omit only for a filter-only listing with order=updated_at or order_by."""
@@ -69,6 +69,8 @@ class QueryRequest(TypedDict):
     """Documents to omit, e.g. ones already returned."""
     filter: NotRequired[Filter | None]
     """Filter tree of `and`, `or`, `not` and comparisons; a hit also matches the arguments above."""
+    phrase: NotRequired[Phrase | None]
+    """With query, queries, vector or vectors: the tokens of `text` occur in the document next to one another in this order; also required of a hit, like filter. Needs `fts_positions` on the namespace. Not with a listing or `sub_queries`."""
     deadline_ms: NotRequired[int | None]
     """Deadline in milliseconds; default 10000."""
     consistency: NotRequired[Consistency | None]
@@ -85,8 +87,6 @@ class QueryRequest(TypedDict):
     """With `query`: `all` ranks only the documents that hold every term; default `any`."""
     query_attributes: NotRequired[list[QueryAttribute] | None]
     """With `query` or `queries`: 1-8 attributes with a full-text index that the text ranking scores, each with a weight; default `searchable_text`. A string array attribute stands alone."""
-    phrase: NotRequired[Phrase | None]
-    """With `query`, `queries` or a vector ranking: the tokens of `text` occur in the document next to one another in this order; also required of a hit, like `filter`. Needs `fts_positions`. Not with a listing or `sub_queries`."""
     contains: NotRequired[list[Contains] | None]
     """Conditions on full-text attributes, each also required of a hit, like `filter`. Not with a listing."""
     boosts: NotRequired[list[Boost] | None]
@@ -134,6 +134,18 @@ class Comparison(TypedDict):
     field: str
     op: Op
     value: Any
+
+
+class Phrase(TypedDict):
+    """The `phrase` argument of `search` and the JSON `query` request: a condition on the text of the
+    document, also required of a hit, like `filter`. The tokens of `text`, as the
+    full-text analyzer cuts them, occur in the document in this order. Needs a
+    namespace with `fts_positions`.
+    """
+    text: str
+    """1-4096 UTF-8 bytes."""
+    slop: NotRequired[int | None]
+    """Tokens allowed between two tokens of the phrase; only 0 (adjacent) until a newer Lance."""
 
 
 class ReturnFields(TypedDict):
@@ -213,18 +225,6 @@ class QueryAttribute(TypedDict):
     """
     weight: NotRequired[float | None]
     """0.000001 to 100; default 1."""
-
-
-class Phrase(TypedDict):
-    """The `phrase` member of a JSON `query` request: a condition on the text of the
-    document, also required of a hit, like `filter`. The tokens of `text`, as the
-    full-text analyzer cuts them, occur in the document in this order. Needs a
-    namespace with `fts_positions`.
-    """
-    text: str
-    """1-4096 UTF-8 bytes."""
-    slop: NotRequired[int | None]
-    """Tokens allowed between two tokens of the phrase; only 0 (adjacent) until a newer Lance."""
 
 
 class Contains(TypedDict):

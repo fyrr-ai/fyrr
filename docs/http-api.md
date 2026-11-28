@@ -354,9 +354,10 @@ curl https://fyrr.example.com/v1/namespaces/main/query \
 ## Matching tokens
 
 The `query` route takes four more members that decide which documents a text
-or a vector ranking may return, and by which text it scores them. None is an
-argument of the tool: `fetch` and `/mcp` refuse them, and their output does not
-change. A request without them is answered as before. None is taken together
+or a vector ranking may return, and by which text it scores them. `phrase` is
+also an argument of the MCP `search` tool. The other three are not: `fetch` and
+`/mcp` refuse them, and their output does not change. A request without them is
+answered as before. None is taken together
 with `sub_queries`, which have filters and rankings of their own: that is
 `400 invalid_argument`.
 

@@ -148,6 +148,9 @@ pub struct SearchInput {
     pub exclude: Option<Vec<DocumentKey>>,
     /// Filter tree of `and`, `or`, `not` and comparisons; a hit also matches the arguments above.
     pub filter: Option<Filter>,
+    /// With query, queries, vector or vectors: the tokens of `text` occur in the document next to one another in this order; also required of a hit, like filter. Needs `fts_positions` on the namespace. Not with a listing or `sub_queries`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phrase: Option<Phrase>,
     /// Deadline in milliseconds; default 10000.
     #[schemars(range(min = 1, max = 300_000))]
     pub deadline_ms: Option<u32>,
@@ -174,8 +177,6 @@ pub struct QueryMembers {
     /// With `query` or `queries`: 1-8 attributes with a full-text index that the text ranking scores, each with a weight; default `searchable_text`. A string array attribute stands alone.
     #[schemars(length(min = 1, max = 8))]
     pub query_attributes: Option<Vec<QueryAttribute>>,
-    /// With `query`, `queries` or a vector ranking: the tokens of `text` occur in the document next to one another in this order; also required of a hit, like `filter`. Needs `fts_positions`. Not with a listing or `sub_queries`.
-    pub phrase: Option<Phrase>,
     /// Conditions on full-text attributes, each also required of a hit, like `filter`. Not with a listing.
     #[schemars(length(min = 1, max = 16))]
     pub contains: Option<Vec<Contains>>,
@@ -234,7 +235,7 @@ pub struct Contains {
     pub any: Option<String>,
 }
 
-/// The `phrase` member of a JSON `query` request: a condition on the text of the
+/// The `phrase` argument of `search` and the JSON `query` request: a condition on the text of the
 /// document, also required of a hit, like `filter`. The tokens of `text`, as the
 /// full-text analyzer cuts them, occur in the document in this order. Needs a
 /// namespace with `fts_positions`.
@@ -1202,7 +1203,8 @@ fn search_description() -> String {
          read are returned; an empty result is not an error. \
          Excerpts are passages of up to {EXCERPT_CODEPOINTS} codepoints with \
          record_id, revision and offsets usable as a fetch window. Filters match exactly; \
-         an unknown value gives no hits. queries replaces query; \
+         an unknown value gives no hits. A hit holds the tokens of phrase.text adjacent \
+         and in order; phrase needs the namespace's fts_positions. queries replaces query; \
          limit is per query (default/max 20), interleaved by rank then query index and deduplicated. \
          text_hits applies per query before deduplication. \
          For context on a task, search with both the ticket's title and its body as two queries. \
@@ -1521,7 +1523,7 @@ impl SearchInput {
                         a.is_valid() && attributes[..i].iter().all(|b| b.attribute != a.attribute)
                     })
             })
-            && self.members.phrase.as_ref().is_none_or(|phrase| {
+            && self.phrase.as_ref().is_none_or(|phrase| {
                 // A listing has no ranking to narrow, and a sub-query has its own filter.
                 !listing && self.members.sub_queries.is_none() && phrase.is_valid()
             })

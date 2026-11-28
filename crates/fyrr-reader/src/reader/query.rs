@@ -140,11 +140,8 @@ impl PreparedReader {
         let present = self.present_vector(args.vector_attribute.as_deref(), args.has_text())?;
         self.apply_filters(args.filter_tree().as_ref(), present)
             .await?;
-        self.apply_contains(
-            args.members.contains.as_deref(),
-            args.members.phrase.as_ref(),
-        )
-        .await?;
+        self.apply_contains(args.members.contains.as_deref(), args.phrase.as_ref())
+            .await?;
         let text = self.text_match(args)?;
         let predicate = self.request_predicate()?;
         let lexical_predicate =

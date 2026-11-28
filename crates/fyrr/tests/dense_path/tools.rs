@@ -1,4 +1,6 @@
 //! All tools through independent stdio requests over the writer's real S3 publication.
+use super::http_mcp::Reader;
+use super::write_api::{READ_KEY, WRITE_KEY, Writer, configure, embed, secret, vector};
 use super::*;
 use std::collections::BTreeSet;
 use std::os::unix::fs::OpenOptionsExt;
@@ -1043,4 +1045,136 @@ async fn tools_fetch_refuses_unreadable_locator_index_on_storage() {
         hits.load(Ordering::SeqCst) > 0,
         "baseline qualification: fetch reached the root locator index"
     );
+}
+
+/// A write-API namespace, with token positions when `positions`, and an HTTP
+/// reader over it. `a` holds `alpha beta` adjacent, `b` reversed, `c` and `e`
+/// apart, and `d` adjacent where the read key may not read it.
+async fn phrase_fixture(positions: bool) -> (FixtureRoot, Writer, Reader) {
+    let (config, root) = setup_on(Backend::Local);
+    let address = free_address();
+    configure(&config, &address, "");
+    if positions {
+        let text = std::fs::read_to_string(&config).unwrap().replacen(
+            "[namespace]\n",
+            "[namespace]\nfts_positions = true\n",
+            1,
+        );
+        std::fs::write(&config, text).unwrap();
+    }
+    embed(&root, &["alpha"]);
+    let writer = Writer::start(&config, &root, address).await;
+    let rows = [
+        ("a", "alpha beta gamma", "usr:x"),
+        ("b", "beta alpha gamma", "usr:x"),
+        ("c", "alpha gamma beta", "usr:x"),
+        ("d", "alpha beta", "usr:other"),
+        ("e", "alpha delta epsilon beta", "usr:x"),
+    ];
+    let upserts: Vec<Value> = rows
+        .iter()
+        .enumerate()
+        .map(|(n, (id, text, reader))| {
+            json!({"id": id, "text": text, "vector": vector(n, 1024), "readers": [reader]})
+        })
+        .collect();
+    assert_eq!(
+        writer
+            .post(WRITE_KEY, "dense-fixture", &json!({"upserts": upserts}))
+            .await,
+        (200, json!({"upserted": 5, "deleted": 0}))
+    );
+    let reader = Reader::start_appended(&config, &root, |address, base| {
+        format!("\n[reader.http]\nlisten='{address}'\npublic_url='{base}/mcp'\n")
+    })
+    .await;
+    (root, writer, reader)
+}
+
+/// The `root_id`s of a `search` through `/mcp` as the read key, or its error
+/// code, after asserting that the JSON `query` route answers the same.
+async fn phrase_search(reader: &Reader, mut arguments: Value) -> Result<Vec<String>, String> {
+    arguments["output"] = json!("metadata");
+    let roots = |answer: &Value| -> Vec<String> {
+        let hits = answer["hits"].as_array().unwrap();
+        hits.iter()
+            .map(|hit| hit["root_id"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    let key = secret(READ_KEY);
+    let result = reader.call(&key, 1, "search", arguments.clone()).await;
+    let mcp = match result["isError"].as_bool().unwrap() {
+        false => Ok(roots(&result["structuredContent"])),
+        true => Err(result["structuredContent"]["code"]
+            .as_str()
+            .unwrap()
+            .to_owned()),
+    };
+    let response = reader
+        .client
+        .post(format!("{}/v1/namespaces/dense-fixture/query", reader.base))
+        .bearer_auth(key)
+        .json(&arguments)
+        .send()
+        .await
+        .unwrap();
+    let ok = response.status() == 200;
+    let answer: Value = response.json().await.unwrap();
+    let query = match ok {
+        true => Ok(roots(&answer)),
+        false => Err(answer["error"].as_str().unwrap().to_owned()),
+    };
+    assert_eq!(mcp, query, "{arguments}");
+    mcp.map(|mut roots| {
+        roots.sort();
+        roots
+    })
+}
+
+/// `search` takes the `phrase` of the JSON `query` route and answers as it
+/// does, for a text and a vector ranking, on what the caller may read; a slop
+/// above 0, a listing and a namespace without token positions are refused.
+#[tokio::test]
+#[ignore = "real writer and reader executables on local storage; scripts/ci"]
+async fn tools_search_requires_a_phrase_as_the_json_query_does_on_storage() {
+    let (_root, _writer, reader) = phrase_fixture(true).await;
+    let refused = Err("invalid_argument".to_owned());
+    for ranking in [
+        json!({"query": "alpha"}),
+        json!({"vector": vector(7, 1024)}),
+    ] {
+        let with = |text: &str, slop: u32| {
+            let mut arguments = ranking.clone();
+            arguments["phrase"] = json!({"text": text, "slop": slop});
+            arguments
+        };
+        let search = |arguments| phrase_search(&reader, arguments);
+        assert_eq!(search(ranking.clone()).await.unwrap(), ["a", "b", "c", "e"]);
+        assert_eq!(search(with("alpha beta", 0)).await.unwrap(), ["a"]);
+        assert_eq!(search(with("beta alpha", 0)).await.unwrap(), ["b"]);
+        assert!(
+            search(with("beta gamma alpha", 0))
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(search(with("alpha beta", 1)).await, refused);
+    }
+    let listing = json!({"order_by": [{"field": "root_id", "direction": "asc"}],
+                         "phrase": {"text": "alpha beta"}});
+    assert_eq!(phrase_search(&reader, listing).await, refused);
+
+    let (_root, _writer, reader) = phrase_fixture(false).await;
+    for ranking in [
+        json!({"query": "alpha"}),
+        json!({"vector": vector(0, 1024)}),
+    ] {
+        assert_eq!(
+            phrase_search(&reader, ranking.clone()).await.unwrap().len(),
+            4
+        );
+        let mut arguments = ranking;
+        arguments["phrase"] = json!({"text": "alpha beta"});
+        assert_eq!(phrase_search(&reader, arguments).await, refused);
+    }
 }
