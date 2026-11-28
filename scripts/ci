@@ -37,9 +37,8 @@ print(max(1, min(len(os.sched_getaffinity(0)), (capacity - 4 * 1024**2) // (2 * 
 JOBS
 )}"
 CASE_ROW=
-CASE_ID=
 POOL_PID=0
-declare -a POOL_ROWS=()
+declare -a POOL_ROWS=() CASE_IDS=()
 declare -A REQUESTED_STEPS=() SEEN_STEPS=()
 for arg in "$@"; do
   case "$arg" in
@@ -53,7 +52,7 @@ for arg in "$@"; do
       REQUESTED_STEPS["$(row_name "$CASE_ROW")"]=1
       JOBS=1
       ;;
-    --case=*) CASE_ID="${arg#--case=}" ;;
+    --case=*) CASE_IDS+=("${arg#--case=}") ;;
     --step=*)
       name="${arg#--step=}"
       [[ -n "$name" ]] || die "--step requires an exact step name"
@@ -66,7 +65,7 @@ done
 [[ "$TIER" == quick || "$TIER" == full ]] || die "unknown CI tier $TIER"
 ((IMAGES == 0)) || [[ "$TIER" == full ]] || die "--images cannot be combined with --quick"
 export FYRR_CI_TIER="$TIER"
-[[ -z "$CASE_ID" || -n "$CASE_ROW" ]] || die "--case requires --row"
+((${#CASE_IDS[@]} == 0)) || [[ -n "$CASE_ROW" ]] || die "--case requires --row"
 [[ "$JOBS" =~ ^[1-9][0-9]*$ ]] || die "--jobs must be a positive integer"
 # Harness cases that inspect process-wide descriptors need serial execution.
 # Independent Rust cases run concurrently on private storage below.
@@ -236,9 +235,7 @@ run_row() {
     (umask 077; printf '0' > "$FYRR_TEST_CLOCK_FILE") || return 1
   fi
   scenario_setup "$1" || return 1
-  local -a selection=()
-  [[ -z "$CASE_ID" ]] || selection+=("$CASE_ID")
-  "$ROOT/scripts/ci-cases" run "$1" "${selection[@]}"
+  "$ROOT/scripts/ci-cases" run "$1" "${CASE_IDS[@]}"
 }
 
 cases_start() {
@@ -247,7 +244,7 @@ cases_start() {
   local row name count
   if [[ -n "$CASE_ROW" ]]; then
     if [[ "${ROW_KINDS[$CASE_ROW]:-}" == python ]]; then
-      step "$(row_name "$CASE_ROW")" pytest "$ROOT/scripts/ci-cases" run "$CASE_ROW" ${CASE_ID:+"$CASE_ID"}
+      step "$(row_name "$CASE_ROW")" pytest "$ROOT/scripts/ci-cases" run "$CASE_ROW" "${CASE_IDS[@]}"
       return
     fi
     selected_rows=("$CASE_ROW")

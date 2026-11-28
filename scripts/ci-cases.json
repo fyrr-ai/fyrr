@@ -2,6 +2,7 @@
   "units": {
     "title": "unit tests",
     "kind": "rust",
+    "batch": true,
     "owns": {
       "full:fyrr-core:lib:fyrr_core/": {"tier": "quick", "seconds": 0},
       "full:fyrr-reader:lib:fyrr_reader/": {"tier": "quick", "seconds": 0.456},
@@ -76,6 +77,7 @@
   "config": {
     "title": "configuration",
     "kind": "rust",
+    "batch": true,
     "owns": {
       "full:fyrr-core:test:config/": {"tier": "quick", "seconds": 0.004}
     }
@@ -83,6 +85,7 @@
   "contracts": {
     "title": "contract fixtures",
     "kind": "rust",
+    "batch": true,
     "owns": {
       "full:fyrr-core:test:contracts/": {"tier": "quick", "seconds": 0.004}
     }
@@ -90,6 +93,7 @@
   "generated": {
     "title": "schema drift",
     "kind": "rust",
+    "batch": true,
     "owns": {
       "full:fyrr-core:test:generated/": {"tier": "quick", "seconds": 0.123}
     }
@@ -97,6 +101,7 @@
   "mcp": {
     "title": "tools/list golden",
     "kind": "rust",
+    "batch": true,
     "owns": {
       "full:fyrr-core:test:mcp/": {"tier": "quick", "seconds": 0.005}
     }
@@ -104,6 +109,7 @@
   "lance-pin": {
     "title": "native Lance pin checks",
     "kind": "rust",
+    "batch": true,
     "owns": {
       "full:fyrr-reader:test:lance_pin/": {"tier": "quick", "seconds": 0.269}
     }
@@ -458,6 +464,7 @@
   "cli-reader": {
     "title": "cli (reader-only build)",
     "kind": "rust",
+    "batch": true,
     "owns": {
       "reader:fyrr:test:cli/": {"tier": "quick", "seconds": 0.065}
     }
@@ -465,6 +472,7 @@
   "privacy-reader": {
     "title": "privacy sentinel (reader-only build)",
     "kind": "rust",
+    "batch": true,
     "owns": {
       "reader:fyrr:test:privacy/": {"tier": "quick", "seconds": 0.243}
     }

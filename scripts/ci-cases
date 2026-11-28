@@ -325,6 +325,8 @@ def run(spec, compiled=None):
             groups[group].append(name)
     if compiled is None and any(not g.startswith("python:") for g in groups):
         compiled = artifacts()
+    # Run every group even after one fails, so each case reports its result.
+    failures = []
     for group, names in groups.items():
         if group.startswith("python:"):
             directory = group.split(":")[1]
@@ -379,16 +381,18 @@ def run(spec, compiled=None):
             last_finished = finished
             pending = None
         if process.wait():
-            raise RuntimeError(
+            failures.append(
                 f"{group}: {len(names)} selected cases, process exited {process.returncode}"
             )
+            continue
         transcript = "".join(lines)
         if group.startswith("python:"):
             counts = re.findall(r"(\d+) passed", transcript)
         else:
             counts = re.findall(r"test result: ok\. (\d+) passed;", transcript)
         if not counts or int(counts[-1]) != len(names):
-            raise ValueError(f"{group}: expected {len(names)} passed cases, got {counts}")
+            failures.append(f"{group}: expected {len(names)} passed cases, got {counts}")
+            continue
         if not group.startswith("python:") and env.get("FYRR_CI_KEEP_FIXTURES") != "1":
             # Only this completed harness owns these local fixture roots. Keep
             # failed runs intact, and never remove external-service data here.
@@ -403,13 +407,27 @@ def run(spec, compiled=None):
                     shutil.rmtree(directory)
                     removed += 1
             print(f"ci-fixtures: removed {removed} successful roots for harness {process.pid}")
+    if failures:
+        raise RuntimeError("\n".join(failures))
 
 
 async def pool(manifest, logs, jobs, rows):
-    """Schedule independent parents; every worker owns its fixture and process."""
+    """Schedule independent parents; every worker owns its fixture and process.
+
+    A `batch` row needs no fixture: one worker runs all its cases, in one
+    test process per binary.
+    """
     display_logs = logs.relative_to(ROOT) if logs.is_relative_to(ROOT) else logs
-    selected = [(row, case) for row in rows for case in selected_cases(manifest[row]["cases"])]
-    selected.sort(key=lambda item: -case_seconds(manifest[item[0]]["cases"][item[1]]))
+    selected = []
+    for row in rows:
+        cases = list(selected_cases(manifest[row]["cases"]))
+        if manifest[row].get("batch") and cases:
+            selected.append((row, cases))
+        else:
+            selected += [(row, [case]) for case in cases]
+    selected.sort(
+        key=lambda item: -sum(case_seconds(manifest[item[0]]["cases"][c]) for c in item[1])
+    )
     plan = [
         {
             "row": row,
@@ -427,6 +445,8 @@ async def pool(manifest, logs, jobs, rows):
     capacity = asyncio.Semaphore(jobs)
     started = time.monotonic()
     results = collections.defaultdict(list)
+    row_seconds = collections.defaultdict(float)
+    broken = set()
     active = {}
     peaks = collections.defaultdict(int)
 
@@ -462,9 +482,9 @@ async def pool(manifest, logs, jobs, rows):
     task = asyncio.current_task()
     asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, task.cancel)
 
-    async def execute(row, case):
+    async def execute(row, cases):
         async with capacity:
-            key = hashlib.sha256(case.encode()).hexdigest()[:12]
+            key = hashlib.sha256("\n".join(cases).encode()).hexdigest()[:12]
             directory = logs / row / key
             directory.mkdir(parents=True, exist_ok=True)
             clock = directory / "offset-ms"
@@ -477,6 +497,8 @@ async def pool(manifest, logs, jobs, rows):
                 "FYRR_CI_PREBUILT": "1",
                 "FYRR_TEST_CLOCK_FILE": str(clock),
             }
+            if manifest[row].get("batch") and "FYRR_TEST_TMP" in os.environ:
+                environment["TMPDIR"] = os.environ["FYRR_TEST_TMP"]
             began = time.monotonic()
             with (directory / "runner.log").open("w") as output_log:
                 process = await asyncio.create_subprocess_exec(
@@ -490,14 +512,14 @@ async def pool(manifest, logs, jobs, rows):
                     "--",
                     str(ROOT / "scripts/ci"),
                     f"--row={row}",
-                    f"--case={case}",
+                    *(f"--case={case}" for case in cases),
                     cwd=ROOT,
                     env=environment,
                     stdout=output_log,
                     stderr=asyncio.subprocess.STDOUT,
                     start_new_session=True,
                 )
-                active[process.pid] = case
+                active[process.pid] = key
                 try:
                     code = await process.wait()
                 finally:
@@ -513,6 +535,7 @@ async def pool(manifest, logs, jobs, rows):
                             await process.wait()
                     active.pop(process.pid, None)
             duration = time.monotonic() - began
+            row_seconds[row] += duration
             title = manifest[row]["title"]
             summary = directory / "summary.txt"
             record = None
@@ -530,25 +553,45 @@ async def pool(manifest, logs, jobs, rows):
             if record:
                 status = record[1] if code == 0 else "FAIL"
                 passed, failed, ignored = map(int, record.group(2, 3, 4))
-            result = {
-                "row": row,
-                "case": case,
-                "tier": manifest[row]["cases"][case]["tier"],
-                "peak_rss_kib": peaks[case],
-                "status": status,
-                "passed": passed,
-                "failed": failed,
-                "ignored": ignored,
-                "seconds": round(duration, 3),
-                "elapsed_seconds": round(time.monotonic() - started, 3),
-                "finished_at": datetime.datetime.now(datetime.UTC).isoformat(),
-                "log": str(display_logs / row / key / "runner.log"),
-            }
-            results[row].append(result)
-            print("ci-result " + json.dumps(result), flush=True)
+            outcomes = {cases[0]: (status, passed, failed, ignored, duration)}
+            if len(cases) > 1:
+                # Each case's libtest result is a `ci-case` line of the batch's step log.
+                if code:
+                    broken.add(row)
+                outcomes = {}
+                for log in directory.glob("01-*.log"):
+                    for line in log.read_text(errors="replace").splitlines():
+                        if line.startswith("ci-case "):
+                            event = json.loads(line.removeprefix("ci-case "))
+                            ok = event["status"] == "ok"
+                            outcomes[event["case"]] = (
+                                "pass" if ok else "FAIL",
+                                int(ok),
+                                int(not ok),
+                                0,
+                                event.get("seconds", 0),
+                            )
+            for case in cases:
+                status, passed, failed, ignored, seconds = outcomes.get(case, ("FAIL", 0, 0, 0, 0))
+                result = {
+                    "row": row,
+                    "case": case,
+                    "tier": manifest[row]["cases"][case]["tier"],
+                    "peak_rss_kib": peaks[key],
+                    "status": status,
+                    "passed": passed,
+                    "failed": failed,
+                    "ignored": ignored,
+                    "seconds": round(seconds, 3),
+                    "elapsed_seconds": round(time.monotonic() - started, 3),
+                    "finished_at": datetime.datetime.now(datetime.UTC).isoformat(),
+                    "log": str(display_logs / row / key / "runner.log"),
+                }
+                results[row].append(result)
+                print("ci-result " + json.dumps(result), flush=True)
 
     try:
-        await asyncio.gather(*(execute(row, case) for row, case in selected))
+        await asyncio.gather(*(execute(row, cases) for row, cases in selected))
     finally:
         sampler.cancel()
         with contextlib.suppress(asyncio.CancelledError):
@@ -569,11 +612,15 @@ async def pool(manifest, logs, jobs, rows):
                     "reason": "not selected by quick tier",
                 }
             )
-        status = "pass" if all(item["status"] in {"pass", "n/e"} for item in items) else "FAIL"
+        status = (
+            "pass"
+            if row not in broken and all(item["status"] in {"pass", "n/e"} for item in items)
+            else "FAIL"
+        )
         passed, failed, ignored = (
             sum(item[name] for item in items) for name in ("passed", "failed", "ignored")
         )
-        seconds = round(sum(item["seconds"] for item in items))
+        seconds = round(row_seconds[row])
         path = logs / row / "cases.json"
         path.write_text(json.dumps(items, indent=2) + "\n")
         line = (
@@ -627,12 +674,13 @@ def main():
         row = sys.argv[2]
         spec = manifest[row]
         compiled = None
-        if len(sys.argv) == 4:
-            case = sys.argv[3]
-            found = resolver(manifest)(case)
-            if not found or found[0] != row or case in spec.get("children", {}):
-                raise ValueError("case does not belong to the selected owner")
-            cases = {case: found[2]}
+        if len(sys.argv) > 3:
+            cases, owner = {}, resolver(manifest)
+            for case in sys.argv[3:]:
+                found = owner(case)
+                if not found or found[0] != row or case in spec.get("children", {}):
+                    raise ValueError(f"case does not belong to the selected owner: {case}")
+                cases[case] = found[2]
         else:
             if spec["kind"] == "python":
                 actual = python_inventory(python_directories(spec))

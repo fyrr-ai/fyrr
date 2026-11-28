@@ -118,7 +118,10 @@ A row owns the cases under its prefixes (`owns`). A prefix ends at a test group
 and carries a tier and `seconds`, the mean time of one case; the pool only uses
 it to start long cases first. The longest prefix wins, and an exact entry in
 `cases` beats any prefix. `children` names the tests that a parent case runs
-in a child process.
+in a child process. A row marked `batch` needs no fixture: one worker runs
+its cases in one test process per test binary, with `TMPDIR` set to
+`FYRR_TEST_TMP`, and reads each case's result from libtest's output into
+`cases.json`.
 
 Run `scripts/ci --quick` before a PR. It runs all core gates, CLI and privacy
 cases, the Python SDK and example, local quickstart, and the local scenarios
