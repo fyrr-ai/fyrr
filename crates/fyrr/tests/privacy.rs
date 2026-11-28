@@ -1056,6 +1056,9 @@ mod providers {
         );
         assert!(stdout.contains("sentinel-raising-metadata"), "{stdout}");
         assert_clean(&sentinels, &output, &sandbox, "metadata listing");
+        // The listing above proves isolation between metadata workers. A sync
+        // discovers only configured providers, so this half holds by construction:
+        // the aborting provider's metadata never runs.
         let output = sandbox.configured(&config, ["writer", "sync", "--dry-run"], &env);
         assert!(output.status.success(), "{:?}", common::text(&output));
         assert_clean(&sentinels, &output, &sandbox, "isolated source");

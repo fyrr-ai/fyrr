@@ -57,12 +57,12 @@ pub mod worker;
 use fyrr_core::config::{Config, Issue};
 
 /// Provider issues of every source (`fyrr config check`); discovers the
-/// installed providers in a worker process. No sources, no Python.
+/// providers the sources name in worker processes. No sources, no Python.
 pub fn check_providers(config: &Config) -> Result<Vec<Issue>, String> {
     if config.sources.is_empty() {
         return Ok(Vec::new());
     }
-    let discovery = sync::discover(config.writer.worker_memory_max_bytes.as_u64())?;
+    let discovery = sync::discover_configured(config)?;
     Ok(providers::check_sources(config, &discovery))
 }
 
@@ -75,7 +75,7 @@ pub fn config_show_redactions(config: &Config) -> (Vec<(String, &'static str)>, 
     if config.sources.is_empty() {
         return (Vec::new(), Vec::new());
     }
-    let discovery = sync::discover(config.writer.worker_memory_max_bytes.as_u64())
+    let discovery = sync::discover_configured(config)
         .inspect_err(|error| {
             eprintln!("note: {error}; every source's settings and scope are redacted");
         })
