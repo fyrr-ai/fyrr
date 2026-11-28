@@ -188,35 +188,83 @@ async fn prepared_timeout_names_flag_and_rerun_preserves_durable_work_on_storage
     );
 }
 
-/// The service's workers that failed so far.
-fn failed_workers(log: &Path) -> usize {
-    std::fs::read_to_string(log)
-        .unwrap()
-        .matches("writer_service event=worker_failed")
-        .count()
+/// A failed worker as the service logged it: the service's clock at the
+/// failure, and when the service retries the source.
+struct Failure {
+    at: chrono::DateTime<chrono::Utc>,
+    retry_at: chrono::DateTime<chrono::Utc>,
 }
 
-/// Waits until `count` workers have failed, as the log shows it.
-fn wait_for_failures(log: &Path, count: usize) {
+/// The service's failed workers so far, in the order it logged them.
+fn failures(log: &Path) -> Vec<Failure> {
+    let time = |line: &str, key: &str| {
+        let value = line
+            .split_whitespace()
+            .find_map(|field| field.strip_prefix(key))
+            .unwrap_or_else(|| panic!("no {key} in {line:?}"));
+        chrono::DateTime::parse_from_rfc3339(value)
+            .unwrap()
+            .with_timezone(&chrono::Utc)
+    };
+    std::fs::read_to_string(log)
+        .unwrap()
+        .lines()
+        .filter(|line| line.contains("writer_service event=worker_failed "))
+        .map(|line| Failure {
+            at: time(line, "at="),
+            retry_at: time(line, "retry_at="),
+        })
+        .collect()
+}
+
+/// Waits up to 120 s of real time until `count` workers have failed, and
+/// returns the last of them.
+fn wait_for_failures(log: &Path, count: usize) -> Failure {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
-    while failed_workers(log) < count {
+    loop {
+        if let Some(failure) = failures(log).into_iter().nth(count - 1) {
+            return failure;
+        }
         assert!(
             std::time::Instant::now() < deadline,
-            "worker {count} never failed"
+            "worker {count} never failed; service log:\n{}",
+            std::fs::read_to_string(log).unwrap()
         );
         std::thread::sleep(std::time::Duration::from_millis(200));
     }
 }
 
-/// Moves the test clock by `by`, then gives the service real time to act on
-/// it: only a check that nothing happened needs that.
-fn advance_and_settle(by: u64) {
-    fyrr_core::clock::advance(std::time::Duration::from_secs(by)).unwrap();
-    std::thread::sleep(std::time::Duration::from_secs(3));
+/// Moves the test clock to `time`, unless real time already passed it.
+fn advance_to(time: chrono::DateTime<chrono::Utc>) {
+    let step = (time - fyrr_core::clock::now())
+        .to_std()
+        .unwrap_or_default();
+    fyrr_core::clock::advance(step).unwrap();
 }
 
-/// The cursor's position in the namespace's storage, once a worker has saved one.
-fn saved_cursor(storage: &Path) -> Option<String> {
+/// Checks that failed worker `count` schedules its retry exactly `delay`
+/// seconds later, moves the test clock there, and returns the retry's failure,
+/// which must not come before it.
+fn retried_after(log: &Path, count: usize, failure: &Failure, delay: i64) -> Failure {
+    assert_eq!(
+        failure.retry_at - failure.at,
+        chrono::TimeDelta::seconds(delay),
+        "worker {count} retries after {delay} s"
+    );
+    advance_to(failure.retry_at);
+    let retry = wait_for_failures(log, count + 1);
+    assert!(
+        retry.at >= failure.retry_at,
+        "worker {} failed at {}, before its retry at {}",
+        count + 1,
+        retry.at,
+        failure.retry_at
+    );
+    retry
+}
+
+/// The content cursor in the namespace's storage, once a worker has saved one.
+fn saved_cursor(storage: &Path) -> Option<serde_json::Value> {
     let mut stack = vec![storage.to_owned()];
     while let Some(dir) = stack.pop() {
         for entry in std::fs::read_dir(dir).unwrap().flatten() {
@@ -224,13 +272,20 @@ fn saved_cursor(storage: &Path) -> Option<String> {
             if path.is_dir() {
                 stack.push(path);
             } else if path.ends_with("cursors/fixture-content.json") {
-                let state: serde_json::Value =
-                    serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
-                return state["cursor"].as_str().map(str::to_owned);
+                return Some(serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap());
             }
         }
     }
     None
+}
+
+/// Waits up to 120 s of real time until `done`, else fails naming `what`.
+fn wait_until(what: &str, done: impl Fn() -> bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    while !done() {
+        assert!(std::time::Instant::now() < deadline, "{what}");
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
 }
 
 /// A running writer service, stopped when dropped, also when a check fails.
@@ -256,7 +311,7 @@ fn publications(log: &Path) -> usize {
 #[test]
 #[ignore = "real service, workers and local storage; scripts/ci"]
 fn a_failing_source_is_retried_with_growing_delays_and_a_success_resets_them() {
-    let fixture = Fixture::new("sentinel-failing", "raise");
+    let fixture = Fixture::new("sentinel-failing", "heal-once");
     // A healthy source of the namespace, whose changes publish a new head.
     let docs = |revision: &str| {
         fixture.sandbox.input(
@@ -284,7 +339,7 @@ fn a_failing_source_is_retried_with_growing_delays_and_a_success_resets_them() {
             "[[sources]]\nid='other'\ntype='sentinel-docs'\npermissions='fixed'\nreaders=['grp:fixture']\n[sources.settings]\n[sources.scope]\nfixture='{}'\n",
             docs_path.display()
         );
-    std::fs::write(&fixture.config, &text).unwrap();
+    std::fs::write(&fixture.config, text).unwrap();
     // Publish and maintain the namespace first, so the service finds nothing
     // to publish at its start.
     for args in [
@@ -309,15 +364,13 @@ fn a_failing_source_is_retried_with_growing_delays_and_a_success_resets_them() {
             .spawn()
             .unwrap(),
     );
-    // The first worker starts at once and fails. The next waits 60 s of the
-    // test clock, the one after 120 s, the one after that 240 s.
-    wait_for_failures(&log, 1);
-    advance_and_settle(40);
-    assert_eq!(failed_workers(&log), 1, "retried before 60 s");
-    fyrr_core::clock::advance(std::time::Duration::from_secs(40)).unwrap();
-    wait_for_failures(&log, 2);
+    // The first worker starts at once and fails. The service logs when it
+    // retries each failure: 60 s later, then 120 s, then 240 s.
+    let failed = wait_for_failures(&log, 1);
+    let failed = retried_after(&log, 1, &failed, 60);
     // Another source publishes a new head while the failing one waits: that
-    // does not make it due.
+    // does not make it due, so no worker fails before the retry the service
+    // logged, which `retried_after` checks.
     let published = publications(&log);
     docs("r2");
     let output = fixture.run(&["writer", "sync", "other", "--full"]);
@@ -326,43 +379,43 @@ fn a_failing_source_is_retried_with_growing_delays_and_a_success_resets_them() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
-    while publications(&log) == published {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the other source never published"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(200));
-    }
+    wait_until("the other source never published", || {
+        publications(&log) > published
+    });
     std::thread::sleep(std::time::Duration::from_secs(3));
-    assert_eq!(failed_workers(&log), 2, "a new head made the source due");
-    advance_and_settle(80);
-    assert_eq!(failed_workers(&log), 2, "retried before 120 s");
-    fyrr_core::clock::advance(std::time::Duration::from_secs(50)).unwrap();
-    wait_for_failures(&log, 3);
-    advance_and_settle(200);
-    assert_eq!(failed_workers(&log), 3, "retried before 240 s");
-    // The source recovers, and runs when its backoff has passed.
-    let healed = text.replace("mode='raise'", "mode='print'");
-    std::fs::write(&fixture.config, healed).unwrap();
-    fyrr_core::clock::advance(std::time::Duration::from_secs(60)).unwrap();
+    assert_eq!(failures(&log).len(), 2, "a new head made the source due");
+    let failed = retried_after(&log, 2, &failed, 120);
+    assert_eq!(
+        failed.retry_at - failed.at,
+        chrono::TimeDelta::seconds(240),
+        "worker 3 retries after 240 s"
+    );
+    // The source recovers for one worker only: the provider succeeds in the
+    // run that removes this file, and fails in every other.
+    fixture.sandbox.input("heal", "");
+    advance_to(failed.retry_at);
     let storage = fixture.sandbox.output().join("storage");
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
-    while saved_cursor(&storage).as_deref() != Some("printed") {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the recovered source never ran"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(200));
-    }
-    assert_eq!(failed_workers(&log), 3, "a recovered source failed");
+    let cursor = || saved_cursor(&storage).unwrap_or_default();
+    wait_until("the recovered source never ran", || {
+        cursor()["cursor"] == "printed"
+    });
+    // The cursor moves with each page, before the worker records the read as
+    // complete. A clock step past the lease's expiry in between would lose
+    // the lease and fail the read, so the clock moves only after the release.
+    wait_until("the recovered read never ended", || {
+        let expires: chrono::DateTime<chrono::Utc> =
+            serde_json::from_value(cursor()["lease"]["expires_at"].clone()).unwrap();
+        expires <= fyrr_core::clock::now()
+    });
+    assert_eq!(failures(&log).len(), 3, "a recovered source failed");
     // The success reset the delay: when the source fails again after its
-    // interval, the retry waits 60 s, not 480 s.
-    std::fs::write(&fixture.config, &text).unwrap();
+    // interval, the retry waits 60 s, not 480 s, and grows from there.
     fyrr_core::clock::advance(std::time::Duration::from_secs(11 * 60)).unwrap();
-    wait_for_failures(&log, 4);
-    advance_and_settle(40);
-    assert_eq!(failed_workers(&log), 4, "retried before 60 s");
-    fyrr_core::clock::advance(std::time::Duration::from_secs(40)).unwrap();
-    wait_for_failures(&log, 5);
+    let failed = wait_for_failures(&log, 4);
+    let failed = retried_after(&log, 4, &failed, 60);
+    assert_eq!(
+        failed.retry_at - failed.at,
+        chrono::TimeDelta::seconds(120),
+        "worker 5 retries after 120 s"
+    );
 }

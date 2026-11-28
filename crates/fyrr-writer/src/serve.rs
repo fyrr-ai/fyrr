@@ -9,6 +9,20 @@ use std::sync::{
 };
 use std::time::Duration;
 
+/// Logs a failed worker with the service's time of the failure and the time
+/// its source is retried, both RFC 3339 in UTC.
+#[allow(clippy::print_stderr)]
+fn failed_worker(at: chrono::DateTime<chrono::Utc>, retry_at: chrono::DateTime<chrono::Utc>) {
+    let format = |time: chrono::DateTime<chrono::Utc>| {
+        time.to_rfc3339_opts(chrono::SecondsFormat::Micros, true)
+    };
+    eprintln!(
+        "writer_service event=worker_failed at={} retry_at={}",
+        format(at),
+        format(retry_at)
+    );
+}
+
 /// Workers have their existing independent process deadlines even during commits.
 #[allow(clippy::print_stderr)]
 pub async fn run(
@@ -96,9 +110,6 @@ pub async fn run(
                 match worker.poll() {
                     Ok(None) => waiting.push((i, worker)),
                     result => {
-                        if !matches!(result, Ok(Some(ref outcome)) if outcome.failure().is_none()) {
-                            eprintln!("writer_service event=worker_failed");
-                        }
                         let intervals = &config.sources[i].intervals;
                         let interval = [
                             Some(intervals.content),
@@ -132,6 +143,9 @@ pub async fn run(
                         // A schedule computed before a clock step back is stale.
                         if started_steps[i] != steps {
                             due[i] = now;
+                        }
+                        if failed {
+                            failed_worker(now, due[i]);
                         }
                     }
                 }
@@ -175,7 +189,7 @@ pub async fn run(
                     Ok(worker) => running.push((i, worker)),
                     Err(_) => {
                         due[i] = now + chrono::TimeDelta::seconds(1);
-                        eprintln!("writer_service event=worker_failed");
+                        failed_worker(now, due[i]);
                     }
                 }
                 first = (i + 1) % config.sources.len();
