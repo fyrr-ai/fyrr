@@ -1,7 +1,7 @@
 //! MCP tool contracts: the
-//! `search`, `fetch` and `list_filters` inputs and outputs, the bounded error
+//! `search`, `fetch`, `list_filters` and `aggregate` inputs and outputs, the bounded error
 //! codes, and the static `tools/list` definitions. Static schemas need no
-//! storage access; `tools/list` stays at most 16 KiB (golden test).
+//! storage access; `tools/list` stays within `TOOLS_LIST_MAX_BYTES` (golden test).
 //!
 //! Input types reject unknown fields. Effective limits from the request contract appear in
 //! the schemas; out-of-range input is rejected with `invalid_argument`, never
@@ -24,8 +24,9 @@ use crate::version::SchemaVersion;
 pub const MCP_CONTRACT_VERSION: SchemaVersion = SchemaVersion::new(4, 0);
 
 /// `tools/list` must stay within this many bytes of compact JSON. The five
-/// array operators of `filter` took it from 16 KiB to 17 KiB.
-pub const TOOLS_LIST_MAX_BYTES: usize = 17 * 1024;
+/// array operators of `filter` took it from 16 KiB to 17 KiB, the `aggregate`
+/// tool to 21 KiB.
+pub const TOOLS_LIST_MAX_BYTES: usize = 21 * 1024;
 
 /// `_meta` key holding the tool schema version.
 pub const META_SCHEMA_VERSION_KEY: &str = "fyrr/schema_version";
@@ -875,7 +876,7 @@ pub struct ServedWindow {
     pub end: u32,
 }
 
-/// The arguments of the JSON `aggregate` route; it is no MCP tool.
+/// `aggregate` arguments, of the MCP tool and the JSON route alike.
 #[derive(Debug, Clone, PartialEq, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AggregateInput {
@@ -1224,6 +1225,19 @@ fn fetch_description() -> String {
     )
 }
 
+fn aggregate_description() -> String {
+    format!(
+        "Count the documents the caller may read and filter selects, as in search, with \
+         aggregations [{{\"op\":\"count\"}}]; sum, avg, min and max take a field. group_by \
+         takes up to {MAX_GROUP_BY_FIELDS} scalar fields, such as status or project, for one \
+         group per value in key order; without it the selection is one group, which counts 0 \
+         over no document. A document of several records counts once, and the count covers \
+         every matching document, not a search page. More than {MAX_AGGREGATE_GROUPS} groups \
+         is invalid_argument; more readable rows than the reader's bound is busy, never a \
+         partial count. {DATA_NOT_INSTRUCTIONS}"
+    )
+}
+
 fn list_filters_description() -> String {
     format!(
         "List the project IDs, source types and authors the caller may read, at most \
@@ -1326,7 +1340,8 @@ pub fn tools_list() -> Value {
     json!({"tools":[
         tool("search", search_description(), tool_schema::<SearchInput>(false), tool_schema::<SearchOutput>(true), "Search authorized documents"),
         tool("fetch", fetch_description(), tool_schema::<FetchInput>(false), tool_schema::<FetchOutput>(true), "Fetch authorized documents"),
-        tool("list_filters", list_filters_description(), tool_schema::<ListFiltersInput>(false), tool_schema::<ListFiltersOutput>(true), "List authorized filter values")
+        tool("list_filters", list_filters_description(), tool_schema::<ListFiltersInput>(false), tool_schema::<ListFiltersOutput>(true), "List authorized filter values"),
+        tool("aggregate", aggregate_description(), tool_schema::<AggregateInput>(false), tool_schema::<AggregateOutput>(true), "Count authorized documents")
     ]})
 }
 

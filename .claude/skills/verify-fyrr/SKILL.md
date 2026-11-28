@@ -178,7 +178,7 @@ control-fyrr http example-ready --as none GET /readyz
 `FYRR_VERIFY_DOCS` (the instance's document folder, `<RUN>/docs`, for
 journeys that edit documents) and the API keys as `FYRR_VERIFY_KEY_ME`, or
 `FYRR_VERIFY_KEY_ADA` and `FYRR_VERIFY_KEY_GRACE`. Tools are `search`,
-`fetch` and `list_filters`; their arguments are in `docs/mcp-tools.md`, the
+`fetch`, `list_filters` and `aggregate`; their arguments are in `docs/mcp-tools.md`, the
 JSON routes in `docs/http-api.md`, the commands in `docs/cli.md`.
 
 Stable handles: a document is `source_id` plus `root_id` (the path inside

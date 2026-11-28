@@ -12,8 +12,8 @@
 
 ## What the agents get
 
-The reader exposes three read-only [MCP tools](mcp-tools.md): `search`,
-`fetch` and `list_filters`. fyrr returns evidence and the agent decides what
+The reader exposes four read-only [MCP tools](mcp-tools.md): `search`,
+`fetch`, `list_filters` and `aggregate`. fyrr returns evidence and the agent decides what
 to search next; there is no answer generation in between.
 
 Three parts of the contract matter for unattended agents:

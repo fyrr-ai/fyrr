@@ -296,8 +296,9 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 - `POST /v1/namespaces/{namespace}/aggregate` on the reader computes `count`,
   `sum`, `avg`, `min` and `max` over the documents a caller may read and a
   `filter` selects, optionally grouped by up to four scalar fields, in key
-  order. It has no MCP tool. `list_filters` now runs the same scan. See
-  [Aggregate](docs/http-api.md#aggregate).
+  order. The MCP `aggregate` tool takes the same arguments and answers the
+  same, so an agent counts what it may read in one call. `list_filters` now
+  runs the same scan. See [Aggregate](docs/http-api.md#aggregate).
 - `POST /v1/namespaces/{namespace}/recall` on the reader (an API key with the
   `admin` and `read` roles) measures the vector index against an exact search on up to 100
   stored vectors, optionally under a filter, and returns `recall_at_10`,

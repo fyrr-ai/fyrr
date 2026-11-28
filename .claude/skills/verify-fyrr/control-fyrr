@@ -527,7 +527,7 @@ def main():
     sub.set_defaults(handler=run_command)
     sub = commands.add_parser("mcp")
     sub.add_argument("label")
-    sub.add_argument("tool", choices=("search", "fetch", "list_filters"))
+    sub.add_argument("tool", choices=("search", "fetch", "list_filters", "aggregate"))
     sub.add_argument("arguments", nargs="?", default="{}")
     sub.set_defaults(handler=mcp)
     sub = commands.add_parser("http")

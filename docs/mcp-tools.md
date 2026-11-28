@@ -2,8 +2,8 @@
 
 > **In short**
 >
-> - `fyrr reader serve` exposes three read-only tools: `search`, `fetch` and
->   `list_filters`.
+> - `fyrr reader serve` exposes four read-only tools: `search`, `fetch`,
+>   `list_filters` and `aggregate`.
 > - This page lists their arguments, the error codes, the response metadata
 >   and the transport rules for stdio and Streamable HTTP.
 > - Read it when you connect an agent or another MCP client to fyrr.
@@ -309,6 +309,35 @@ most 64 values each, with readable document counts (one per
 bytewise. The scan inspects at most `reader.filter_count_max_rows`
 authorized rows and returns `busy` rather than partial counts above it.
 Its only argument is `deadline_ms`, 1–300000 as for `search`.
+
+## `aggregate`
+
+Counts the documents the caller may read and `filter` selects, or sums,
+averages, or takes the minimum or maximum of a field over them, as one group
+or per group of `group_by` values. It takes the arguments of the JSON
+[`aggregate`](http-api.md#aggregate) route, which describes the answer, except
+`consistency`, and answers the same `groups`.
+
+| Argument | Meaning |
+| --- | --- |
+| `aggregations` | 1–16 aggregates `{"op": ..., "field": ...}`: `count` without `field` counts documents; `sum`, `avg`, `min` and `max` need a field. |
+| `group_by` | 1–4 scalar fields, 1–128 bytes each, such as `status` or `project`. Without it the selection is one group, which counts 0 over no document. |
+| `filter` | A [filter](#filters) tree, as for `search`. |
+| `deadline_ms` | 1–300000; default 10 s. |
+
+A document counts once, however many records it has, and the count covers
+every matching document, not one page of `search` hits. The scan is the one of
+`list_filters`: above `reader.filter_count_max_rows` authorized rows it
+answers `busy`, never a partial count. More than 1000 groups is
+`invalid_argument`.
+
+```json
+{"filter": {"and": [{"field": "project", "op": "eq", "value": "web"},
+                    {"field": "status", "op": "eq", "value": "open"}]},
+ "aggregations": [{"op": "count"}]}
+```
+
+answers `{"groups": [{"key": [], "values": [12]}], "metadata": {...}}`.
 
 ## Errors
 

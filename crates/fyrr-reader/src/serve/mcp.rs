@@ -13,8 +13,6 @@ pub(crate) enum ToolCall {
     Search(Box<SearchInput>),
     Fetch(FetchInput),
     ListFilters(ListFiltersInput),
-    /// `POST /v1/namespaces/{namespace}/aggregate`: no MCP tool, so `parse`
-    /// never makes it; `aggregate` does.
     Aggregate(Box<AggregateInput>),
     /// `POST /v1/namespaces/{namespace}/recall`: no MCP tool, so `parse` never
     /// makes it; `recall` does.
@@ -33,14 +31,18 @@ impl ToolCall {
             "list_filters" => {
                 Self::ListFilters(serde_json::from_value(args).map_err(|_| InvalidArgument)?)
             }
+            "aggregate" => Self::Aggregate(Box::new(
+                serde_json::from_value(args).map_err(|_| InvalidArgument)?,
+            )),
             _ => return Err(InvalidArgument),
         };
         match &call {
             Self::Search(args) => args.validate().map_err(|_| InvalidArgument)?,
             Self::Fetch(args) => args.validate().map_err(|_| InvalidArgument)?,
             Self::ListFilters(args) => args.validate().map_err(|_| InvalidArgument)?,
-            // `aggregate` and `recall` validated their own arguments.
-            Self::Aggregate(_) | Self::Recall(_) | Self::Report => {}
+            Self::Aggregate(args) => args.validate().map_err(|_| InvalidArgument)?,
+            // `recall` validated its own arguments.
+            Self::Recall(_) | Self::Report => {}
         }
         Ok(call)
     }
@@ -54,12 +56,6 @@ impl ToolCall {
             fields.validate().map_err(|_| InvalidArgument)?;
         }
         Ok(Self::Search(Box::new(search)))
-    }
-    /// The call of the JSON `aggregate` route.
-    pub(crate) fn aggregate(args: Value) -> Result<Self> {
-        let args: AggregateInput = serde_json::from_value(args).map_err(|_| InvalidArgument)?;
-        args.validate().map_err(|_| InvalidArgument)?;
-        Ok(Self::Aggregate(Box::new(args)))
     }
     /// The call of the JSON `recall` route.
     pub(crate) fn recall(args: Value) -> Result<Self> {

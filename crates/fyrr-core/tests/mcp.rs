@@ -138,7 +138,7 @@ fn tools_have_names_annotations_and_version() {
         .iter()
         .map(|tool| tool["name"].as_str().expect("name").to_owned())
         .collect();
-    assert_eq!(names, ["search", "fetch", "list_filters"]);
+    assert_eq!(names, ["search", "fetch", "list_filters", "aggregate"]);
     for name in &names {
         let tool = tool(name);
         let annotations = &tool["annotations"];
