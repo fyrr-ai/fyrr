@@ -98,7 +98,6 @@ fn writer_error_wire_strings_and_admission_are_unchanged() {
         ("publication_unavailable", false),
         ("receipt_unpublished", false),
         ("restore_history_identity_changed", false),
-        ("restore_history_summary_limit", false),
         ("restore_working_space_exhausted", false),
         ("retired_sources_full", false),
         ("secret_input_too_large", false),

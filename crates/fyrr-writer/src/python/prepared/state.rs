@@ -10,9 +10,9 @@ pub(crate) struct CommandEvidence {
 
 struct Snapshot {
     identity: ServingHead,
-    published: crate::commit::PublishedEvidence,
+    published: crate::commit::Resolved,
     markers: Vec<RejectionMarker>,
-    index: crate::commit::history::index::Index,
+    index: crate::scratch::index::Index,
 }
 
 /// The head without what does not change publication evidence: the lease and
@@ -40,9 +40,9 @@ impl CommandEvidence {
             return Ok(());
         }
         self.snapshot = None;
-        let published = rt.block_on(crate::commit::published_evidence(config, head))?;
-        let markers = rt.block_on(crate::commit::markers_from_evidence(config, &published))?;
-        let index = crate::commit::history::index::Index::command(config)?;
+        let published = rt.block_on(crate::commit::resolved(config, head))?;
+        let markers = rt.block_on(crate::commit::markers(config, &published))?;
+        let index = crate::scratch::index::Index::command(config)?;
         self.snapshot = Some(Snapshot {
             identity,
             published,
@@ -204,8 +204,7 @@ impl Preparation<'_> {
         // resolved is unconfirmed to it.
         let (retired, chains) = (Default::default(), Default::default());
         let facts = crate::commit::Facts {
-            applied: &published.applied,
-            rejected: &published.rejected,
+            resolved: published,
             retired: &retired,
             chains: &chains,
         };
@@ -230,10 +229,8 @@ impl Preparation<'_> {
                 object.last_modified,
             ))
             .map_err(|_| WriterError::PublicationInvalid)?;
-            let cached: Option<(String, PreparedEnvelope)> = index.get(
-                crate::commit::history::index::Evidence::Preparation,
-                path.as_ref(),
-            )?;
+            let cached: Option<(String, PreparedEnvelope)> =
+                index.get(crate::scratch::index::Evidence::Preparation, path.as_ref())?;
             let envelope = if let Some((old, envelope)) = cached {
                 if old != stamp {
                     return Err(WriterError::RestoreHistoryIdentityChanged);
@@ -252,10 +249,9 @@ impl Preparation<'_> {
                 };
                 if object.e_tag.is_some() || object.version.is_some() {
                     index.put(
-                        crate::commit::history::index::Evidence::Preparation,
+                        crate::scratch::index::Evidence::Preparation,
                         path.as_ref(),
                         &(stamp, &envelope),
-                        false,
                     )?;
                 }
                 envelope
@@ -493,7 +489,7 @@ impl Preparation<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commit::history::index::Evidence;
+    use crate::scratch::index::Evidence;
 
     #[test]
     fn command_evidence_discards_bodies_when_head_identity_changes() {
@@ -512,7 +508,7 @@ mod tests {
             .as_ref()
             .unwrap()
             .index
-            .put(Evidence::Preparation, "body", &1, false)
+            .put(Evidence::Preparation, "body", &1)
             .unwrap();
         head.updated_at += chrono::TimeDelta::seconds(1);
         evidence.refresh(&config, &rt, &head).unwrap();

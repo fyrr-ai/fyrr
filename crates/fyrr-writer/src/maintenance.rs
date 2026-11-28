@@ -328,47 +328,16 @@ pub(crate) fn lineage(lease: &LeaseGuard, head: &ServingHead) -> CommitLineage {
 
 /// Every native step starts from the head after fresh authorization discovery.
 /// Orphan recovery runs once at command start and again after a failed native step.
-async fn boundary(
-    config: &Config,
-    lease: &LeaseGuard,
-    history: &mut commit::RestoreHistory,
-) -> Result<ServingHead> {
-    cached_drain_authorization(config, lease, history).await?;
+async fn boundary(config: &Config, lease: &LeaseGuard) -> Result<ServingHead> {
+    commit::drain_authorization(config, lease).await?;
     lease.head().await
-}
-
-// A fresh complete listing is mandatory, even when a cursor advance failed.
-// Quiet boundaries stop here, before history, markers, grouping or publication.
-async fn cached_drain_authorization(
-    config: &Config,
-    lease: &LeaseGuard,
-    history: &mut commit::RestoreHistory,
-) -> Result<usize> {
-    let pending = history.pending(config, &lease.head().await?, true).await?;
-    if pending.is_empty() {
-        return Ok(0);
-    }
-    commit::drain_cached_authorization(config, lease, history, pending).await
-}
-
-async fn command_start(
-    config: &Config,
-    lease: &LeaseGuard,
-    history: &mut commit::RestoreHistory,
-) -> Result<ServingHead> {
-    history.refresh(config, &lease.head().await?).await?;
-    command_recover(config, lease, history).await
 }
 
 // A failed maintenance step must yield to fresh authorization discovery before
 // reading new publication history or recovering its unpublished native suffix.
-async fn command_recover(
-    config: &Config,
-    lease: &LeaseGuard,
-    history: &mut commit::RestoreHistory,
-) -> Result<ServingHead> {
-    cached_drain_authorization(config, lease, history).await?;
-    commit::commit_one(config, false, lease, Vec::new(), Some(history)).await?;
+async fn command_recover(config: &Config, lease: &LeaseGuard) -> Result<ServingHead> {
+    commit::drain_authorization(config, lease).await?;
+    commit::commit_one(config, false, lease, Vec::new()).await?;
     lease.head().await
 }
 
@@ -416,7 +385,7 @@ async fn restore_held(
     // Damaged history fails before recovery writes a native version on it.
     retained(config, &lease.head().await?).await?;
     // Recover an unpublished native suffix, so the restore follows the head.
-    commit::commit_one(config, false, lease, Vec::new(), None).await?;
+    commit::commit_one(config, false, lease, Vec::new()).await?;
     let head = lease.head().await?;
     let retained = retained(config, &head).await?;
     let target = if let Some(id) = publication {
@@ -470,14 +439,13 @@ async fn restore_held(
 
 pub async fn maintain(config: &Config) -> Result<serde_json::Value> {
     crate::lease::LeaseGuard::with(config, |lease| async move {
-        let mut history = commit::RestoreHistory::new(config)?;
-        let mut result = maintain_held(config, &lease, &mut history).await;
+        let mut result = maintain_held(config, &lease).await;
         // Every expired native step yields to authorization, including storage
         // reads during purge/compaction/index planning before cleanup begins.
         if result
             .as_ref()
             .is_err_and(|error| *error == WriterError::MaintenanceStepDeadline)
-            && let Err(error) = command_recover(config, &lease, &mut history).await
+            && let Err(error) = command_recover(config, &lease).await
         {
             result = Err(error);
         }
@@ -486,17 +454,11 @@ pub async fn maintain(config: &Config) -> Result<serde_json::Value> {
     .await
 }
 
-async fn maintain_held(
-    config: &Config,
-    lease: &LeaseGuard,
-    history: &mut commit::RestoreHistory,
-) -> Result<serde_json::Value> {
-    // Obsolete applied objects must not exhaust history's resident allowance
-    // before the cleanup that can remove them becomes reachable.
+async fn maintain_held(config: &Config, lease: &LeaseGuard) -> Result<serde_json::Value> {
     let mut envelopes = crate::envelopes::cleanup_held(config, lease).await?;
     // Recover the previous command's private suffix and reconcile configuration
     // once. Quiet native boundaries need only fresh authorization discovery.
-    command_start(config, lease, history).await?;
+    command_recover(config, lease).await?;
     let version = |head: &ServingHead| head.content.as_ref().map_or(0, |p| p.lance_version);
     let mut skipped = Vec::new();
     let mut compacted = 0;
@@ -504,7 +466,7 @@ async fn maintain_held(
     let mut vector_steps = 0;
     let limit = config.writer.maintenance.step_max_duration.as_duration();
     loop {
-        let head = boundary(config, lease, history).await?;
+        let head = boundary(config, lease).await?;
         if head.content.is_none() {
             break;
         }
@@ -522,7 +484,7 @@ async fn maintain_held(
     }
     // One index name per interruptible step: `vector_step` for a vector index, a merge of all
     // the segments for any other.
-    let head = boundary(config, lease, history).await?;
+    let head = boundary(config, lease).await?;
     if head.content.is_some() {
         let dataset = pinned(config, &head).await?;
         let names: BTreeSet<_> = dataset
@@ -539,7 +501,7 @@ async fn maintain_held(
             // Each step merges the newest segments only, so the next one finds
             // the step's output among them.
             loop {
-                let head = boundary(config, lease, history).await?;
+                let head = boundary(config, lease).await?;
                 let dataset = pinned(config, &head).await?;
                 let segments = dataset
                     .load_indices()
@@ -577,7 +539,7 @@ async fn maintain_held(
                         // Recorded now: a later step of this run may fail before the run ends.
                         skip_merge(&config.namespace.name, &name, at);
                         crate::telemetry::index_merge_skipped(&name);
-                        command_recover(config, lease, history).await?;
+                        command_recover(config, lease).await?;
                         skipped.push(name);
                         break;
                     }
@@ -588,7 +550,7 @@ async fn maintain_held(
     }
     // One retained set for both cleanups: a manifest goes only with the
     // version files that this set protects.
-    let head = boundary(config, lease, history).await?;
+    let head = boundary(config, lease).await?;
     let kept = if head.content.is_some() {
         tokio::time::timeout(limit, retained(config, &head))
             .await
@@ -596,21 +558,19 @@ async fn maintain_held(
     } else {
         Vec::new()
     };
-    let (mut removed, protected, unverified_protected, cleaned) = tokio::time::timeout(
-        limit,
-        cleanup_versions(config, lease, history, &head, &kept),
-    )
-    .await
-    .map_err(|_| WriterError::MaintenanceStepDeadline)??;
+    let (mut removed, protected, unverified_protected, cleaned) =
+        tokio::time::timeout(limit, cleanup_versions(config, lease, &head, &kept))
+            .await
+            .map_err(|_| WriterError::MaintenanceStepDeadline)??;
     let staging = local_staging::plan(config).await?;
     removed += local_staging::remove(config, lease, staging).await?;
     envelopes += crate::envelopes::cleanup_held(config, lease).await?;
     // A manifest is the proof that its version's files were removed: it goes
     // only once the version cleanup of this run has left none behind.
     if cleaned && protected == 0 {
-        removed += superseded_history(config, lease, history, &head, &kept).await?;
+        removed += superseded_history(config, lease, &head, &kept).await?;
     }
-    let head = boundary(config, lease, history).await?;
+    let head = boundary(config, lease).await?;
     if head.content.is_some() {
         let mut dataset = pinned(config, &head).await?;
         let mut work = lineage(lease, &head);
@@ -1186,7 +1146,6 @@ pub(crate) async fn verify_history(config: &Config, head: &ServingHead) -> Resul
 async fn superseded_history(
     config: &Config,
     lease: &LeaseGuard,
-    history: &mut commit::RestoreHistory,
     head: &ServingHead,
     kept: &[ContentManifest],
 ) -> Result<usize> {
@@ -1320,7 +1279,7 @@ async fn superseded_history(
                     break;
                 }
                 let current = if deleted % 64 == 0 {
-                    boundary(config, lease, history).await?
+                    boundary(config, lease).await?
                 } else {
                     lease.head().await?
                 };
@@ -1386,7 +1345,6 @@ mod generation_key_tests {
 async fn cleanup_versions(
     config: &Config,
     lease: &LeaseGuard,
-    history: &mut commit::RestoreHistory,
     head: &ServingHead,
     kept: &[ContentManifest],
 ) -> Result<(usize, usize, usize, bool)> {
@@ -1407,14 +1365,13 @@ async fn cleanup_versions(
     // the namespace lease; protect every remaining log fragment, including rejects.
     let (store, root, durability) = fyrr_reader::storage::cleanup_namespace_store(config)?;
     let commit::CleanupEvidence {
-        applied,
+        resolved,
         unresolved,
         envelopes,
-        ..
     } = commit::cleanup_evidence(config, head).await?;
     let mut protected = BTreeSet::new();
     for (_, envelope) in envelopes {
-        if applied.contains(&envelope.envelope_id) && !unresolved.contains(&envelope.envelope_id) {
+        if resolved.contains(&envelope.envelope_id) && !unresolved.contains(&envelope.envelope_id) {
             continue;
         }
         if let EnvelopePayload::Content(payload) = envelope.payload {
@@ -1471,7 +1428,7 @@ async fn cleanup_versions(
         }
         // Keep the 64-delete revocation boundary and the row/time budgets.
         let current = if removed % 64 == 0 {
-            boundary(config, lease, history).await?
+            boundary(config, lease).await?
         } else {
             lease.head().await?
         };

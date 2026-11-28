@@ -486,18 +486,18 @@ pub(super) async fn envelope_evidence(
         }
     }
     // The chain up to the previous publication.
-    let chain = published_evidence(config, head).await?;
+    let chain = resolved(config, head).await?;
     let checkpoint = EnvelopeCheckpoint {
         schema_version: <EnvelopeCheckpoint as fyrr_core::Contract>::VERSION,
         namespace: config.namespace.name.clone(),
         applied_envelope_ids: chain
-            .applied
-            .into_iter()
-            .chain(receipts.iter().cloned())
+            .applied_ids()
+            .chain(receipts)
+            .cloned()
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect(),
-        rejected_envelope_ids: chain.rejected.into_iter().collect(),
+        rejected_envelope_ids: chain.rejected_ids().cloned().collect(),
     };
     Ok(EnvelopeEvidence {
         checkpoint: crate::prepare::put_generation(store, root, "evidence", sequence, &checkpoint)

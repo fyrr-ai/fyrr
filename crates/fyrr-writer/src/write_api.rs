@@ -1501,12 +1501,12 @@ async fn execute(
         // published only with the head that carries it.
         let current = fyrr_reader::storage::optional_head(&config).await;
         if let Ok(Some(current)) = current
-            && let Ok((applied, rejected)) = crate::commit::published_ids(&config, &current).await
+            && let Ok(resolved) = crate::commit::resolved(&config, &current).await
         {
-            if rejected.contains(&id) {
+            if resolved.rejected(&id) {
                 return Err(ApiError(409, "rejected"));
             }
-            if applied.contains(&id) {
+            if resolved.applied(&id) {
                 durable(&config).await?;
                 if guarded > 0 {
                     // What the committer did, counted in what it published.

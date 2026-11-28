@@ -26,7 +26,6 @@ use std::sync::Arc;
 
 mod copy;
 mod group;
-pub(crate) mod history;
 mod namespace;
 mod publication;
 
@@ -35,7 +34,6 @@ pub(crate) use group::{
     VECTOR_SAMPLE_RATE, add_attribute_columns, build_attribute_indexes, change_schema,
     check_schema_change, commit_one,
 };
-pub(crate) use history::RestoreHistory;
 pub(crate) use namespace::configured_identity;
 pub(crate) use namespace::create_with;
 pub use namespace::namespace_settings;
@@ -46,14 +44,14 @@ pub(crate) use publication::{previous_manifest, publish};
 
 pub async fn pending(config: &Config, head: &ServingHead) -> Result<Vec<PreparedEnvelope>> {
     let mut result = Vec::new();
-    let (paths, applied) = envelope_paths(config, head).await?;
+    let (paths, resolved) = envelope_paths(config, head).await?;
     let paths: Vec<_> = paths
         .into_iter()
         .filter(|path| {
             !path
                 .filename()
                 .and_then(|n| n.strip_suffix(".json"))
-                .is_some_and(|id| applied.contains(id))
+                .is_some_and(|id| resolved.contains(id))
         })
         .collect();
     let (read, unreadable) = read_envelopes(config, &paths).await?;
@@ -68,7 +66,7 @@ pub async fn pending(config: &Config, head: &ServingHead) -> Result<Vec<Prepared
         head,
         result,
         &unreadable,
-        &|id: &str| -> Result<bool> { Ok(applied.contains(id)) },
+        &|id: &str| -> Result<bool> { Ok(resolved.contains(id)) },
     )
     .await?;
     result.sort_by(|a, b| (&a.source_id, a.sequence).cmp(&(&b.source_id, b.sequence)));
@@ -100,12 +98,9 @@ pub(crate) enum State {
 }
 
 /// What [`classify`] reads beside the envelope. A caller whose envelopes are
-/// all unresolved passes no applied or rejected IDs.
+/// all unresolved passes an empty [`Resolved`].
 pub(crate) struct Facts<'a> {
-    /// The envelopes a publication applied; it may hold the rejected ones too.
-    pub(crate) applied: &'a BTreeSet<String>,
-    /// The envelopes a publication rejected.
-    pub(crate) rejected: &'a BTreeSet<String>,
+    pub(crate) resolved: &'a Resolved,
     pub(crate) retired: &'a BTreeMap<String, RetiredSource>,
     /// The chains [`chains`] walked, by source and kind.
     pub(crate) chains: &'a BTreeMap<(String, SyncKind), Chain>,
@@ -129,10 +124,10 @@ pub(crate) enum Chain {
 /// which derives deletes, wait on a broken permissions chain of their source.
 pub(crate) fn classify(envelope: &impl Link, facts: &Facts) -> State {
     let (id, source, kind) = (envelope.id(), envelope.source_id(), envelope.kind());
-    if facts.rejected.contains(id) {
+    if facts.resolved.rejected(id) {
         return State::Rejected;
     }
-    if facts.applied.contains(id) {
+    if facts.resolved.applied(id) {
         return State::Applied;
     }
     let chain = |kind| facts.chains.get(&(source.to_owned(), kind));
@@ -281,10 +276,8 @@ pub(crate) async fn confirmed(
             .filter(|link| !listed.contains_key(&link.envelope_id)),
     );
     kept.extend(listed.into_values());
-    let none = BTreeSet::new();
     let facts = Facts {
-        applied: &none,
-        rejected: &none,
+        resolved: &Resolved::default(),
         retired: &policy.retired_sources,
         chains: &chains,
     };
@@ -573,153 +566,128 @@ pub(crate) async fn chain_log(config: &Config, source: &str, kind: SyncKind) -> 
     Ok(log)
 }
 
-pub async fn envelope_paths(
-    config: &Config,
-    head: &ServingHead,
-) -> Result<(Vec<Path>, BTreeSet<String>)> {
+pub async fn envelope_paths(config: &Config, head: &ServingHead) -> Result<(Vec<Path>, Resolved)> {
     let (store, root) = namespace_store(config)?;
-    let (mut applied, rejected) = published_ids(config, head).await?;
-    applied.extend(rejected);
+    let resolved = resolved(config, head).await?;
     let paths: Vec<_> = store
         .list(Some(&root.clone().join("envelopes")))
         .try_collect()
         .await?;
-    Ok((paths.into_iter().map(|p| p.location).collect(), applied))
+    Ok((paths.into_iter().map(|p| p.location).collect(), resolved))
 }
 
-pub async fn published_ids(
-    config: &Config,
-    head: &ServingHead,
-) -> Result<(BTreeSet<String>, BTreeSet<String>)> {
-    let evidence = published_evidence(config, head).await?;
-    Ok((evidence.applied, evidence.rejected))
+/// The envelopes the served head resolved, as [`resolved`] reads them.
+#[derive(Debug, Default)]
+pub struct Resolved {
+    /// What the evidence of the served manifest records.
+    published: Arc<Published>,
+    /// What the head rejected after that publication.
+    head_rejected: BTreeSet<String>,
 }
 
-pub(crate) struct PublishedEvidence {
-    pub(crate) applied: BTreeSet<String>,
-    pub(crate) rejected: BTreeSet<String>,
+/// What the evidence of one manifest records of it and every older one.
+#[derive(Debug, Default)]
+struct Published {
+    applied: BTreeSet<String>,
+    rejected: BTreeSet<String>,
 }
 
-/// What the manifest chain ending at `manifest` records. Publications are
-/// immutable, so a later walk stops at a manifest it has seen.
-#[derive(Clone)]
-struct ChainEvidence {
-    manifest: String,
-    sequence: u64,
-    applied: Arc<BTreeSet<String>>,
-    rejected: Arc<BTreeSet<String>>,
+impl Resolved {
+    /// Applied by a publication and rejected by none.
+    pub fn applied(&self, id: &str) -> bool {
+        self.published.applied.contains(id) && !self.rejected(id)
+    }
+
+    /// Rejected by a publication, or by the head before its next one.
+    pub fn rejected(&self, id: &str) -> bool {
+        self.head_rejected.contains(id) || self.published.rejected.contains(id)
+    }
+
+    /// Applied or rejected: no commit takes it again.
+    pub fn contains(&self, id: &str) -> bool {
+        self.published.applied.contains(id) || self.rejected(id)
+    }
+
+    pub fn applied_ids(&self) -> impl Iterator<Item = &String> {
+        self.published
+            .applied
+            .iter()
+            .filter(|id| !self.rejected(id))
+    }
+
+    pub fn rejected_ids(&self) -> impl Iterator<Item = &String> {
+        self.head_rejected.union(&self.published.rejected)
+    }
 }
 
-/// The chain evidence of the newest head this process walked, by namespace
-/// root and incarnation, least recently used first. A long-running committer
-/// reads every publication once instead of walking the whole history at each
-/// tick. Each entry holds every envelope id the namespace has applied, so a
-/// process that serves many namespaces keeps the newest `CHAIN_EVIDENCE_MAX`
-/// of them; the next tick of an evicted one walks its history again.
-static CHAIN_EVIDENCE: std::sync::Mutex<Vec<((String, String), ChainEvidence)>> =
-    std::sync::Mutex::new(Vec::new());
-const CHAIN_EVIDENCE_MAX: usize = 16;
+/// The evidence of the manifest this process read last, by storage,
+/// incarnation and manifest path. A manifest is immutable and names its
+/// checkpoint by digest, so an idle tick reads neither again.
+type PublishedKey = (String, String, String);
+static PUBLISHED: std::sync::Mutex<Option<(PublishedKey, Arc<Published>)>> =
+    std::sync::Mutex::new(None);
 
-pub(crate) async fn published_evidence(
-    config: &Config,
-    head: &ServingHead,
-) -> Result<PublishedEvidence> {
-    let (store, root) = namespace_store(config)?;
-    let mut rejected: BTreeSet<String> = head.rejected_envelope_ids.iter().cloned().collect();
-    let Some(newest) = head.content.as_ref().map(|p| p.manifest.clone()) else {
-        return Ok(PublishedEvidence {
-            applied: BTreeSet::new(),
-            rejected,
+/// What the served head resolved: the evidence of its manifest, which covers
+/// that publication and every older one (the checkpoint it names and the IDs
+/// since), and what the head rejected after it. The only reader of envelope
+/// evidence: no older manifest is read.
+pub async fn resolved(config: &Config, head: &ServingHead) -> Result<Resolved> {
+    let head_rejected = head.rejected_envelope_ids.iter().cloned().collect();
+    let Some(pointer) = &head.content else {
+        return Ok(Resolved {
+            published: Arc::default(),
+            head_rejected,
         });
     };
-    let key = (root.to_string(), head.incarnation.clone());
-    let known = {
-        let mut cache = CHAIN_EVIDENCE
-            .lock()
-            .map_err(|_| WriterError::RuntimeUnavailable)?;
-        cache.iter().position(|(held, _)| *held == key).map(|at| {
-            let entry = cache.remove(at);
-            let known = entry.1.clone();
-            cache.push(entry);
-            known
-        })
+    let key = (
+        dataset_uri(config),
+        head.incarnation.clone(),
+        pointer.manifest.clone(),
+    );
+    let cached = PUBLISHED
+        .lock()
+        .map_err(|_| WriterError::RuntimeUnavailable)?
+        .as_ref()
+        .filter(|(held, _)| *held == key)
+        .map(|(_, published)| published.clone());
+    let published = match cached {
+        Some(published) => published,
+        None => {
+            let (store, root) = namespace_store(config)?;
+            let manifest =
+                fyrr_reader::storage::read_manifest(store.as_ref(), &root, &pointer.manifest)
+                    .await?;
+            let evidence = manifest.envelope_evidence;
+            // Maintenance keeps the checkpoint of every retained manifest.
+            let checkpoint = read_checkpoint(store.as_ref(), &root, &evidence.checkpoint)
+                .await?
+                .ok_or(WriterError::PublicationInvalid)?;
+            let published = Arc::new(Published {
+                applied: checkpoint
+                    .applied_envelope_ids
+                    .into_iter()
+                    .chain(evidence.applied_since)
+                    .collect(),
+                rejected: checkpoint
+                    .rejected_envelope_ids
+                    .into_iter()
+                    .chain(evidence.rejected_since)
+                    .collect(),
+            });
+            *PUBLISHED
+                .lock()
+                .map_err(|_| WriterError::RuntimeUnavailable)? = Some((key, published.clone()));
+            published
+        }
     };
-    // An idle tick: the head serves the manifest walked last.
-    if let Some(known) = known.as_ref().filter(|known| known.manifest == newest) {
-        rejected.extend(known.rejected.iter().cloned());
-        return Ok(PublishedEvidence {
-            applied: known.applied.as_ref().clone(),
-            rejected,
-        });
-    }
-    let mut applied = BTreeSet::new();
-    let mut chain_rejected = BTreeSet::new();
-    let mut newest_sequence = None;
-    let mut next = Some(newest.clone());
-    let mut newer_sequence: Option<u64> = None;
-    while let Some(path) = next {
-        if let Some(known) = known.as_ref().filter(|known| known.manifest == path) {
-            // The join obeys the same order as every other step.
-            if newer_sequence.is_some_and(|newer| known.sequence >= newer) {
-                return Err(WriterError::PublicationInvalid);
-            }
-            applied.extend(known.applied.iter().cloned());
-            chain_rejected.extend(known.rejected.iter().cloned());
-            break;
-        }
-        let publication = fyrr_reader::storage::read_manifest(store.as_ref(), &root, &path).await?;
-        // As in `manifest_chain`: every older publication has a lower sequence.
-        if newer_sequence.is_some_and(|newer| publication.sequence >= newer) {
-            return Err(WriterError::PublicationInvalid);
-        }
-        newer_sequence = Some(publication.sequence);
-        newest_sequence.get_or_insert(publication.sequence);
-        applied.extend(publication.envelope_ids);
-        chain_rejected.extend(publication.rejected_envelope_ids);
-        next = publication
-            .previous_publication_id
-            .map(|id| format!("publications/{id}.json"));
-        // The evidence covers this publication and every older one. A
-        // predecessor this process holds is cheaper than its checkpoint.
-        let evidence = publication.envelope_evidence;
-        if next
-            .as_ref()
-            .is_none_or(|path| known.as_ref().is_none_or(|known| known.manifest != *path))
-            && let Some(checkpoint) =
-                read_checkpoint(store.as_ref(), &root, &evidence.checkpoint).await?
-        {
-            applied.extend(checkpoint.applied_envelope_ids);
-            applied.extend(evidence.applied_since);
-            chain_rejected.extend(checkpoint.rejected_envelope_ids);
-            chain_rejected.extend(evidence.rejected_since);
-            break;
-        }
-    }
-    if let Some(sequence) = newest_sequence {
-        let mut cache = CHAIN_EVIDENCE
-            .lock()
-            .map_err(|_| WriterError::RuntimeUnavailable)?;
-        cache.retain(|(held, _)| *held != key);
-        if cache.len() >= CHAIN_EVIDENCE_MAX {
-            cache.remove(0);
-        }
-        cache.push((
-            key,
-            ChainEvidence {
-                manifest: newest,
-                sequence,
-                applied: Arc::new(applied.clone()),
-                rejected: Arc::new(chain_rejected.clone()),
-            },
-        ));
-    }
-    rejected.extend(chain_rejected);
-    Ok(PublishedEvidence { applied, rejected })
+    Ok(Resolved {
+        published,
+        head_rejected,
+    })
 }
 
 /// The checkpoint a manifest names. `None` when maintenance removed it as
-/// superseded: the older manifests then still tell the same. A checkpoint that
-/// is not the one named is an error, never skipped.
+/// superseded. A checkpoint that is not the one named is an error, never skipped.
 pub(crate) async fn read_checkpoint(
     store: &dyn ObjectStore,
     root: &Path,
@@ -752,39 +720,14 @@ pub(crate) async fn rejection_markers(
     config: &Config,
     head: &ServingHead,
 ) -> Result<Vec<RejectionMarker>> {
-    let evidence = published_evidence(config, head).await?;
-    markers_from_evidence(config, &evidence).await
+    markers(config, &resolved(config, head).await?).await
 }
 
-pub(crate) async fn markers_from_evidence(
-    config: &Config,
-    evidence: &PublishedEvidence,
-) -> Result<Vec<RejectionMarker>> {
+/// The markers of what `resolved` rejected.
+pub(crate) async fn markers(config: &Config, resolved: &Resolved) -> Result<Vec<RejectionMarker>> {
     let (store, root) = namespace_store(config)?;
     let mut markers = Vec::new();
-    for path in evidence
-        .rejected
-        .iter()
-        .map(|id| format!("rejections/{id}.json"))
-    {
-        markers.push(
-            fyrr_reader::storage::read_contract(
-                store.as_ref(),
-                &Path::from(format!("{root}/{path}")),
-            )
-            .await?,
-        );
-    }
-    Ok(markers)
-}
-
-async fn rejection_markers_from_ids(
-    config: &Config,
-    rejected: &BTreeSet<String>,
-) -> Result<Vec<RejectionMarker>> {
-    let (store, root) = namespace_store(config)?;
-    let mut markers = Vec::new();
-    for id in rejected {
+    for id in resolved.rejected_ids() {
         markers.push(
             fyrr_reader::storage::read_contract(
                 store.as_ref(),
@@ -796,67 +739,72 @@ async fn rejection_markers_from_ids(
     Ok(markers)
 }
 
-/// Consumption is proved by a published replacement read, never a cursor cache update.
-/// Cleanup keeps the latest applied complete read so this proof survives log cleanup.
+/// Whether a read among `reads` replaces the one `marker` rejected: a complete
+/// read of its source and kind, of a newer rejection generation. A published
+/// read consumes a marker, never a cursor.
+pub(crate) fn consumed(marker: &RejectionMarker, reads: &[&PreparedEnvelope]) -> bool {
+    reads.iter().any(|e| {
+        crate::apply::complete_read(e)
+            && replacement_matches(marker, &e.source_id, e.kind, e.rejection_generation)
+    })
+}
+
+fn replacement_matches(
+    rejected: &RejectionMarker,
+    source_id: &str,
+    kind: SyncKind,
+    rejection_generation: u32,
+) -> bool {
+    source_id == rejected.source_id
+        && kind == rejected.kind
+        && rejection_generation > rejected.rejection_generation
+}
+
+/// The rejections that neither `applying` nor an applied envelope still in the
+/// log consumed. Cleanup keeps the latest applied complete read, so this proof
+/// survives it.
 pub async fn unconsumed_rejections(
     config: &Config,
     head: &ServingHead,
     applying: &[PreparedEnvelope],
 ) -> Result<Vec<RejectionMarker>> {
-    let (store, root) = namespace_store(config)?;
-    let evidence = published_evidence(config, head).await?;
-    // Markers are the rejected envelopes; without one nothing is unconsumed,
-    // and the retained envelopes need not be listed or read.
-    if evidence.rejected.is_empty() {
+    let resolved = resolved(config, head).await?;
+    // Without a marker nothing is unconsumed, and the log need not be listed.
+    if resolved.rejected_ids().next().is_none() {
         return Ok(Vec::new());
     }
-    let (applied, rejected) = (evidence.applied, evidence.rejected);
-    let mut reads = applying.to_vec();
+    let (store, root) = namespace_store(config)?;
     let paths: Vec<_> = store
-        .list(Some(&root.clone().join("envelopes")))
+        .list(Some(&root.join("envelopes")))
         .try_collect()
         .await?;
-    for path in paths {
+    let mut reads = applying.to_vec();
+    for path in paths.into_iter().map(|object| object.location) {
         if path
-            .location
             .filename()
             .and_then(|n| n.strip_suffix(".json"))
-            .is_some_and(|id| applied.contains(id) && !rejected.contains(id))
+            .is_some_and(|id| resolved.applied(id))
         {
             // One that does not parse is attributed by its chain, not here.
-            match fyrr_reader::storage::read_contract(store.as_ref(), &path.location).await {
+            match fyrr_reader::storage::read_contract(store.as_ref(), &path).await {
                 Ok(envelope) => reads.push(envelope),
                 Err(fyrr_reader::storage::StorageError::PublicationInvalid) => {}
                 Err(error) => return Err(error.into()),
             }
         }
     }
-    let reads = reads.iter().collect::<Vec<_>>();
-    unconsumed_rejections_from_reads(config, &reads, &rejected).await
-}
-
-/// Reuse an operation's envelope snapshot and receipt sets during cleanup.
-pub(crate) async fn unconsumed_rejections_from_reads(
-    config: &Config,
-    reads: &[&PreparedEnvelope],
-    rejected: &BTreeSet<String>,
-) -> Result<Vec<RejectionMarker>> {
-    let mut unresolved = Vec::new();
-    for marker in rejection_markers_from_ids(config, rejected).await? {
-        if !reads.iter().any(|e| {
-            history::replacement_matches(&marker, &e.source_id, e.kind, e.rejection_generation)
-                && crate::apply::complete_read(e)
-        }) {
-            unresolved.push(marker);
-        }
-    }
-    Ok(unresolved)
+    let reads: Vec<_> = reads.iter().collect();
+    Ok(markers(config, &resolved)
+        .await?
+        .into_iter()
+        .filter(|marker| !consumed(marker, &reads))
+        .collect())
 }
 
 /// One operation-scoped discovery for envelope retention and native-file protection.
 pub(crate) struct CleanupEvidence {
-    pub(crate) applied: BTreeSet<String>,
-    pub(crate) rejected: BTreeSet<String>,
+    pub(crate) resolved: Resolved,
+    /// The rejected envelopes whose markers no applied read consumed.
     pub(crate) unresolved: BTreeSet<String>,
     pub(crate) envelopes: Vec<(Path, PreparedEnvelope)>,
 }
@@ -865,39 +813,25 @@ pub(crate) async fn cleanup_evidence(
     config: &Config,
     head: &ServingHead,
 ) -> Result<CleanupEvidence> {
-    let evidence = published_evidence(config, head).await?;
-    let (store, root) = namespace_store(config)?;
-    let paths: Vec<_> = store
-        .list(Some(&root.join("envelopes")))
-        .try_collect()
-        .await?;
-    let paths: Vec<_> = paths.into_iter().map(|object| object.location).collect();
+    let (paths, resolved) = envelope_paths(config, head).await?;
     let (envelopes, _) = read_envelopes(config, &paths).await?;
-    let reads = envelopes
+    let reads: Vec<_> = envelopes
         .iter()
         .filter(|(path, _)| {
             path.filename()
                 .and_then(|n| n.strip_suffix(".json"))
-                .is_some_and(|id| evidence.applied.contains(id) && !evidence.rejected.contains(id))
+                .is_some_and(|id| resolved.applied(id))
         })
         .map(|(_, envelope)| envelope)
-        .collect::<Vec<_>>();
-    let unresolved = markers_from_evidence(config, &evidence)
+        .collect();
+    let unresolved = markers(config, &resolved)
         .await?
         .into_iter()
-        .filter(|marker| {
-            !reads.iter().any(|e| {
-                history::replacement_matches(marker, &e.source_id, e.kind, e.rejection_generation)
-                    && crate::apply::complete_read(e)
-            })
-        })
+        .filter(|marker| !consumed(marker, &reads))
         .map(|marker| marker.envelope_id)
         .collect();
-    let mut applied = evidence.applied;
-    applied.extend(evidence.rejected.iter().cloned());
     Ok(CleanupEvidence {
-        applied,
-        rejected: evidence.rejected,
+        resolved,
         unresolved,
         envelopes,
     })
@@ -923,6 +857,7 @@ pub async fn receipt(config: &Config, envelope_id: &str) -> Result<CommitReceipt
     if head.namespace != config.namespace.name {
         return Err(WriterError::PublicationNamespaceInvalid);
     }
+    // The retained publications name the one that applied it.
     let mut chain = fyrr_reader::storage::manifest_chain(
         store,
         root,
@@ -942,11 +877,7 @@ pub async fn receipt(config: &Config, envelope_id: &str) -> Result<CommitReceipt
     }
     // Maintenance deleted the publications outside the purge window; the
     // evidence still tells that the envelope was applied, not by which one.
-    if published_evidence(config, &head)
-        .await?
-        .applied
-        .contains(envelope_id)
-    {
+    if resolved(config, &head).await?.applied(envelope_id) {
         return Ok(CommitReceipt {
             lance_version: 0,
             publication_id: None,
@@ -1032,38 +963,30 @@ async fn served_receipt(config: &Config, head: &ServingHead) -> Result<(CommitRe
 
 /// Maintenance services authorization at every boundary without draining
 /// content backlog, until no authorization is pending.
-pub(crate) async fn drain_cached_authorization(
-    config: &Config,
-    lease: &LeaseGuard,
-    history: &mut RestoreHistory,
-    pending: Vec<PreparedEnvelope>,
-) -> Result<usize> {
+pub(crate) async fn drain_authorization(config: &Config, lease: &LeaseGuard) -> Result<usize> {
     let mut groups = 0;
-    crate::envelopes::discard_purged(config, lease).await?;
-    let mut head = lease.head().await?;
-    if head.content.is_none() {
-        return Ok(groups);
-    }
-    let mut remaining = pending;
     loop {
-        history.refresh(config, &head).await?;
-        // Authorization only, so no content waits on what `remaining` replaces.
-        let unresolved = history.unconsumed_rejections(config, &remaining).await?;
-        let group = commit_group_with_rejections(config, remaining, &head, unresolved).await?;
-        if group.is_empty() {
-            return Ok(groups);
-        }
-        Box::pin(commit_one(config, false, lease, group, Some(&mut *history))).await?;
-        groups += 1;
-        crate::envelopes::discard_purged(config, lease).await?;
-        head = lease.head().await?;
-        history.refresh(config, &head).await?;
-        remaining = history
-            .pending(config, &head, true)
+        let remaining: Vec<_> = pending(config, &lease.head().await?)
             .await?
             .into_iter()
             .filter(|e| e.kind.is_authorization())
             .collect();
+        if remaining.is_empty() {
+            return Ok(groups);
+        }
+        crate::envelopes::discard_purged(config, lease).await?;
+        let head = lease.head().await?;
+        if head.content.is_none() {
+            return Ok(groups);
+        }
+        // Authorization only, so no content waits on what `remaining` replaces.
+        let unresolved = unconsumed_rejections(config, &head, &remaining).await?;
+        let group = commit_group_with_rejections(config, remaining, &head, unresolved).await?;
+        if group.is_empty() {
+            return Ok(groups);
+        }
+        Box::pin(commit_one(config, false, lease, group)).await?;
+        groups += 1;
     }
 }
 
@@ -1089,7 +1012,7 @@ async fn drain(
         };
         let empty = group.is_empty();
         if !stopped {
-            commit_one(config, stage_timings, lease, group, None).await?;
+            commit_one(config, stage_timings, lease, group).await?;
         }
         if stopped
             || stop.is_some_and(|s| s.load(std::sync::atomic::Ordering::Acquire))
@@ -1121,14 +1044,10 @@ async fn commit_group_with_rejections(
     published: Vec<RejectionMarker>,
 ) -> Result<Vec<PreparedEnvelope>> {
     // A replacement that is pending consumes a rejection for the order of its key.
+    let reads: Vec<_> = pending.iter().collect();
     let unresolved: Vec<_> = published
         .iter()
-        .filter(|m| {
-            !pending.iter().any(|e| {
-                crate::apply::complete_read(e)
-                    && history::replacement_matches(m, &e.source_id, e.kind, e.rejection_generation)
-            })
-        })
+        .filter(|m| !consumed(m, &reads))
         .cloned()
         .collect();
     // Content waits for a publication that applies the replacement of a rejected
@@ -1747,9 +1666,15 @@ mod classify_tests {
             envelope.envelope_id = "on".into();
             envelope.lease_generation = 1;
             let (applied, rejected, chains) = (set(applied), set(rejected), chains(source, chain));
+            let resolved = Resolved {
+                published: Arc::new(Published {
+                    applied: applied.clone(),
+                    rejected: rejected.clone(),
+                }),
+                head_rejected: BTreeSet::new(),
+            };
             let facts = Facts {
-                applied: &applied,
-                rejected: &rejected,
+                resolved: &resolved,
                 retired: &retired,
                 chains: &chains,
             };
@@ -1769,10 +1694,8 @@ mod classify_tests {
             (("source".to_owned(), Content), whole(&["on"], 1)),
             (("source".to_owned(), Permissions), Chain::Broken),
         ]);
-        let none = BTreeSet::new();
         let facts = Facts {
-            applied: &none,
-            rejected: &none,
+            resolved: &Resolved::default(),
             retired: &retired,
             chains: &chains,
         };
@@ -1837,6 +1760,10 @@ mod evidence_tests {
         (config, head, manifest, applied)
     }
 
+    fn set(ids: impl IntoIterator<Item = String>) -> BTreeSet<String> {
+        ids.into_iter().collect()
+    }
+
     /// The newest manifest's evidence answers for the whole chain: the older
     /// manifest it names, which is not stored, is never read.
     #[tokio::test]
@@ -1844,15 +1771,24 @@ mod evidence_tests {
         let (config, mut head, manifest, applied) = namespace(3, 2).await;
         assert!(manifest.previous_publication_id.is_some());
         head.rejected_envelope_ids = ids('d', 1);
-        let evidence = published_evidence(&config, &head).await.unwrap();
-        let expected: BTreeSet<_> = applied
-            .into_iter()
-            .chain(ids('c', 2))
-            .chain(manifest.envelope_ids)
-            .collect();
-        assert_eq!(evidence.applied, expected);
-        let rejected: BTreeSet<_> = ids('b', 1).into_iter().chain(ids('d', 1)).collect();
-        assert_eq!(evidence.rejected, rejected);
+        let resolved = resolved(&config, &head).await.unwrap();
+        let expected = set(applied.into_iter().chain(ids('c', 2)));
+        assert_eq!(set(resolved.applied_ids().cloned()), expected);
+        let rejected = set(ids('b', 1).into_iter().chain(ids('d', 1)));
+        assert_eq!(set(resolved.rejected_ids().cloned()), rejected);
+    }
+
+    /// "Applied" is applied and rejected by none: an envelope a publication
+    /// lists as both, or that the head rejected since, is rejected.
+    #[tokio::test]
+    async fn an_envelope_also_rejected_is_not_applied() {
+        let (config, mut head, _, applied) = namespace(3, 0).await;
+        head.rejected_envelope_ids = vec![applied[0].clone()];
+        let resolved = resolved(&config, &head).await.unwrap();
+        assert!(resolved.rejected(&applied[0]) && !resolved.applied(&applied[0]));
+        assert!(resolved.contains(&applied[0]));
+        assert!(resolved.applied(&applied[1]) && !resolved.rejected(&applied[1]));
+        assert!(!resolved.contains("env-00000000000000000000000000000000"));
     }
 
     /// Ids gather in the manifests until a new checkpoint takes them over,
@@ -1892,89 +1828,88 @@ mod evidence_tests {
             fyrr_reader::storage::artifact(store.as_ref(), &root, &rolled.checkpoint)
                 .await
                 .unwrap();
-        let expected: BTreeSet<_> = applied
+        let expected = set(applied
             .into_iter()
             .chain(ids('c', publication::CHECKPOINT_IDS - 2))
-            .chain(manifest.envelope_ids)
-            .chain(receipts)
-            .collect();
-        assert_eq!(
-            checkpoint
-                .applied_envelope_ids
-                .into_iter()
-                .collect::<BTreeSet<_>>(),
-            expected
-        );
+            .chain(receipts));
+        assert_eq!(set(checkpoint.applied_envelope_ids), expected);
         assert_eq!(checkpoint.rejected_envelope_ids, ids('b', 1));
     }
-    /// A process that walked the predecessor adds only the new manifest: the
-    /// new manifest's checkpoint, which is not stored here, is never read.
-    #[tokio::test]
-    async fn a_walked_predecessor_saves_reading_the_checkpoint() {
-        let (config, head, manifest, applied) = namespace(3, 2).await;
-        published_evidence(&config, &head).await.unwrap();
-        let (store, root) = namespace_store(&config).unwrap();
-        let mut next = manifest.clone();
-        next.publication_id = "pub-000043".into();
-        next.sequence = manifest.sequence + 1;
-        next.previous_publication_id = Some(manifest.publication_id.clone());
-        next.envelope_ids = ids('f', 1);
-        next.envelope_evidence.checkpoint.object = "evidence/missing.json".into();
-        store
-            .put(
-                &Path::from(format!("{root}/publications/pub-000043.json")),
-                write_contract(&next).into(),
-            )
-            .await
-            .unwrap();
-        let mut moved = head.clone();
-        let pointer = moved.content.as_mut().unwrap();
-        pointer.publication_id = next.publication_id.clone();
-        pointer.sequence = next.sequence;
-        pointer.manifest = "publications/pub-000043.json".into();
-        let evidence = published_evidence(&config, &moved).await.unwrap();
-        let expected: BTreeSet<_> = applied
-            .into_iter()
-            .chain(ids('c', 2))
-            .chain(manifest.envelope_ids)
-            .chain(ids('f', 1))
-            .collect();
-        assert_eq!(evidence.applied, expected);
-    }
 
-    /// A checkpoint maintenance removed is replaced by the older manifests; a
-    /// checkpoint that is not the one named stops the read.
+    /// The checkpoint of the served manifest is always kept: one that is
+    /// missing, or not the one named, stops the read.
     #[tokio::test]
-    async fn a_missing_checkpoint_is_read_from_the_manifests_and_a_wrong_one_is_refused() {
+    async fn a_missing_or_wrong_checkpoint_is_refused() {
         let (config, head, manifest, _) = namespace(3, 2).await;
         let (store, root) = namespace_store(&config).unwrap();
-        let pointer = manifest.envelope_evidence.checkpoint.clone();
-        let mut older = manifest.clone();
-        older.publication_id = "pub-000041".into();
-        older.sequence = manifest.sequence - 1;
-        older.previous_publication_id = None;
-        older.envelope_ids = ids('9', 2);
-        store
-            .put(
-                &Path::from(format!("{root}/publications/pub-000041.json")),
-                write_contract(&older).into(),
-            )
-            .await
-            .unwrap();
-        let object = Path::from(format!("{root}/{}", pointer.object));
+        let object = Path::from(format!(
+            "{root}/{}",
+            manifest.envelope_evidence.checkpoint.object
+        ));
         store.put(&object, "{}".into()).await.unwrap();
         assert_eq!(
-            published_evidence(&config, &head).await.err(),
+            resolved(&config, &head).await.err(),
             Some(WriterError::PublicationInvalid)
         );
         store.delete(&object).await.unwrap();
-        let evidence = published_evidence(&config, &head).await.unwrap();
-        let expected: BTreeSet<_> = manifest
-            .envelope_ids
-            .into_iter()
-            .chain(ids('9', 2))
-            .collect();
-        assert_eq!(evidence.applied, expected);
+        assert_eq!(
+            resolved(&config, &head).await.err(),
+            Some(WriterError::PublicationInvalid)
+        );
+    }
+
+    /// A complete read of the rejected source and kind, of a newer rejection
+    /// generation, consumes a marker; nothing else does.
+    #[test]
+    fn only_a_complete_newer_read_of_its_key_consumes_a_marker() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/contracts/prepared-envelope/permissions.json");
+        let mut read: PreparedEnvelope =
+            fyrr_core::parse_contract(&std::fs::read(path).unwrap()).unwrap();
+        read.source_id = "source".into();
+        if let EnvelopePayload::Permissions(payload) = &mut read.payload {
+            payload.complete_read = true;
+        }
+        let marker = RejectionMarker {
+            schema_version: ENVELOPE_CONTRACT_VERSION,
+            envelope_id: "fixture".into(),
+            source_id: "source".into(),
+            kind: SyncKind::Permissions,
+            sequence: 99,
+            rejection_generation: 3,
+            start_cursor: None,
+            reason: "fixture".into(),
+        };
+        for (source, kind, generation, expected) in [
+            ("other", SyncKind::Permissions, 4, false),
+            ("source", SyncKind::Members, 4, false),
+            ("source", SyncKind::Permissions, 2, false),
+            ("source", SyncKind::Permissions, 3, false),
+            ("source", SyncKind::Permissions, 4, true),
+            ("source", SyncKind::Permissions, u32::MAX, true),
+        ] {
+            let mut e = read.clone();
+            e.source_id = source.into();
+            e.kind = kind;
+            e.rejection_generation = generation;
+            assert_eq!(
+                consumed(&marker, &[&e]),
+                expected,
+                "{source} {kind:?} generation={generation}"
+            );
+        }
+        let exhausted = RejectionMarker {
+            rejection_generation: u32::MAX,
+            ..marker.clone()
+        };
+        let mut newest = read.clone();
+        newest.rejection_generation = u32::MAX;
+        assert!(!consumed(&exhausted, &[&newest]));
+        if let EnvelopePayload::Permissions(payload) = &mut read.payload {
+            payload.complete_read = false;
+        }
+        read.rejection_generation = 4;
+        assert!(!consumed(&marker, &[&read]), "an incomplete read");
     }
 }
 

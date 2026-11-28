@@ -13,7 +13,7 @@ pub(super) struct RevisionView<'a> {
     pub(super) failure: &'a RevisionFailure,
 }
 
-use crate::commit::history::index::{Evidence, Index};
+use crate::scratch::index::{Evidence, Index};
 
 pub(super) struct PendingRevisions {
     paths: Arc<Vec<Path>>,

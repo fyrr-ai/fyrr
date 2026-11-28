@@ -1502,11 +1502,10 @@ async fn rejected_authorization(kind: SyncKind) {
     publish(&commit);
     let (head, _) = publication(&worker).await;
     assert!(
-        fyrr_writer::commit::published_ids(&loaded.config, &head)
+        fyrr_writer::commit::resolved(&loaded.config, &head)
             .await
             .unwrap()
-            .1
-            .contains(&rejected_id)
+            .rejected(&rejected_id)
     );
     let batch = rows(&worker).await;
     assert!(
@@ -1644,12 +1643,11 @@ async fn rejected_authorization(kind: SyncKind) {
             }
     }));
     publish(&commit);
-    let applied = fyrr_writer::commit::published_ids(&loaded.config, &publication(&worker).await.0)
+    let resolved = fyrr_writer::commit::resolved(&loaded.config, &publication(&worker).await.0)
         .await
-        .unwrap()
-        .0;
+        .unwrap();
     assert!(
-        partial_ids.iter().all(|id| applied.contains(id)),
+        partial_ids.iter().all(|id| resolved.applied(id)),
         "{kind:?}: partial replacement must be durably applied"
     );
     // A later drain must still refuse the affected content, while publishing another source.
@@ -1769,15 +1767,14 @@ async fn rejected_authorization(kind: SyncKind) {
         .await
         .unwrap();
     publish(&commit);
-    let (applied, rejected) =
-        fyrr_writer::commit::published_ids(&loaded.config, &publication(&worker).await.0)
-            .await
-            .unwrap();
+    let resolved = fyrr_writer::commit::resolved(&loaded.config, &publication(&worker).await.0)
+        .await
+        .unwrap();
     if kind == SyncKind::Permissions {
         // No cursor confirmed it: it is neither applied nor rejected, and inert.
-        assert!(!applied.contains(&late.envelope_id) && !rejected.contains(&late.envelope_id));
+        assert!(!resolved.applied(&late.envelope_id) && !resolved.rejected(&late.envelope_id));
     } else {
-        assert!(rejected.contains(&late.envelope_id));
+        assert!(resolved.rejected(&late.envelope_id));
     }
     let denied = super::tools::Mcp::open(&worker)
         .call("fetch", json!({"source_id":"incremental","root_id":"a"}));
@@ -2259,10 +2256,10 @@ async fn resolved(config: &Path, id: &str) -> (bool, bool) {
         .await
         .unwrap()
         .unwrap();
-    let (applied, rejected) = fyrr_writer::commit::published_ids(&loaded.config, &head)
+    let resolved = fyrr_writer::commit::resolved(&loaded.config, &head)
         .await
         .unwrap();
-    (applied.contains(id), rejected.contains(id))
+    (resolved.applied(id), resolved.rejected(id))
 }
 
 /// A permission read is published whole or not at all: one that fails on a
@@ -5156,10 +5153,10 @@ impl Run {
                     .await
                     .unwrap()
                     .unwrap();
-                let (applied, rejected) = fyrr_writer::commit::published_ids(&loaded.config, &head)
+                let resolved = fyrr_writer::commit::resolved(&loaded.config, &head)
                     .await
                     .unwrap();
-                if applied.contains(&last.id) || rejected.contains(&last.id) {
+                if resolved.contains(&last.id) {
                     self.trace
                         .push("crash_after_rejection (already resolved)".into());
                     return;
@@ -5542,7 +5539,7 @@ impl Run {
         };
         // No envelope is both applied and rejected, and no read waits behind a
         // newer one that was rejected: the replacement would start after it.
-        let (applied_ids, rejected_ids) = fyrr_writer::commit::published_ids(&loaded.config, &head)
+        let resolved_ids = fyrr_writer::commit::resolved(&loaded.config, &head)
             .await
             .unwrap();
         let mut next = cursor.last.map(|last| last.id);
@@ -5557,12 +5554,12 @@ impl Run {
             )
             .await
             .unwrap_or_else(|_| panic!("the link {id} of the chain is not in the log"));
-            let resolved = applied_ids.contains(&id) || rejected_ids.contains(&id);
+            let resolved = resolved_ids.contains(&id);
             assert!(
                 !dropped || resolved,
                 "the read {id} waits behind a newer one that was rejected"
             );
-            dropped |= rejected_ids.contains(&id);
+            dropped |= resolved_ids.rejected(&id);
             next = link.previous;
         }
         // So is every link of the content chain.
@@ -5599,18 +5596,39 @@ impl Run {
             next = link.previous;
         }
         let listed: Vec<_> = futures::TryStreamExt::try_collect::<Vec<_>>(
-            object_store::ObjectStore::list(store.as_ref(), Some(&ns.join("envelopes"))),
+            object_store::ObjectStore::list(store.as_ref(), Some(&ns.clone().join("envelopes"))),
         )
         .await
         .unwrap();
+        // What the evidence records as applied, before a rejection takes an
+        // envelope out of what `resolved` calls applied.
+        let mut recorded = std::collections::BTreeSet::new();
+        if head.content.is_some() {
+            let evidence = publication(&self.commit).await.1.envelope_evidence;
+            let checkpoint: fyrr_core::publication::EnvelopeCheckpoint = fyrr_core::parse_contract(
+                &store
+                    .get(&object_store::path::Path::from(format!(
+                        "{ns}/{}",
+                        evidence.checkpoint.object
+                    )))
+                    .await
+                    .unwrap()
+                    .bytes()
+                    .await
+                    .unwrap(),
+            )
+            .unwrap();
+            recorded.extend(checkpoint.applied_envelope_ids);
+            recorded.extend(evidence.applied_since);
+        }
         for object in listed {
             let envelope: PreparedEnvelope =
                 fyrr_reader::storage::read_contract(store.as_ref(), &object.location)
                     .await
                     .unwrap();
             let both = envelope.kind == SyncKind::Permissions
-                && rejected_ids.contains(&envelope.envelope_id)
-                && applied_ids.contains(&envelope.envelope_id);
+                && resolved_ids.rejected(&envelope.envelope_id)
+                && recorded.contains(&envelope.envelope_id);
             assert!(!both, "{} is applied and rejected", envelope.envelope_id);
         }
         assert_rejections_whole(&self.commit).await;
@@ -6171,7 +6189,7 @@ impl ApiRun {
                     .await
                     .unwrap()
                     .unwrap();
-                let (applied, rejected) = fyrr_writer::commit::published_ids(&loaded.config, &head)
+                let resolved = fyrr_writer::commit::resolved(&loaded.config, &head)
                     .await
                     .unwrap();
                 let (store, ns) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
@@ -6189,8 +6207,7 @@ impl ApiRun {
                             .await
                             .unwrap();
                     assert!(
-                        applied.contains(&envelope.envelope_id)
-                            || rejected.contains(&envelope.envelope_id)
+                        resolved.contains(&envelope.envelope_id)
                             || envelope.lease_generation == generation,
                         "cleanup kept {}, which no cursor confirms",
                         envelope.envelope_id
@@ -6431,11 +6448,11 @@ async fn incremental_a_lost_content_cursor_after_a_rejection_reads_from_the_star
     publish(&commit);
     let (head, _) = publication(&commit).await;
     let loaded = fyrr_core::config::load(&commit).unwrap();
-    let (_, rejected) = fyrr_writer::commit::published_ids(&loaded.config, &head)
+    let resolved = fyrr_writer::commit::resolved(&loaded.config, &head)
         .await
         .unwrap();
     assert!(
-        !rejected.is_empty(),
+        resolved.rejected_ids().next().is_some(),
         "the read of r2 is rejected as expired"
     );
     lose_content_cursor(&worker).await;

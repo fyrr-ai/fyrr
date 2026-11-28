@@ -11,7 +11,6 @@
     },
     "cases": {
       "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::local_store_waiter_across_delete_and_recreate_acts_on_the_new_object": {"tier": "full", "seconds": 26.0},
-      "full:fyrr-writer:lib:fyrr_writer/commit::history::index::tests::history_sqlite_runtime_io_measurement": {"tier": "full", "seconds": 2.0},
       "full:fyrr-writer:lib:fyrr_writer/embedding::tests::local_cache_runtime_io_measurement": {"tier": "full", "seconds": 2.0},
       "full:fyrr:test:dense_path/coordination::recovery_lease_ttl_ignores_toml_formatting_and_preserves_source_settings": {"tier": "quick", "seconds": 0.021}
     },
@@ -621,14 +620,6 @@
     "backend": "local",
     "owns": {
       "full:fyrr:test:dense_path/history_integrity::": {"tier": "full", "seconds": 36.256}
-    },
-    "children": {
-      "full:fyrr-writer:lib:fyrr_writer/commit::history::sequence_tests::cached_history_checks_sequence_at_joins_on_storage": {
-        "tier": "full",
-        "parents": [
-          "full:fyrr:test:dense_path/history_integrity::cached_restore_history_checks_sequence_joins_on_storage"
-        ]
-      }
     }
   },
   "s3-object-store": {

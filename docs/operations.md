@@ -134,14 +134,11 @@ between steps.
 
 ### Working space
 
-Maintenance uses disposable SQLite indexes. Provide a
+A sync worker keeps a disposable SQLite index per command. Provide a
 writable `TMPDIR` or writable mirror parent; there is no working-directory
-fallback. History work grows with namespace lifetime. Scratch or disk failures
-report `restore_working_space_exhausted`; bounded active summaries report
-`restore_history_summary_limit`. Cleanup preserves pending work, unresolved
-rejections, latest complete reads and receipts. Repeat commands for further
-cleanup; reduce `writer.max_envelope_age` or sync frequency if protected
-work reaches the summary bound.
+fallback. Scratch or disk failures report `restore_working_space_exhausted`.
+Cleanup preserves pending work, unresolved rejections, latest complete reads
+and receipts. Repeat commands for further cleanup.
 
 ## Restore and rollback
 
