@@ -148,7 +148,7 @@ pub struct SearchInput {
     pub exclude: Option<Vec<DocumentKey>>,
     /// Filter tree of `and`, `or`, `not` and comparisons; a hit also matches the arguments above.
     pub filter: Option<Filter>,
-    /// With query, queries or vector: the tokens of `text` occur in the document next to one another in this order; also required of a hit, like filter. Needs `fts_positions` on the namespace. Not with a listing or `sub_queries`.
+    /// With query, queries, vector or vectors: the tokens of `text` occur in the document next to one another in this order; also required of a hit, like filter. Needs `fts_positions` on the namespace. Not with a listing or `sub_queries`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phrase: Option<Phrase>,
     /// Deadline in milliseconds; default 10000.
@@ -1204,7 +1204,7 @@ fn search_description() -> String {
          Excerpts are passages of up to {EXCERPT_CODEPOINTS} codepoints with \
          record_id, revision and offsets usable as a fetch window. Filters match exactly; \
          an unknown value gives no hits. A hit holds the tokens of phrase.text adjacent \
-         and in order. queries replaces query; \
+         and in order; phrase needs the namespace's fts_positions. queries replaces query; \
          limit is per query (default/max 20), interleaved by rank then query index and deduplicated. \
          text_hits applies per query before deduplication. \
          For context on a task, search with both the ticket's title and its body as two queries. \

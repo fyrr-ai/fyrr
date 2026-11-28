@@ -21,7 +21,7 @@ class DeleteNamespaceRequest(TypedDict):
 
 class QueryRequest(TypedDict):
     """The body of `POST /v1/namespaces/{namespace}/query`: the arguments of the
-    `search` tool, `consistency` and eleven members that are no tool arguments.
+    `search` tool, `consistency` and ten members that are no tool arguments.
     """
     query: NotRequired[str | None]
     """Query text, 1-4096 UTF-8 bytes. Omit only for a filter-only listing with order=updated_at or order_by."""
@@ -70,7 +70,7 @@ class QueryRequest(TypedDict):
     filter: NotRequired[Filter | None]
     """Filter tree of `and`, `or`, `not` and comparisons; a hit also matches the arguments above."""
     phrase: NotRequired[Phrase | None]
-    """With query, queries or vector: the tokens of `text` occur in the document next to one another in this order; also required of a hit, like filter. Needs `fts_positions` on the namespace. Not with a listing or `sub_queries`."""
+    """With query, queries, vector or vectors: the tokens of `text` occur in the document next to one another in this order; also required of a hit, like filter. Needs `fts_positions` on the namespace. Not with a listing or `sub_queries`."""
     deadline_ms: NotRequired[int | None]
     """Deadline in milliseconds; default 10000."""
     consistency: NotRequired[Consistency | None]

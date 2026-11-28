@@ -15,7 +15,7 @@ export interface DeleteNamespaceRequest {
 
 /**
  * The body of `POST /v1/namespaces/{namespace}/query`: the arguments of the
- * `search` tool, `consistency` and eleven members that are no tool arguments.
+ * `search` tool, `consistency` and ten members that are no tool arguments.
  */
 export interface QueryRequest {
   /** Query text, 1-4096 UTF-8 bytes. Omit only for a filter-only listing with order=updated_at or order_by. */
@@ -65,7 +65,7 @@ export interface QueryRequest {
   exclude?: DocumentKey[] | null;
   /** Filter tree of `and`, `or`, `not` and comparisons; a hit also matches the arguments above. */
   filter?: Filter | null;
-  /** With query, queries or vector: the tokens of `text` occur in the document next to one another in this order; also required of a hit, like filter. Needs `fts_positions` on the namespace. Not with a listing or `sub_queries`. */
+  /** With query, queries, vector or vectors: the tokens of `text` occur in the document next to one another in this order; also required of a hit, like filter. Needs `fts_positions` on the namespace. Not with a listing or `sub_queries`. */
   phrase?: Phrase | null;
   /** Deadline in milliseconds; default 10000. */
   deadline_ms?: number | null;
