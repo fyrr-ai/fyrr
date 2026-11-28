@@ -6456,3 +6456,78 @@ async fn incremental_a_lost_content_cursor_after_a_rejection_reads_from_the_star
     let row = roots(&batch).iter().position(|id| id == "a").unwrap();
     assert_eq!(revisions.value(row), "r3");
 }
+
+/// A members read in two parts whose first part is over age: the commit rejects
+/// it, and the part that ends the read is rejected with it, never applied
+/// without it. `permissions`: a fresh permissions read is pending beside it.
+async fn members_part_over_age(permissions: bool) {
+    let (worker, commit, root) = fixture();
+    publish_initial(&worker, &commit, &root);
+    let members = async || {
+        let mut found: Vec<_> = envelopes(&worker)
+            .await
+            .into_iter()
+            .map(|(_, e)| e)
+            .filter(|e| e.source_id == "incremental" && e.kind == SyncKind::Members)
+            .collect();
+        found.sort_by_key(|e| e.sequence);
+        found
+    };
+    let known: BTreeSet<_> = members().await.into_iter().map(|e| e.envelope_id).collect();
+    let mut read = json!({"epoch":2,"members":[
+        {"last":false,"users":[{"id":"u","email":"fixture@example.test","email_verification":"verified_corporate","active":true}],
+         "groups":[{"id":"child","members":[]}]},
+        {"last":true,"groups":[{"id":"group","members":["grp:child"]}]}]});
+    if permissions {
+        read["permissions"] = json!([[{"id":"b","revision":"p2","readers":["grp:group"]}]]);
+    }
+    input(&root, read);
+    worker_sync(&worker, &["incremental", "--kind", "members"]);
+    let read: Vec<_> = members()
+        .await
+        .into_iter()
+        .filter(|e| !known.contains(&e.envelope_id))
+        .collect();
+    assert_eq!(read.len(), 2, "{read:?}");
+    age(&worker, &read[0].envelope_id, 4).await;
+    let mut beside = Vec::new();
+    if permissions {
+        let before: BTreeSet<_> = permission_envelopes(&worker)
+            .await
+            .into_iter()
+            .map(|e| e.envelope_id)
+            .collect();
+        worker_sync(&worker, &["incremental", "--kind", "permissions"]);
+        beside = permission_envelopes(&worker)
+            .await
+            .into_iter()
+            .filter(|e| !before.contains(&e.envelope_id))
+            .collect();
+        assert!(!beside.is_empty());
+    }
+    publish(&commit);
+    let first = resolved(&commit, &read[0].envelope_id).await;
+    let last = resolved(&commit, &read[1].envelope_id).await;
+    let mut states = Vec::new();
+    for e in &beside {
+        states.push(resolved(&commit, &e.envelope_id).await);
+    }
+    assert_eq!(
+        (first, last),
+        ((false, true), (false, true)),
+        "first part, last part; permissions read {states:?}"
+    );
+}
+
+#[tokio::test]
+#[ignore = "real CLI and local storage; scripts/ci"]
+async fn incremental_a_members_part_over_age_rejects_the_rest_of_its_read_on_storage() {
+    members_part_over_age(false).await;
+}
+
+#[tokio::test]
+#[ignore = "real CLI and local storage; scripts/ci"]
+async fn incremental_a_members_part_over_age_rejects_the_rest_of_its_read_beside_permissions_on_storage()
+ {
+    members_part_over_age(true).await;
+}

@@ -187,23 +187,25 @@ pub(crate) async fn commit_one(
     Ok(version)
 }
 
-/// When a permissions envelope of a source is rejected, every permissions
-/// envelope of it that no publication resolved is rejected in the same one: those
-/// outside the group and those accepted in it, held back with the content or
-/// not. A replacement then starts where the oldest of them did, never after one
-/// that is lost. `envelopes` are those of this pass, which lose what is rejected.
+/// When an authorization envelope (permissions or members) of a source is
+/// rejected, every envelope of that source and kind that no publication resolved
+/// is rejected in the same one: those outside the group and those accepted in it,
+/// held back with the content or not. A replacement then starts where the oldest
+/// of them did, never after one that is lost, and a read is never applied
+/// without one of its parts. `envelopes` are those of this pass, which lose what
+/// is rejected.
 async fn reject_rewound(
     config: &Config,
     head: &ServingHead,
-    sources: &BTreeSet<String>,
+    rewinding: &BTreeSet<(String, SyncKind)>,
     envelopes: &mut Vec<PreparedEnvelope>,
     rejected: &mut Vec<String>,
 ) -> Result<()> {
-    if sources.is_empty() {
+    if rewinding.is_empty() {
         return Ok(());
     }
     for waiting in pending(config, head).await? {
-        if waiting.kind == SyncKind::Permissions && sources.contains(&waiting.source_id) {
+        if rewinding.contains(&(waiting.source_id.clone(), waiting.kind)) {
             crate::apply::reject(config, &waiting, "authorization_rewind_required", rejected)
                 .await?;
         }
@@ -348,24 +350,29 @@ async fn accept_envelopes(
     current_policy: &PolicyArtifact,
     markers: &history::RejectionFences,
     envelopes: Vec<PreparedEnvelope>,
-) -> Result<(Vec<PreparedEnvelope>, Vec<String>, BTreeSet<String>)> {
+) -> Result<(
+    Vec<PreparedEnvelope>,
+    Vec<String>,
+    BTreeSet<(String, SyncKind)>,
+)> {
     let mut rejected = head.rejected_envelope_ids.clone();
     let mut accepted = Vec::new();
-    // The sources whose permissions envelope was rejected in this pass.
+    // The sources and authorization kinds with an envelope rejected in this pass.
     let mut rewinding = BTreeSet::new();
     for envelope in envelopes {
-        // A read that follows a rejected one of its source was prepared on the
-        // cursor the rejected one moved: it is rejected and read again.
-        let reason =
-            if envelope.kind == SyncKind::Permissions && rewinding.contains(&envelope.source_id) {
-                Some("authorization_rewind_required")
-            } else {
-                refusal(config, head, current_policy, markers, &envelope).await?
-            };
+        // An authorization envelope that follows a rejected one of its source
+        // and kind was prepared on the cursor the rejected one moved, or is a
+        // later part of its read: it is rejected and read again.
+        let key = (envelope.source_id.clone(), envelope.kind);
+        let reason = if rewinding.contains(&key) {
+            Some("authorization_rewind_required")
+        } else {
+            refusal(config, head, current_policy, markers, &envelope).await?
+        };
         if let Some(reason) = reason {
             crate::apply::reject(config, &envelope, reason, &mut rejected).await?;
-            if envelope.kind == SyncKind::Permissions {
-                rewinding.insert(envelope.source_id.clone());
+            if envelope.kind.is_authorization() {
+                rewinding.insert(key);
             }
         } else {
             accepted.push(envelope);
