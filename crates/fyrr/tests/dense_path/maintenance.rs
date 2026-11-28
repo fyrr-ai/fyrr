@@ -1629,3 +1629,184 @@ async fn maintenance_grows_the_vector_model_in_bounded_steps_on_storage() {
     assert!(!found("seg doc 9001"));
     std::fs::remove_dir_all(root).unwrap();
 }
+
+/// An applied members snapshot stored again under another name is still the
+/// applied one: maintenance does not take it as pending.
+#[tokio::test]
+#[ignore = "real CLI and local storage; scripts/ci"]
+async fn maintenance_ignores_an_alias_of_an_applied_member_snapshot() {
+    let (worker, commit, root) =
+        incremental::fixture_host_at(8, true, "dense-fixture", setup_sized(Backend::Local, 8));
+    publish_initial(&worker, &commit, &root);
+    let (path, _) = envelopes(&worker)
+        .await
+        .into_iter()
+        .find(|(_, e)| e.kind == fyrr_core::connector::SyncKind::Members)
+        .unwrap();
+    let config = fyrr_core::config::load(&worker).unwrap().config;
+    let (store, namespace) = fyrr_reader::storage::namespace_store(&config).unwrap();
+    let alias = namespace
+        .join("envelopes")
+        .join("env-ffffffffffffffffffffffffffffffff.json");
+    let bytes = store.get(&path).await.unwrap().bytes().await.unwrap();
+    store.put(&alias, bytes.into()).await.unwrap();
+    assert_eq!(
+        command(&commit, &["writer", "status"])["pending_envelopes"],
+        0
+    );
+    let output = host_command(&commit)
+        .args(["writer", "maintain"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "writer maintain: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// Maintenance drains authorization at every boundary, but reads a pending
+/// content envelope only at the first one, beside the envelope cleanups and
+/// the version cleanup, which read every envelope: 4 GETs, as before #455.
+#[tokio::test]
+#[ignore = "real CLI and local storage; scripts/ci"]
+async fn maintenance_reads_a_pending_content_envelope_a_bounded_number_of_times() {
+    let (worker, commit, root) =
+        incremental::fixture_host_at(8, true, "dense-fixture", setup_sized(Backend::Local, 8));
+    input(
+        &root,
+        json!({"epoch":1, "content":[[doc("a","r1","fixture document 1")]]}),
+    );
+    worker_sync(&worker, &["incremental", "--kind", "content"]);
+    let (_, pending) = envelopes(&worker)
+        .await
+        .into_iter()
+        .find(|(_, e)| {
+            e.source_id == "incremental" && e.kind == fyrr_core::connector::SyncKind::Content
+        })
+        .unwrap();
+    let gets = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = gets.clone();
+    let name = format!("/envelopes/{}.json", pending.envelope_id);
+    let hook: corrections::BoundaryHook = Arc::new(move |request, _, after| {
+        if !after && request.starts_with("GET ") && request.contains(&name) {
+            observed.fetch_add(1, Ordering::SeqCst);
+        }
+        false
+    });
+    let (endpoint, _proxy) = corrections::proxy_at_boundary(
+        "local-storage".into(),
+        Arc::new(AtomicBool::new(false)),
+        hook,
+    );
+    command(&proxied(&commit, &endpoint), &["writer", "maintain"]);
+    assert_eq!(
+        command(&commit, &["writer", "status"])["pending_envelopes"],
+        1
+    );
+    let gets = gets.load(Ordering::SeqCst);
+    assert!(gets <= 4, "{gets} GETs of the one pending content envelope");
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// A revision conflict is applied and rejected by one publication: rejected,
+/// so its receipt is unpublished, while the manifest is retained and after
+/// maintenance deleted it.
+#[tokio::test]
+#[ignore = "real CLI and local storage; scripts/ci"]
+async fn maintenance_a_receipt_of_a_revision_conflict_is_unpublished_across_retention() {
+    let (worker, commit, root) =
+        incremental::fixture_host_at(8, true, "dense-fixture", setup_sized(Backend::Local, 8));
+    input(
+        &root,
+        json!({"epoch":1,"content":[[replacement("a","r2","absent","fixture document 2")]]}),
+    );
+    worker_sync(&worker, &["incremental", "--kind", "content"]);
+    publish(&commit);
+    let (_, manifest) = publication(&commit).await;
+    let id = manifest
+        .rejected_envelope_ids
+        .first()
+        .expect("the writer rejected the conflict");
+    assert!(manifest.envelope_ids.contains(id));
+    let unpublished = || {
+        let output = host_command(&commit)
+            .args(["writer", "commit", "--receipt", id])
+            .output()
+            .unwrap();
+        !output.status.success()
+            && String::from_utf8_lossy(&output.stderr).contains("receipt_unpublished")
+    };
+    assert!(unpublished(), "while the manifest is retained");
+    input(
+        &root,
+        json!({"epoch":2,"content":[[doc("b","r1","fixture document 1")]]}),
+    );
+    worker_sync(&worker, &["incremental", "--kind", "content"]);
+    publish(&commit);
+    command(&commit, &["writer", "maintain"]);
+    fyrr_core::clock::advance(Duration::from_secs(25 * 3600)).unwrap();
+    command(&commit, &["writer", "maintain"]);
+    command(&commit, &["writer", "maintain"]);
+    let config = fyrr_core::config::load(&commit).unwrap().config;
+    let (store, ns) = fyrr_reader::storage::namespace_store(&config).unwrap();
+    let path = ns
+        .join("publications")
+        .join(format!("{}.json", manifest.publication_id));
+    assert!(matches!(
+        store.head(&path).await,
+        Err(object_store::Error::NotFound { .. })
+    ));
+    assert!(unpublished(), "after retention");
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// A retained manifest that is missing fails `writer status`, also when the
+/// purge warning is due anyway.
+#[tokio::test]
+#[ignore = "real CLI and local storage; scripts/ci"]
+async fn maintenance_status_refuses_a_missing_retained_manifest_near_the_purge_window() {
+    let (worker, commit, root) =
+        incremental::fixture_host_at(8, true, "dense-fixture", setup_sized(Backend::Local, 8));
+    let (_, prior) = publication(&commit).await;
+    input(
+        &root,
+        json!({"epoch":1, "content":[[doc("a","r1","fixture document 1")]]}),
+    );
+    worker_sync(&worker, &["incremental", "--kind", "content"]);
+    publish(&commit);
+    let (_, current) = publication(&commit).await;
+    assert_eq!(
+        current.previous_publication_id.as_ref(),
+        Some(&prior.publication_id)
+    );
+    let config = fyrr_core::config::load(&commit).unwrap().config;
+    let (store, ns) = fyrr_reader::storage::namespace_store(&config).unwrap();
+    store
+        .delete(
+            &ns.join("publications")
+                .join(format!("{}.json", prior.publication_id)),
+        )
+        .await
+        .unwrap();
+    let window = config.writer.purge_window.as_duration();
+    fyrr_core::clock::advance(window - config.writer.version_grace.as_duration() / 2).unwrap();
+    assert!(
+        (fyrr_core::clock::now() - prior.committed_at)
+            .to_std()
+            .unwrap()
+            < window
+    );
+    let status = host_command(&commit)
+        .args(["writer", "status"])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&status.stderr);
+    assert!(
+        !status.status.success() && stderr.contains("publication_invalid"),
+        "writer status: {} {stderr}",
+        status.status
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}

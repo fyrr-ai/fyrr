@@ -2073,3 +2073,120 @@ async fn identity_write_api_takes_current_settings_and_refuses_unknown_ones_on_s
         (400, json!({"error": "settings_invalid"}))
     );
 }
+
+/// A `delete_where` over more documents than one write may delete is answered
+/// 409: its envelope is listed as applied and as rejected, so it is rejected
+/// and its receipt is unpublished, while its manifest is retained and after
+/// maintenance deleted it. An envelope applied only keeps its receipt.
+#[tokio::test]
+#[ignore = "real writer on local storage; scripts/ci"]
+async fn identity_write_api_a_rejected_write_has_no_receipt_across_retention_on_storage() {
+    use super::coordination::publication;
+    use fyrr_core::limits::write::MAX_FILTER_WRITE_DOCUMENTS as MAX;
+    let (config, root) = setup_sized(Backend::Local, 0);
+    let address = free_address();
+    configure(&config, &address, "open = true");
+    let writer = Writer::start(&config, &root, address).await;
+    let namespace = "dense-fixture";
+    let row = |n: usize, team: &str| {
+        json!({"id": format!("d{n}"), "text": format!("text {n}"), "team": team,
+            "vector": vector(0, 16)})
+    };
+    let settings = json!({"embedding": {"dimensions": 16}, "attributes": {"team": "string"}});
+    assert_eq!(
+        writer
+            .post(
+                WRITE_KEY,
+                namespace,
+                &json!({"settings": settings, "upserts": [row(0, "keep")]})
+            )
+            .await,
+        (200, json!({"upserted": 1, "deleted": 0}))
+    );
+    let mut rows: Vec<_> = (1..=MAX).map(|n| row(n, "big")).collect();
+    rows.push(row(MAX + 1, "extra"));
+    let upserted = writer
+        .post(WRITE_KEY, namespace, &json!({"upserts": rows}))
+        .await;
+    assert_eq!(upserted.0, 200);
+    let (_, plain) = publication(&config).await;
+    let plain_id = plain.envelope_ids[0].clone();
+    let both = json!({"field": "team", "op": "in", "value": ["big", "extra"]});
+    assert_eq!(
+        writer
+            .post(ADMIN_KEY, namespace, &json!({"delete_where": both}))
+            .await,
+        (409, json!({"error": "rejected"}))
+    );
+    let (head, manifest) = publication(&config).await;
+    let rejected_id = head
+        .rejected_envelope_ids
+        .first()
+        .or(manifest.rejected_envelope_ids.first())
+        .cloned()
+        .expect("a rejected envelope");
+    // One more publication, so that the manifest above is not the served one.
+    let kept = writer
+        .post(WRITE_KEY, namespace, &json!({"upserts": [row(0, "kept")]}))
+        .await;
+    assert_eq!(kept.0, 200);
+    drop(writer);
+    let receipt = |id: &str| {
+        let output = host_command(&config)
+            .args(["writer", "commit", "--receipt", id])
+            .env("FYRR_TEST_WRITE_KEY", secret(WRITE_KEY))
+            .env("FYRR_TEST_READ_KEY", secret(READ_KEY))
+            .env("FYRR_TEST_SCOPED_KEY", secret(SCOPED_KEY))
+            .env("FYRR_TEST_ADMIN_KEY", secret(ADMIN_KEY))
+            .env("FYRR_TEST_RECALL_KEY", secret(RECALL_KEY))
+            .env("FYRR_TEST_OPERATOR", OPERATOR)
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        match (
+            output.status.success(),
+            stderr.contains("receipt_unpublished"),
+        ) {
+            (true, _) => "published",
+            (false, true) => "unpublished",
+            (false, false) => panic!("writer commit --receipt {id}: {stderr}"),
+        }
+    };
+    assert_eq!(
+        (receipt(&rejected_id), receipt(&plain_id)),
+        ("unpublished", "published"),
+        "while the manifests are retained"
+    );
+    fyrr_core::clock::advance(Duration::from_secs(25 * 3600)).unwrap();
+    for _ in 0..2 {
+        let maintain = host_command(&config)
+            .args(["writer", "maintain"])
+            .env("FYRR_TEST_WRITE_KEY", secret(WRITE_KEY))
+            .env("FYRR_TEST_READ_KEY", secret(READ_KEY))
+            .env("FYRR_TEST_SCOPED_KEY", secret(SCOPED_KEY))
+            .env("FYRR_TEST_ADMIN_KEY", secret(ADMIN_KEY))
+            .env("FYRR_TEST_RECALL_KEY", secret(RECALL_KEY))
+            .env("FYRR_TEST_OPERATOR", OPERATOR)
+            .output()
+            .unwrap();
+        assert!(maintain.status.success());
+    }
+    let loaded = fyrr_core::config::load(&config).unwrap();
+    let (store, ns) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
+    for id in [&manifest.publication_id, &plain.publication_id] {
+        let path = ns.clone().join("publications").join(format!("{id}.json"));
+        assert!(
+            matches!(
+                object_store::ObjectStoreExt::head(store.as_ref(), &path).await,
+                Err(object_store::Error::NotFound { .. })
+            ),
+            "maintenance deleted {id}"
+        );
+    }
+    assert_eq!(
+        (receipt(&rejected_id), receipt(&plain_id)),
+        ("unpublished", "published"),
+        "after maintenance deleted the manifests"
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}

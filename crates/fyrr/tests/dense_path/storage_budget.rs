@@ -1630,3 +1630,76 @@ async fn a_cold_dense_query_on_a_merged_vector_index_stays_within_its_storage_re
     );
     std::fs::remove_dir_all(root).unwrap();
 }
+
+/// The `GET evidence/` of a writer service at each publication of the
+/// namespaces in `names`, one each per round. A service holds the evidence
+/// checkpoint of every namespace it published, so it reads one only at its
+/// first publication there.
+async fn checkpoint_reads_per_round(names: &[&str], rounds: usize) -> Vec<usize> {
+    use super::write_api::{WRITE_KEY, Writer, configure, embed};
+    let (config, root) = setup_on(Backend::Local);
+    let endpoint = std::env::var("FYRR_TEST_S3_ENDPOINT").unwrap();
+    assert_eq!(endpoint, "local-storage", "owned by the local CI row");
+    let address = free_address();
+    configure(&config, &address, "open = true");
+    let text = std::fs::read_to_string(&config)
+        .unwrap()
+        .replace("# fyrr-test-head-check = every", "");
+    let seen = Seen::default();
+    let stop = Arc::new(AtomicBool::new(false));
+    let (observed, _observer) = proxy_at_boundary(endpoint.clone(), stop.clone(), seen.hook());
+    let service = root.join("service.toml");
+    std::fs::write(&service, text.replace(&endpoint, &observed)).unwrap();
+    let writer = Writer::start(&service, &root, address).await;
+    let texts: Vec<String> = (0..rounds).map(|i| format!("ledger entry {i}")).collect();
+    embed(&root, &texts.iter().map(String::as_str).collect::<Vec<_>>());
+    let mut evidence = Vec::new();
+    for (round, text) in texts.iter().enumerate() {
+        let mark = seen.len();
+        let writer = &writer;
+        let replies = futures::future::join_all(names.iter().map(|name| {
+            let body = json!({"upserts": [{"id": round.to_string(), "text": text}]});
+            async move { writer.post(WRITE_KEY, name, &body).await }
+        }))
+        .await;
+        for reply in replies {
+            assert_eq!(reply, (200, json!({"upserted": 1, "deleted": 0})));
+        }
+        // The reads that follow the answer belong to this round too.
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        let requests = seen.all(mark);
+        evidence.push(
+            requests
+                .iter()
+                .filter(|request| request.starts_with("GET evidence/"))
+                .count(),
+        );
+    }
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    drop(writer);
+    std::fs::remove_dir_all(root).unwrap();
+    evidence
+}
+
+/// A writer service that publishes one namespace again and again reads its
+/// evidence checkpoint once, not at every publication.
+#[tokio::test]
+#[ignore = "real executable and local storage; scripts/ci"]
+async fn a_publishing_writer_service_reads_the_evidence_checkpoint_once() {
+    let evidence = checkpoint_reads_per_round(&["dense-fixture"], 8).await;
+    assert!(
+        evidence[1..].iter().all(|reads| *reads == 0),
+        "GET evidence/ per publication: {evidence:?}"
+    );
+}
+
+/// The same for a service that publishes four namespaces in turn.
+#[tokio::test]
+#[ignore = "real executable and local storage; scripts/ci"]
+async fn a_writer_service_publishing_four_namespaces_reads_each_checkpoint_once() {
+    let evidence = checkpoint_reads_per_round(&["shop-a", "shop-b", "shop-c", "shop-d"], 5).await;
+    assert!(
+        evidence[1..].iter().all(|reads| *reads == 0),
+        "GET evidence/ per round: {evidence:?}"
+    );
+}

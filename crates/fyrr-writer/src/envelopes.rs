@@ -123,6 +123,9 @@ pub async fn status(config: &Config) -> Result<serde_json::Value> {
         .ok_or(WriterError::NamespaceUnavailable)?;
     let (store, root) = namespace_store(config)?;
     let resolved = crate::commit::resolved(config, &head).await?;
+    // The evidence is the served manifest's alone: a lost retained manifest is
+    // found by walking the chain.
+    crate::maintenance::verify_history(config, &head).await?;
     let prefix = root.clone().join("envelopes");
     let mut listing = store.list(Some(&prefix)).fuse();
     let mut envelopes = 0;

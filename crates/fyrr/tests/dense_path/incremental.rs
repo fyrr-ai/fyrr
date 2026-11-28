@@ -543,7 +543,8 @@ async fn incremental_read_only_namespace_refuses_syncs_and_commits_what_was_prep
 }
 
 /// A confirmed envelope that does not parse blocks only its source: another
-/// source still publishes, and `writer status` names the blocked one (#370).
+/// source still publishes, `writer status` names the blocked one (#370), and
+/// `writer maintain` succeeds with that source blocked.
 #[tokio::test]
 #[ignore = "real CLI and local storage; scripts/ci"]
 async fn incremental_an_unreadable_envelope_blocks_only_its_source_on_storage() {
@@ -592,6 +593,22 @@ async fn incremental_an_unreadable_envelope_blocks_only_its_source_on_storage() 
     assert!(
         !row_readers(&rows(&worker).await, "b").is_empty(),
         "the blocked source keeps its rights"
+    );
+    // Maintenance blocks that source too, as the committer does, and succeeds.
+    let maintain = host_command(&commit)
+        .args(["writer", "maintain"])
+        .output()
+        .unwrap();
+    assert!(
+        maintain.status.success(),
+        "writer maintain: {}",
+        String::from_utf8_lossy(&maintain.stderr)
+    );
+    let status = command(&commit, &["writer", "status"]);
+    assert_eq!(
+        status["blocked_sources"],
+        json!(["incremental"]),
+        "{status}"
     );
 }
 

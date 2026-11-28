@@ -43,23 +43,58 @@ pub(crate) use namespace::{ensure_writable, publish_policy};
 pub(crate) use publication::{previous_manifest, publish};
 
 pub async fn pending(config: &Config, head: &ServingHead) -> Result<Vec<PreparedEnvelope>> {
-    let mut result = Vec::new();
-    let (paths, resolved) = envelope_paths(config, head).await?;
-    let paths: Vec<_> = paths
+    pending_of(config, head, None).await
+}
+
+/// The envelopes the authorization drain of one `writer maintain` need not
+/// read again, by path, with the metadata the listing showed: resolved ones
+/// and those of a kind it does not take.
+pub(crate) type Drained = BTreeMap<Path, object_store::ObjectMeta>;
+
+/// [`pending`]; with `drained`, an object the listing shows as `drained`
+/// holds it is not read, and what it reads that is resolved or not of an
+/// authorization kind goes into `drained`.
+async fn pending_of(
+    config: &Config,
+    head: &ServingHead,
+    mut drained: Option<&mut Drained>,
+) -> Result<Vec<PreparedEnvelope>> {
+    let (store, root) = namespace_store(config)?;
+    let resolved = resolved(config, head).await?;
+    let listed: Vec<_> = store
+        .list(Some(&root.join("envelopes")))
+        .try_collect()
+        .await?;
+    let listed: BTreeMap<_, _> = listed
         .into_iter()
-        .filter(|path| {
-            !path
+        .filter(|object| {
+            !object
+                .location
                 .filename()
                 .and_then(|n| n.strip_suffix(".json"))
                 .is_some_and(|id| resolved.contains(id))
+                && drained
+                    .as_ref()
+                    .is_none_or(|drained| drained.get(&object.location) != Some(object))
         })
+        .map(|object| (object.location.clone(), object))
         .collect();
+    let paths: Vec<_> = listed.keys().cloned().collect();
     let (read, unreadable) = read_envelopes(config, &paths).await?;
-    for (_, envelope) in read {
+    let mut result = Vec::new();
+    for (path, envelope) in read {
         if envelope.namespace != config.namespace.name {
             return Err(WriterError::EnvelopeNamespaceInvalid);
         }
-        result.push(envelope);
+        // One stored under another name is resolved by the ID it holds.
+        let taken = !resolved.contains(&envelope.envelope_id);
+        match drained.as_deref_mut() {
+            Some(drained) if !taken || !envelope.kind.is_authorization() => {
+                drained.insert(path.clone(), listed[&path].clone());
+            }
+            _ if taken => result.push(envelope),
+            _ => {}
+        }
     }
     let mut result = confirmed(
         config,
@@ -585,47 +620,83 @@ pub struct Resolved {
     head_rejected: BTreeSet<String>,
 }
 
-/// What the evidence of one manifest records of it and every older one.
+/// What the evidence of one manifest records of it and every older one: the
+/// checkpoint it names, which the manifests that name it share, and the IDs
+/// since.
 #[derive(Debug, Default)]
 struct Published {
+    checkpoint: Arc<Ids>,
+    since: Ids,
+}
+
+#[derive(Debug, Default)]
+struct Ids {
     applied: BTreeSet<String>,
     rejected: BTreeSet<String>,
+}
+
+impl Published {
+    fn applied(&self, id: &str) -> bool {
+        self.checkpoint.applied.contains(id) || self.since.applied.contains(id)
+    }
+
+    fn rejected(&self, id: &str) -> bool {
+        self.checkpoint.rejected.contains(id) || self.since.rejected.contains(id)
+    }
 }
 
 impl Resolved {
     /// Applied by a publication and rejected by none.
     pub fn applied(&self, id: &str) -> bool {
-        self.published.applied.contains(id) && !self.rejected(id)
+        self.published.applied(id) && !self.rejected(id)
     }
 
     /// Rejected by a publication, or by the head before its next one.
     pub fn rejected(&self, id: &str) -> bool {
-        self.head_rejected.contains(id) || self.published.rejected.contains(id)
+        self.head_rejected.contains(id) || self.published.rejected(id)
     }
 
     /// Applied or rejected: no commit takes it again.
     pub fn contains(&self, id: &str) -> bool {
-        self.published.applied.contains(id) || self.rejected(id)
+        self.published.applied(id) || self.rejected(id)
     }
 
     pub fn applied_ids(&self) -> impl Iterator<Item = &String> {
-        self.published
+        let published = &self.published;
+        published
+            .checkpoint
             .applied
-            .iter()
+            .union(&published.since.applied)
             .filter(|id| !self.rejected(id))
     }
 
     pub fn rejected_ids(&self) -> impl Iterator<Item = &String> {
-        self.head_rejected.union(&self.published.rejected)
+        let published = &self.published;
+        let rejected: BTreeSet<_> = self
+            .head_rejected
+            .iter()
+            .chain(&published.checkpoint.rejected)
+            .chain(&published.since.rejected)
+            .collect();
+        rejected.into_iter()
     }
 }
 
-/// The evidence of the manifest this process read last, by storage,
-/// incarnation and manifest path. A manifest is immutable and names its
-/// checkpoint by digest, so an idle tick reads neither again.
-type PublishedKey = (String, String, String);
-static PUBLISHED: std::sync::Mutex<Option<(PublishedKey, Arc<Published>)>> =
-    std::sync::Mutex::new(None);
+/// The evidence this process read last of each namespace, by storage and
+/// incarnation, least recently used first: the manifest it was read from, the
+/// checkpoint that manifest names, and what they record. A manifest is
+/// immutable and names its checkpoint by digest, so an idle tick reads
+/// neither again, and a new publication reads only its manifest while the
+/// checkpoint stays. A process that serves many namespaces keeps the newest
+/// `PUBLISHED_MAX` of them.
+struct Held {
+    namespace: (String, String),
+    manifest: String,
+    checkpoint: GenerationPointer,
+    published: Arc<Published>,
+}
+static PUBLISHED: std::sync::Mutex<Vec<Held>> = std::sync::Mutex::new(Vec::new());
+const PUBLISHED_MAX: usize = 16;
 
 /// What the served head resolved: the evidence of its manifest, which covers
 /// that publication and every older one (the checkpoint it names and the IDs
@@ -639,47 +710,68 @@ pub async fn resolved(config: &Config, head: &ServingHead) -> Result<Resolved> {
             head_rejected,
         });
     };
-    let key = (
-        dataset_uri(config),
-        head.incarnation.clone(),
-        pointer.manifest.clone(),
-    );
-    let cached = PUBLISHED
-        .lock()
-        .map_err(|_| WriterError::RuntimeUnavailable)?
-        .as_ref()
-        .filter(|(held, _)| *held == key)
-        .map(|(_, published)| published.clone());
-    let published = match cached {
-        Some(published) => published,
-        None => {
-            let (store, root) = namespace_store(config)?;
-            let manifest =
-                fyrr_reader::storage::read_manifest(store.as_ref(), &root, &pointer.manifest)
-                    .await?;
-            let evidence = manifest.envelope_evidence;
-            // Maintenance keeps the checkpoint of every retained manifest.
+    let namespace = (dataset_uri(config), head.incarnation.clone());
+    let held = {
+        let mut cache = PUBLISHED
+            .lock()
+            .map_err(|_| WriterError::RuntimeUnavailable)?;
+        let at = cache.iter().position(|held| held.namespace == namespace);
+        at.map(|at| {
+            let held = cache.remove(at);
+            let found = (
+                held.manifest.clone(),
+                held.checkpoint.clone(),
+                held.published.clone(),
+            );
+            cache.push(held);
+            found
+        })
+    };
+    if let Some((manifest, _, published)) = &held
+        && *manifest == pointer.manifest
+    {
+        return Ok(Resolved {
+            published: published.clone(),
+            head_rejected,
+        });
+    }
+    let (store, root) = namespace_store(config)?;
+    let manifest =
+        fyrr_reader::storage::read_manifest(store.as_ref(), &root, &pointer.manifest).await?;
+    let evidence = manifest.envelope_evidence;
+    let checkpoint = match held {
+        Some((_, held, published)) if held == evidence.checkpoint => published.checkpoint.clone(),
+        // Maintenance keeps the checkpoint of every retained manifest.
+        _ => {
             let checkpoint = read_checkpoint(store.as_ref(), &root, &evidence.checkpoint)
                 .await?
                 .ok_or(WriterError::PublicationInvalid)?;
-            let published = Arc::new(Published {
-                applied: checkpoint
-                    .applied_envelope_ids
-                    .into_iter()
-                    .chain(evidence.applied_since)
-                    .collect(),
-                rejected: checkpoint
-                    .rejected_envelope_ids
-                    .into_iter()
-                    .chain(evidence.rejected_since)
-                    .collect(),
-            });
-            *PUBLISHED
-                .lock()
-                .map_err(|_| WriterError::RuntimeUnavailable)? = Some((key, published.clone()));
-            published
+            Arc::new(Ids {
+                applied: checkpoint.applied_envelope_ids.into_iter().collect(),
+                rejected: checkpoint.rejected_envelope_ids.into_iter().collect(),
+            })
         }
     };
+    let published = Arc::new(Published {
+        checkpoint,
+        since: Ids {
+            applied: evidence.applied_since.into_iter().collect(),
+            rejected: evidence.rejected_since.into_iter().collect(),
+        },
+    });
+    let mut cache = PUBLISHED
+        .lock()
+        .map_err(|_| WriterError::RuntimeUnavailable)?;
+    cache.retain(|held| held.namespace != namespace);
+    if cache.len() >= PUBLISHED_MAX {
+        cache.remove(0);
+    }
+    cache.push(Held {
+        namespace,
+        manifest: pointer.manifest.clone(),
+        checkpoint: evidence.checkpoint,
+        published: published.clone(),
+    });
     Ok(Resolved {
         published,
         head_rejected,
@@ -857,6 +949,11 @@ pub async fn receipt(config: &Config, envelope_id: &str) -> Result<CommitReceipt
     if head.namespace != config.namespace.name {
         return Err(WriterError::PublicationNamespaceInvalid);
     }
+    // Applied means rejected by none, also by the publication that lists it
+    // as applied: a write refused during apply has no receipt.
+    if !resolved(config, &head).await?.applied(envelope_id) {
+        return Err(WriterError::ReceiptUnpublished);
+    }
     // The retained publications name the one that applied it.
     let mut chain = fyrr_reader::storage::manifest_chain(
         store,
@@ -877,14 +974,11 @@ pub async fn receipt(config: &Config, envelope_id: &str) -> Result<CommitReceipt
     }
     // Maintenance deleted the publications outside the purge window; the
     // evidence still tells that the envelope was applied, not by which one.
-    if resolved(config, &head).await?.applied(envelope_id) {
-        return Ok(CommitReceipt {
-            lance_version: 0,
-            publication_id: None,
-            envelope_ids: vec![envelope_id.to_owned()],
-        });
-    }
-    Err(WriterError::ReceiptUnpublished)
+    Ok(CommitReceipt {
+        lance_version: 0,
+        publication_id: None,
+        envelope_ids: vec![envelope_id.to_owned()],
+    })
 }
 
 /// What one committer tick did.
@@ -963,10 +1057,14 @@ async fn served_receipt(config: &Config, head: &ServingHead) -> Result<(CommitRe
 
 /// Maintenance services authorization at every boundary without draining
 /// content backlog, until no authorization is pending.
-pub(crate) async fn drain_authorization(config: &Config, lease: &LeaseGuard) -> Result<usize> {
+pub(crate) async fn drain_authorization(
+    config: &Config,
+    lease: &LeaseGuard,
+    drained: &mut Drained,
+) -> Result<usize> {
     let mut groups = 0;
     loop {
-        let remaining: Vec<_> = pending(config, &lease.head().await?)
+        let remaining: Vec<_> = pending_of(config, &lease.head().await?, Some(&mut *drained))
             .await?
             .into_iter()
             .filter(|e| e.kind.is_authorization())
@@ -1668,8 +1766,11 @@ mod classify_tests {
             let (applied, rejected, chains) = (set(applied), set(rejected), chains(source, chain));
             let resolved = Resolved {
                 published: Arc::new(Published {
-                    applied: applied.clone(),
-                    rejected: rejected.clone(),
+                    checkpoint: Arc::new(Ids {
+                        applied: applied.clone(),
+                        rejected: rejected.clone(),
+                    }),
+                    since: Ids::default(),
                 }),
                 head_rejected: BTreeSet::new(),
             };

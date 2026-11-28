@@ -151,7 +151,9 @@ fyrr writer rollback                    # the preceding retained publication
 `fyrr writer commit` prints the latest one; keep those to restore an earlier
 point within the retention window. `fyrr writer commit --receipt ENVELOPE_ID`
 finds the publication that applied an envelope; for an envelope of a publication
-older than the retention window it only says that the envelope was applied.
+older than the retention window it only says that the envelope was applied. An
+envelope that a publication rejected, also one it lists as applied, has no
+receipt: `receipt_unpublished`.
 
 Only a namespace written through the [write API](http-api.md) is restored.
 Both publish the Lance version of the chosen publication again, as a new
