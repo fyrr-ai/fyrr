@@ -146,10 +146,7 @@ fn acknowledged_puts(log: &Path, storage: &Path) -> BTreeMap<String, usize> {
 #[test]
 #[ignore = "real prepare/publication fsync recorder, including existing ancestor names"]
 fn references_are_synced_before_real_prepare_and_publication() {
-    let (config, root) = setup_on(Backend::Local);
-    for n in 8..768 {
-        std::fs::remove_file(root.join("sources").join(format!("{n}.txt"))).unwrap();
-    }
+    let (config, root) = setup_sized(Backend::Local, 8);
     // A connector source beside the local files.
     let documents = |revision: &str| {
         let documents: Vec<_> = (0..8)
@@ -338,10 +335,7 @@ fn references_are_synced_before_real_prepare_and_publication() {
 #[tokio::test]
 #[ignore = "real purge recorder: fragment directories precede envelope unlink"]
 async fn purged_fragments_are_durable_before_their_envelope_is_unlinked() {
-    let (config, root) = setup_on(Backend::Local);
-    for n in 8..768 {
-        std::fs::remove_file(root.join("sources").join(format!("{n}.txt"))).unwrap();
-    }
+    let (config, root) = setup_sized(Backend::Local, 8);
     let log = root.join("purge-syncs.jsonl");
     std::fs::OpenOptions::new()
         .write(true)

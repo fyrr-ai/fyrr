@@ -355,10 +355,7 @@ async fn envelopes(config: &Path) -> Vec<fyrr_core::envelope::PreparedEnvelope> 
     result
 }
 fn small_writer_fixture(provider: &Provider, cap: u64) -> (PathBuf, FixtureRoot) {
-    let (config, root) = setup();
-    for row in 4..768 {
-        std::fs::remove_file(root.join(format!("sources/{row}.txt"))).unwrap();
-    }
+    let (config, root) = setup_sized(Backend::selected(), 4);
     let config = writer_config(&config, &root, provider, 1024, cap, 2);
     let text = std::fs::read_to_string(&config).unwrap();
     let (prefix, sources) = text.split_once("[[sources]]").unwrap();

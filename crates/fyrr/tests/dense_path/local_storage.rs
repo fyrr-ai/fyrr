@@ -265,10 +265,8 @@ async fn lifetime_history_keeps_maintenance_restore_and_receipts_available() {
             fyrr_core::clock::now().timestamp_micros()
         )),
         Backend::Local,
+        1,
     );
-    for row in 1..768 {
-        std::fs::remove_file(setup.1.join("sources").join(format!("{row}.txt"))).unwrap();
-    }
     let (worker, commit, root) =
         super::incremental::fixture_host_at(1, true, "dense-fixture", setup);
     publish_initial(&worker, &commit, &root);

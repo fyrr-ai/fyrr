@@ -9,10 +9,7 @@ use std::sync::{
 #[tokio::test]
 #[ignore = "real CLI multi-kind preparation on local storage"]
 async fn preparation_reuses_bodies_but_discovers_new_envelopes_on_local_storage() {
-    let setup = setup_on(Backend::Local);
-    for row in 8..768 {
-        std::fs::remove_file(setup.1.join("sources").join(format!("{row}.txt"))).unwrap();
-    }
+    let setup = setup_sized(Backend::Local, 8);
     let (worker, commit, root) = incremental::fixture_host_at(8, true, "dense-fixture", setup);
     incremental::publish_initial(&worker, &commit, &root);
     let config = fyrr_core::config::load(&worker).unwrap().config;
