@@ -265,8 +265,14 @@ async fn committer_indexes_and_stale_prepared_acl_on_storage() {
 }
 
 #[tokio::test]
-#[ignore = "real CLI 60-second service timer and RustFS; scripts/ci"]
+#[ignore = "real CLI service timer and RustFS; scripts/ci"]
 async fn serve_timer_disabled_committer_on_storage() {
+    use super::coordination::CommitProcess;
+    use std::sync::{Arc, atomic::AtomicBool, mpsc};
+    use std::time::{Duration, Instant};
+    // The documented default; the services below use 1 s to keep the case quick.
+    let default = fyrr_core::config::CommitConfig::default().coalescing_timer;
+    assert_eq!(default.as_duration(), Duration::from_secs(60));
     let (config, commit, root) = fixture();
     let initial = publication(&commit).await.0.content.unwrap();
     input(
@@ -274,59 +280,85 @@ async fn serve_timer_disabled_committer_on_storage() {
         json!({"epoch":1,"content":[[doc("a","r1","fixture document 1")]]}),
     );
     worker_sync(&config, &["incremental", "--kind", "content"]);
-    // No source polling is needed for this timer proof; the backlog lives only on S3.
+    // Each completed head read and the body of each head write. Without sources
+    // or an admin listener, only the startup read, the head watch (once per
+    // coalescing period) and the committer touch the head.
+    let (sender, events) = mpsc::channel::<(Instant, Option<Vec<u8>>)>();
+    let hook: super::corrections::BoundaryHook = Arc::new(move |request, body, after| {
+        let write = !after && request.starts_with("PUT ");
+        if request.contains("/head.json ") && (write || (after && request.starts_with("GET "))) {
+            let _ = sender.send((Instant::now(), write.then(|| body.to_vec())));
+        }
+        false
+    });
+    let next = |deadline: Instant| {
+        events
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .expect("the service stopped touching the head")
+    };
+    let endpoint = std::env::var("FYRR_TEST_S3_ENDPOINT").unwrap();
+    let stop = Arc::new(AtomicBool::new(false));
+    let (proxy, _guard) = super::corrections::proxy_at_boundary(endpoint.clone(), stop, hook);
+    // No source polling is needed for this timer proof; the backlog lives only in storage.
     let mut text = std::fs::read_to_string(&commit).unwrap();
     text.truncate(text.find("[[sources]]").unwrap());
-    text.push_str("\n[writer.serve]\ncommitter=false\n");
+    let text = text.replace(&endpoint, &proxy)
+        + "\n[writer.commit]\ncoalescing_timer='1s'\n[writer.serve]\ncommitter=false\n";
     let service = root.join("committer-host/service.toml");
     std::fs::write(&service, &text).unwrap();
-    let mut child = host_command(&service)
-        .args(["writer", "serve"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
-    std::thread::sleep(std::time::Duration::from_secs(2));
+    let serve = || {
+        CommitProcess::spawn_command(
+            &service,
+            &["writer", "serve"],
+            Arc::new(AtomicBool::new(true)),
+        )
+    };
+    let terminate = |mut process: CommitProcess| {
+        Command::new("kill")
+            .args(["-TERM", &process.child().id().to_string()])
+            .status()
+            .unwrap();
+        let result = process.finish();
+        assert!(result.status.success(), "{}", report(&result));
+    };
+    let process = serve();
+    // The startup read, then two of the head watch: an enabled committer would
+    // have started its first round by the second.
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let mut writes: Vec<_> = (0..3).map(|_| next(deadline).1).collect();
+    terminate(process);
+    // Shutdown waits for a round in progress, and a round with a backlog writes the head.
+    writes.extend(events.try_iter().map(|(_, write)| write));
+    assert!(
+        writes.iter().all(Option::is_none),
+        "a disabled committer wrote the head"
+    );
     assert_eq!(
         publication(&commit).await.0.content.unwrap().publication_id,
         initial.publication_id
     );
-    Command::new("kill")
-        .args(["-TERM", &child.id().to_string()])
-        .status()
-        .unwrap();
-    assert!(child.wait().unwrap().success());
     std::fs::write(&service, text.replace("committer=false", "committer=true")).unwrap();
-    let began = std::time::Instant::now();
-    let mut child = host_command(&service)
-        .args(["writer", "serve"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
-    let mut observed = false;
-    for _ in 0..95 {
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-        if publication(&commit)
-            .await
-            .0
-            .content
-            .as_ref()
-            .unwrap()
-            .publication_id
-            != initial.publication_id
+    let process = serve();
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let ready = next(deadline).0;
+    let published = loop {
+        if let (at, Some(body)) = next(deadline)
+            && serde_json::from_slice::<Value>(&body)
+                .is_ok_and(|head| head["content"]["sequence"].as_u64() > Some(initial.sequence))
         {
-            observed = true;
-            break;
+            break at;
         }
-    }
-    Command::new("kill")
-        .args(["-TERM", &child.id().to_string()])
-        .status()
-        .unwrap();
-    assert!(child.wait().unwrap().success());
-    assert!(observed);
-    assert!(began.elapsed().as_secs() >= 60);
+    };
+    terminate(process);
+    // The first round waits one coalescing period after the startup read.
+    assert!(
+        published - ready >= Duration::from_secs(1),
+        "published before the timer"
+    );
+    assert_ne!(
+        publication(&commit).await.0.content.unwrap().publication_id,
+        initial.publication_id
+    );
     publish(&commit);
 }
 
