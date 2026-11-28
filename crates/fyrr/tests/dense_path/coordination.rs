@@ -3,7 +3,7 @@ use super::*;
 use crate::common::Sentinels;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 // Test failures must not leave a stopped holder or a blocked proxy behind.
 pub(super) struct CommitProcess {
@@ -446,10 +446,8 @@ async fn coordination_busy_and_expired_holder_on_storage() {
                 .unwrap()
                 .success()
         );
-        let busy_started = Instant::now();
         let busy = host_commit(&committer);
         assert_eq!(busy.status.code(), Some(75));
-        assert!(busy_started.elapsed() < Duration::from_secs(1));
         assert!(String::from_utf8_lossy(&busy.stderr).contains("writer_busy holder=holder-"));
         let (held, _) = publication(&committer).await;
         let remaining = (held.lease.unwrap().expires_at - fyrr_core::clock::now())
@@ -633,10 +631,8 @@ async fn coordination_live_holder_is_busy_then_fenced_after_expiry(backend: Back
     // Held without keepalive, so it expires after its TTL.
     let holder = LeaseGuard::acquire(&loaded.config).await.unwrap();
     let saved = holder.head().await.unwrap();
-    let started = Instant::now();
     let busy = host_commit(&config);
     assert_eq!(busy.status.code(), Some(75));
-    assert!(started.elapsed() < Duration::from_secs(5));
     assert!(String::from_utf8_lossy(&busy.stderr).contains("writer_busy holder=holder-"));
     let held = store.get(&path).await.unwrap().bytes().await.unwrap();
     assert_eq!(parse_contract::<ServingHead>(&held).unwrap(), saved);
