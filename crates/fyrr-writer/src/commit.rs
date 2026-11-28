@@ -1047,6 +1047,7 @@ pub(crate) async fn drain_cached_authorization(
     let mut remaining = pending;
     loop {
         history.refresh(config, &head).await?;
+        // Authorization only, so no content waits on what `remaining` replaces.
         let unresolved = history.unconsumed_rejections(config, &remaining).await?;
         let group = commit_group_with_rejections(config, remaining, &head, unresolved).await?;
         if group.is_empty() {
@@ -1109,18 +1110,36 @@ pub(crate) async fn commit_group(
     pending: Vec<PreparedEnvelope>,
     head: &ServingHead,
 ) -> Result<Vec<PreparedEnvelope>> {
-    // A replacement that is pending consumes a rejection for the content of its
-    // source: it is committed with it, or it is rejected, and the content waits again.
-    let unresolved = unconsumed_rejections(config, head, &pending).await?;
-    commit_group_with_rejections(config, pending, head, unresolved).await
+    let published = unconsumed_rejections(config, head, &[]).await?;
+    commit_group_with_rejections(config, pending, head, published).await
 }
+/// `published` are the rejections that no published read replaces.
 async fn commit_group_with_rejections(
     config: &Config,
     mut pending: Vec<PreparedEnvelope>,
     head: &ServingHead,
-    unresolved: Vec<RejectionMarker>,
+    published: Vec<RejectionMarker>,
 ) -> Result<Vec<PreparedEnvelope>> {
-    let blocked = blocked_sources(&unresolved);
+    // A replacement that is pending consumes a rejection for the order of its key.
+    let unresolved: Vec<_> = published
+        .iter()
+        .filter(|m| {
+            !pending.iter().any(|e| {
+                crate::apply::complete_read(e)
+                    && history::replacement_matches(m, &e.source_id, e.kind, e.rejection_generation)
+            })
+        })
+        .cloned()
+        .collect();
+    // Content waits for a publication that applies the replacement of a rejected
+    // authorization read, as `commit_one` holds it back. A group holds one kind,
+    // except before the first content, when the permissions wait in every group:
+    // the replacement is committed with the content, or rejected and it waits again.
+    let blocked = blocked_sources(if head.content.is_none() {
+        &unresolved
+    } else {
+        &published
+    });
     pending.retain(|e| {
         e.kind != fyrr_core::connector::SyncKind::Content || !blocked.contains(&e.source_id)
     });
@@ -1142,30 +1161,42 @@ async fn commit_group_with_rejections(
     // Reject over-age authorization inputs first so their rejections become visible
     // before later reads of either kind. Valid authorization reads still precede content.
     // Source fairness applies after priority; valid sequences stay ordered within a kind.
-    // Keep age priorities fixed while the sorter compares envelopes.
+    // Keep age priorities fixed while the sorter compares envelopes. Each source
+    // and kind takes the priority of its oldest envelope, so sequence orders it,
+    // and an older envelope keeps its place among the other keys.
     let now = fyrr_core::clock::now();
+    let mut oldest = std::collections::BTreeMap::new();
+    for e in &pending {
+        let priority = if e.kind.is_authorization()
+            && (now - e.created_at)
+                .to_std()
+                .is_ok_and(|age| age > config.writer.max_envelope_age.as_duration())
+        {
+            0
+        } else if unresolved.iter().any(|m| {
+            m.source_id == e.source_id
+                && m.kind == e.kind
+                && e.rejection_generation > m.rejection_generation
+        }) {
+            1
+        } else {
+            match e.kind {
+                fyrr_core::connector::SyncKind::Permissions => 2,
+                fyrr_core::connector::SyncKind::Members => 3,
+                fyrr_core::connector::SyncKind::Reconcile => 4,
+                fyrr_core::connector::SyncKind::Content => 5,
+            }
+        };
+        let first = oldest
+            .entry((e.source_id.clone(), e.kind))
+            .or_insert((e.sequence, priority));
+        if e.sequence < first.0 {
+            *first = (e.sequence, priority);
+        }
+    }
     pending.sort_by_key(|e| {
         (
-            if e.kind.is_authorization()
-                && (now - e.created_at)
-                    .to_std()
-                    .is_ok_and(|age| age > config.writer.max_envelope_age.as_duration())
-            {
-                0
-            } else if unresolved.iter().any(|m| {
-                m.source_id == e.source_id
-                    && m.kind == e.kind
-                    && e.rejection_generation > m.rejection_generation
-            }) {
-                1
-            } else {
-                match e.kind {
-                    fyrr_core::connector::SyncKind::Permissions => 2,
-                    fyrr_core::connector::SyncKind::Members => 3,
-                    fyrr_core::connector::SyncKind::Reconcile => 4,
-                    fyrr_core::connector::SyncKind::Content => 5,
-                }
-            },
+            oldest[&(e.source_id.clone(), e.kind)].1,
             (order[&e.source_id] + count - (crate::narrow_usize(rotation) % count)) % count,
             e.sequence,
         )
@@ -1191,16 +1222,19 @@ async fn commit_group_with_rejections(
     let mut bytes = 0u64;
     let mut sources = BTreeSet::new();
     // Select at most one envelope per source per round. A document stays whole.
+    // A round takes only from the leading run of one kind: never an envelope
+    // past one of another kind that goes before it.
     while !pending.is_empty() {
         let kind = pending[0].kind;
         let position = pending
             .iter()
-            .position(|e| e.kind == kind && !sources.contains(&e.source_id));
+            .take_while(|e| e.kind == kind)
+            .position(|e| !sources.contains(&e.source_id));
         let Some(position) = position else {
             sources.clear();
             continue;
         };
-        if !group.is_empty() && pending[position].kind != group[0].kind {
+        if !group.is_empty() && kind != group[0].kind {
             break;
         }
         // A permission read is published whole: its oldest unpublished read,

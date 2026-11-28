@@ -4477,6 +4477,348 @@ async fn incremental_a_newer_read_rejected_for_its_age_never_goes_before_the_old
     assert!(row_readers(&batch, "a").is_empty() && row_readers(&batch, "b").is_empty());
 }
 
+/// A replacement is committed after the older content of its source, never
+/// before it. The next commit applies the older revisions of `a` and `b` and
+/// the first part of the replacement in the order they were read: the reader
+/// serves the newest revision of `a`, and the chain names the replacement.
+#[tokio::test]
+#[ignore = "real CLI and local storage; scripts/ci"]
+async fn incremental_a_replacement_is_committed_after_the_older_content_of_its_source_on_storage() {
+    let (worker, commit, _root, older, parts) = pending_content_replacement(false, &["a"]).await;
+    publish(&commit);
+    let mut states = Vec::new();
+    for envelope in older.iter().chain(&parts) {
+        states.push(resolved(&commit, &envelope.envelope_id).await);
+    }
+    assert_eq!(
+        revisions(&rows(&worker).await, "a"),
+        ["r8", "r8"],
+        "applied, rejected: {states:?}"
+    );
+    assert_eq!(states, [(true, false); 3]);
+    assert_eq!(
+        publication(&commit).await.1.chain_applied["incremental"][&SyncKind::Content],
+        parts[0].envelope_id
+    );
+}
+
+/// The content of a source is ordered by its oldest pending envelope, not by a
+/// replacement behind it: a fresh permissions read that revokes the readers of
+/// `b` is published before the older revision of `b`, never after it.
+#[tokio::test]
+#[ignore = "real CLI and local storage; scripts/ci"]
+async fn incremental_a_permissions_read_precedes_the_older_content_beside_a_replacement_on_storage()
+{
+    let (worker, commit, root, older, parts) = pending_content_replacement(false, &["a"]).await;
+    let known: BTreeSet<_> = permission_envelopes(&worker)
+        .await
+        .into_iter()
+        .map(|e| e.envelope_id)
+        .collect();
+    input(
+        &root,
+        json!({"epoch":6,"permissions":[[{"id":"b","revision":"p2","readers":[]}]]}),
+    );
+    worker_sync(&worker, &["incremental", "--kind", "permissions"]);
+    let read: Vec<_> = permission_envelopes(&worker)
+        .await
+        .into_iter()
+        .filter(|e| !known.contains(&e.envelope_id))
+        .collect();
+    assert!(!read.is_empty());
+    // Groups of two rows: the content takes more than one.
+    let text = std::fs::read_to_string(&commit)
+        .unwrap()
+        .replace("group_max_rows=3", "group_max_rows=2");
+    std::fs::write(&commit, text).unwrap();
+    publish(&commit);
+    let at = applied_by(&commit).await;
+    let revoked = read.iter().map(|e| at[&e.envelope_id]).max().unwrap();
+    let content: Vec<_> = older
+        .iter()
+        .chain(&parts)
+        .map(|e| at[&e.envelope_id])
+        .collect();
+    assert!(
+        content.iter().all(|c| *c > revoked),
+        "publications: content {content:?}, the permissions read {revoked}"
+    );
+}
+
+/// A pending listing is published before ordinary content beside a
+/// replacement: of the content of its source, ordered by its oldest pending
+/// envelope, and of another source.
+#[tokio::test]
+#[ignore = "real CLI and local storage; scripts/ci"]
+async fn incremental_a_listing_precedes_the_content_beside_a_replacement_on_storage() {
+    listing_precedes_content(false, &["a"]).await;
+}
+
+/// A group takes no content past a pending envelope of another kind that goes
+/// first: beside the parts of a replacement, which go first, the content of
+/// another source still waits behind a pending listing.
+#[tokio::test]
+#[ignore = "real CLI and local storage; scripts/ci"]
+async fn incremental_a_listing_precedes_the_content_of_another_source_beside_replacement_parts_on_storage()
+ {
+    listing_precedes_content(true, &["a", "b"]).await;
+}
+
+async fn listing_precedes_content(publish_older: bool, replaced: &[&str]) {
+    let (worker, commit, root, _, _) = pending_content_replacement(publish_older, replaced).await;
+    std::fs::write(root.join("sources/0.txt"), "fixture document 3").unwrap();
+    worker_sync(&worker, &["allowed", "--kind", "content"]);
+    input(
+        &root,
+        json!({"epoch":6,"listing":[{"last":true,"complete":true,"roots":["a","b"]}]}),
+    );
+    worker_sync(&worker, &["incremental", "--kind", "reconcile"]);
+    let newest = async |source: &str, kind: SyncKind| {
+        envelopes(&worker)
+            .await
+            .into_iter()
+            .map(|(_, e)| e)
+            .filter(|e| e.source_id == source && e.kind == kind)
+            .max_by_key(|e| e.sequence)
+            .unwrap()
+    };
+    let other = newest("allowed", SyncKind::Content).await;
+    let listing = newest("incremental", SyncKind::Reconcile).await;
+    publish(&commit);
+    let at = applied_by(&commit).await;
+    let (other, listing) = (at[&other.envelope_id], at[&listing.envelope_id]);
+    assert!(
+        listing < other,
+        "publications: the listing {listing}, content of another source {other}"
+    );
+}
+
+/// A commit returns while content waits for the replacement of a rejected
+/// permissions read. The parts of a content replacement, alone pending, go
+/// first, but the content of their source waits for a publication that
+/// applies the pending permissions replacement: the commit applies it, then
+/// the content.
+#[tokio::test]
+#[ignore = "real CLI and local storage; scripts/ci"]
+async fn incremental_content_waits_for_a_pending_permissions_replacement_and_the_commit_returns_on_storage()
+ {
+    let (worker, commit, root, _, parts) = pending_content_replacement(true, &["a"]).await;
+    let new_permissions = async |epoch: u64, revision: &str| {
+        let known: BTreeSet<_> = permission_envelopes(&worker)
+            .await
+            .into_iter()
+            .map(|e| e.envelope_id)
+            .collect();
+        input(
+            &root,
+            json!({"epoch":epoch,"permissions":[[{"id":"b","revision":revision,"readers":["grp:group"]}]]}),
+        );
+        worker_sync(&worker, &["incremental", "--kind", "permissions"]);
+        let read: Vec<_> = permission_envelopes(&worker)
+            .await
+            .into_iter()
+            .filter(|e| !known.contains(&e.envelope_id))
+            .collect();
+        assert!(!read.is_empty());
+        read
+    };
+    // A read over the age of an envelope is rejected; the content waits.
+    let expired = new_permissions(6, "p2").await;
+    for e in &expired {
+        age(&worker, &e.envelope_id, 4).await;
+    }
+    publish(&commit);
+    for e in &expired {
+        assert_eq!(resolved(&commit, &e.envelope_id).await, (false, true));
+    }
+    assert_eq!(
+        resolved(&commit, &parts[0].envelope_id).await,
+        (false, false)
+    );
+    let replacement = new_permissions(7, "p3").await;
+    let mut committing = host_command(&commit)
+        .args(["writer", "commit"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let started = std::time::Instant::now();
+    let status = loop {
+        if let Some(status) = committing.try_wait().unwrap() {
+            break Some(status);
+        }
+        if started.elapsed() > std::time::Duration::from_secs(90) {
+            committing.kill().unwrap();
+            committing.wait().unwrap();
+            break None;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    };
+    let mut states = Vec::new();
+    for e in replacement.iter().chain(&parts) {
+        states.push(resolved(&commit, &e.envelope_id).await);
+    }
+    assert!(
+        status.is_some_and(|s| s.success()),
+        "writer commit: {status:?}; applied, rejected: {states:?}"
+    );
+    assert!(states.iter().all(|s| *s == (true, false)), "{states:?}");
+}
+
+/// Content of `incremental` beside a replacement that failed. A read whose
+/// first batch is over the rows of a group goes on while the committer
+/// rejects that batch alone, and puts a revision of `a` and one of `b` behind
+/// it: `older`, which `publish_older` publishes. The replacement of the
+/// rejected batch writes a newer revision of each of `replaced`, a part each
+/// (`parts`), then fails on a document that cannot be embedded, so the
+/// rejection stays to be replaced.
+async fn pending_content_replacement(
+    publish_older: bool,
+    replaced: &[&str],
+) -> (
+    PathBuf,
+    PathBuf,
+    FixtureRoot,
+    Vec<PreparedEnvelope>,
+    Vec<PreparedEnvelope>,
+) {
+    let (worker, commit, root) = fixture();
+    publish_initial(&worker, &commit, &root);
+    let text = std::fs::read_to_string(&commit).unwrap().replace(
+        "[reader]",
+        "[writer]\nenvelope_max_rows=1\n[writer.commit]\ngroup_max_rows=3\n[reader]",
+    );
+    std::fs::write(&commit, text).unwrap();
+    let before = newest_content(&worker).await.sequence;
+    let over = ["c", "d", "e", "f"]
+        .iter()
+        .enumerate()
+        .map(|(n, id)| doc(id, "r2", &format!("fixture document {}", 10 + n)))
+        .collect::<Vec<_>>();
+    input(
+        &root,
+        json!({"epoch":2,"pause_content_at":1,"content":[over,
+            [doc("a","r6","fixture document 6")],[doc("b","r7","fixture document 7")]]}),
+    );
+    let mut reading = worker_command(&worker)
+        .args(["writer", "sync", "incremental", "--kind", "content"])
+        .spawn()
+        .unwrap();
+    let paused = root.join("paused");
+    let started = std::time::Instant::now();
+    while !paused.exists() || newest_content(&worker).await.sequence == before {
+        if started.elapsed() > std::time::Duration::from_secs(60) {
+            reading.kill().unwrap();
+            panic!(
+                "the read did not pause after its first batch: paused {}, newest {}",
+                paused.exists(),
+                newest_content(&worker).await.sequence
+            );
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    let rejected = newest_content(&worker).await;
+    publish(&commit);
+    assert_eq!(
+        resolved(&commit, &rejected.envelope_id).await,
+        (false, true)
+    );
+    std::fs::remove_file(&paused).unwrap();
+    assert!(reading.wait().unwrap().success());
+    let content = async || {
+        let mut content: Vec<_> = envelopes(&worker)
+            .await
+            .into_iter()
+            .map(|(_, e)| e)
+            .filter(|e| {
+                e.source_id == "incremental"
+                    && e.kind == SyncKind::Content
+                    && e.sequence > rejected.sequence
+            })
+            .collect();
+        content.sort_by_key(|e| e.sequence);
+        content
+    };
+    let older = content().await;
+    assert_eq!(older.len(), 2);
+    if publish_older {
+        publish(&commit);
+    }
+    // Document `n` of `replaced` has `n + 2` sections, one more than the
+    // envelope beside the one before can hold: a part each. A batch holds as
+    // many documents as an envelope holds rows.
+    let rows = replaced.len() + 1;
+    let text = std::fs::read_to_string(&worker).unwrap().replace(
+        "[reader]",
+        &format!(
+            "[writer]\nenvelope_max_rows={rows}\n[writer.commit]\ngroup_max_rows={rows}\n[reader]"
+        ),
+    );
+    std::fs::write(&worker, text).unwrap();
+    let mut documents: Vec<_> = replaced
+        .iter()
+        .enumerate()
+        .map(|(n, id)| {
+            let texts: Vec<_> = (0..n + 2)
+                .map(|s| format!("fixture document {}", 5 + 3 * s + 20 * n))
+                .collect();
+            json!({"id":id,"revision":"r8","texts":texts,"section_readers":vec![["grp:group"]; n + 2]})
+        })
+        .collect();
+    documents.push(doc("y", "r8", "unregistered text"));
+    input(&root, json!({"epoch":5,"content":[documents]}));
+    let failed = worker_command(&worker)
+        .args(["writer", "sync", "incremental", "--kind", "content"])
+        .output()
+        .unwrap();
+    assert!(!failed.status.success(), "the replacement was to fail");
+    let parts = content().await.split_off(2);
+    assert_eq!(
+        parts.len(),
+        replaced.len(),
+        "{}",
+        String::from_utf8_lossy(&failed.stdout)
+    );
+    assert!(
+        parts.iter().all(|e| {
+            e.rejection_generation > rejected.rejection_generation && !e.advances_cursor
+        })
+    );
+    assert_eq!(parts[0].previous.as_ref(), Some(&older[1].envelope_id));
+    (worker, commit, root, older, parts)
+}
+
+/// The sequence of the first publication that applied each envelope.
+async fn applied_by(config: &Path) -> std::collections::BTreeMap<String, u64> {
+    let loaded = fyrr_core::config::load(config).unwrap();
+    let (store, ns) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
+    let head = publication(config).await.0;
+    let manifests: Vec<_> = futures::TryStreamExt::try_collect(
+        fyrr_reader::storage::manifest_chain(store, ns, Some(head.content.unwrap().manifest)),
+    )
+    .await
+    .unwrap();
+    let mut at = std::collections::BTreeMap::new();
+    for manifest in manifests {
+        for id in manifest.envelope_ids {
+            let first = at.entry(id).or_insert(manifest.sequence);
+            *first = (*first).min(manifest.sequence);
+        }
+    }
+    at
+}
+
+/// The content envelope of `incremental` with the highest sequence.
+async fn newest_content(config: &Path) -> PreparedEnvelope {
+    envelopes(config)
+        .await
+        .into_iter()
+        .map(|(_, e)| e)
+        .filter(|e| e.source_id == "incremental" && e.kind == SyncKind::Content)
+        .max_by_key(|e| e.sequence)
+        .unwrap()
+}
+
 /// The head decides what is rejected, not a marker on storage: the marker of an
 /// envelope that no publication names, as a committer that lost its lease or
 /// died before it published may leave, rejects nothing. The envelope is
@@ -6113,4 +6455,160 @@ async fn incremental_a_lost_content_cursor_after_a_rejection_reads_from_the_star
     let revisions = fyrr_writer::apply::strings(&batch, "source_revision").unwrap();
     let row = roots(&batch).iter().position(|id| id == "a").unwrap();
     assert_eq!(revisions.value(row), "r3");
+}
+
+/// A members read in two parts whose first part is over age: the commit rejects
+/// it, and the part that ends the read is rejected with it, never applied
+/// without it. `permissions`: a fresh permissions read is pending beside it.
+async fn members_part_over_age(permissions: bool) {
+    let (worker, commit, root) = fixture();
+    publish_initial(&worker, &commit, &root);
+    let members = async || {
+        let mut found: Vec<_> = envelopes(&worker)
+            .await
+            .into_iter()
+            .map(|(_, e)| e)
+            .filter(|e| e.source_id == "incremental" && e.kind == SyncKind::Members)
+            .collect();
+        found.sort_by_key(|e| e.sequence);
+        found
+    };
+    let known: BTreeSet<_> = members().await.into_iter().map(|e| e.envelope_id).collect();
+    let mut read = json!({"epoch":2,"members":[
+        {"last":false,"users":[{"id":"u","email":"fixture@example.test","email_verification":"verified_corporate","active":true}],
+         "groups":[{"id":"child","members":[]}]},
+        {"last":true,"groups":[{"id":"group","members":["grp:child"]}]}]});
+    if permissions {
+        read["permissions"] = json!([[{"id":"b","revision":"p2","readers":["grp:group"]}]]);
+    }
+    input(&root, read);
+    worker_sync(&worker, &["incremental", "--kind", "members"]);
+    let read: Vec<_> = members()
+        .await
+        .into_iter()
+        .filter(|e| !known.contains(&e.envelope_id))
+        .collect();
+    assert_eq!(read.len(), 2, "{read:?}");
+    age(&worker, &read[0].envelope_id, 4).await;
+    let mut beside = Vec::new();
+    if permissions {
+        let before: BTreeSet<_> = permission_envelopes(&worker)
+            .await
+            .into_iter()
+            .map(|e| e.envelope_id)
+            .collect();
+        worker_sync(&worker, &["incremental", "--kind", "permissions"]);
+        beside = permission_envelopes(&worker)
+            .await
+            .into_iter()
+            .filter(|e| !before.contains(&e.envelope_id))
+            .collect();
+        assert!(!beside.is_empty());
+    }
+    publish(&commit);
+    let first = resolved(&commit, &read[0].envelope_id).await;
+    let last = resolved(&commit, &read[1].envelope_id).await;
+    let mut states = Vec::new();
+    for e in &beside {
+        states.push(resolved(&commit, &e.envelope_id).await);
+    }
+    assert_eq!(
+        (first, last),
+        ((false, true), (false, true)),
+        "first part, last part; permissions read {states:?}"
+    );
+}
+
+#[tokio::test]
+#[ignore = "real CLI and local storage; scripts/ci"]
+async fn incremental_a_members_part_over_age_rejects_the_rest_of_its_read_on_storage() {
+    members_part_over_age(false).await;
+}
+
+#[tokio::test]
+#[ignore = "real CLI and local storage; scripts/ci"]
+async fn incremental_a_members_part_over_age_rejects_the_rest_of_its_read_beside_permissions_on_storage()
+ {
+    members_part_over_age(true).await;
+}
+
+/// A members part of a rejected read that lands after the rejection (a worker
+/// still writing it) is refused by the fence, and the replacement read, of a
+/// newer rejection generation, is still applied.
+#[tokio::test]
+#[ignore = "real CLI and local storage; scripts/ci"]
+async fn incremental_a_late_part_of_a_rejected_members_read_spares_its_replacement_on_storage() {
+    let (worker, commit, root) = fixture();
+    publish_initial(&worker, &commit, &root);
+    let members = async || {
+        let mut found: Vec<_> = envelopes(&worker)
+            .await
+            .into_iter()
+            .filter(|(_, e)| e.source_id == "incremental" && e.kind == SyncKind::Members)
+            .collect();
+        found.sort_by_key(|(_, e)| (e.rejection_generation, e.sequence));
+        found
+    };
+    let known: BTreeSet<_> = members()
+        .await
+        .into_iter()
+        .map(|(_, e)| e.envelope_id)
+        .collect();
+    input(
+        &root,
+        json!({"epoch":2,"members":[
+        {"last":false,"users":[{"id":"u","email":"fixture@example.test","email_verification":"verified_corporate","active":true}],
+         "groups":[{"id":"child","members":[]}]},
+        {"last":true,"groups":[{"id":"group","members":["grp:child"]}]}]}),
+    );
+    worker_sync(&worker, &["incremental", "--kind", "members"]);
+    let read: Vec<_> = members()
+        .await
+        .into_iter()
+        .filter(|(_, e)| !known.contains(&e.envelope_id))
+        .collect();
+    assert_eq!(read.len(), 2, "{read:?}");
+    // The last part is not stored yet when the commit lists: hide it.
+    let loaded = fyrr_core::config::load(&worker).unwrap();
+    let (store, _) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
+    let (late_path, late) = read[1].clone();
+    let late_bytes = store.get(&late_path).await.unwrap().bytes().await.unwrap();
+    store.delete(&late_path).await.unwrap();
+    age(&worker, &read[0].1.envelope_id, 4).await;
+    publish(&commit);
+    assert_eq!(
+        resolved(&commit, &read[0].1.envelope_id).await,
+        (false, true)
+    );
+    let known: BTreeSet<_> = members()
+        .await
+        .into_iter()
+        .map(|(_, e)| e.envelope_id)
+        .collect();
+    worker_sync(&worker, &["incremental", "--kind", "members"]);
+    let replacement: Vec<_> = members()
+        .await
+        .into_iter()
+        .map(|(_, e)| e)
+        .filter(|e| !known.contains(&e.envelope_id))
+        .collect();
+    assert!(!replacement.is_empty());
+    assert!(
+        replacement
+            .iter()
+            .all(|e| e.rejection_generation > late.rejection_generation)
+    );
+    // The late part lands now.
+    store.put(&late_path, late_bytes.into()).await.unwrap();
+    publish(&commit);
+    let late_state = resolved(&commit, &late.envelope_id).await;
+    let mut states = Vec::new();
+    for e in &replacement {
+        states.push(resolved(&commit, &e.envelope_id).await);
+    }
+    assert_eq!(late_state, (false, true), "late part");
+    assert!(
+        states.iter().all(|s| *s == (true, false)),
+        "replacement (applied, rejected): {states:?}"
+    );
 }
