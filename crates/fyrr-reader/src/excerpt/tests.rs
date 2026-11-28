@@ -309,6 +309,25 @@ fn highlights_skip_a_token_the_passage_cuts() {
 }
 
 #[test]
+fn highlights_skip_part_of_a_longer_token_of_the_tokenizer() {
+    // `whitespace` keeps `cat-dog` one token: a passage that ends at its `-`
+    // holds no token `cat`, and the separate `cat` is still marked.
+    let whitespace = || {
+        fts_params(&namespace(
+            serde_json::json!({"analyzer": {"tokenizer": "whitespace"}}),
+        ))
+        .unwrap()
+    };
+    let record = "cat-dog cat";
+    assert_eq!(
+        highlights(whitespace(), record, (0, 3), "cat"),
+        Vec::<[u32; 2]>::new()
+    );
+    assert_eq!(highlights(whitespace(), record, (4, 11), "cat"), [[8, 11]]);
+    assert_eq!(highlights(whitespace(), record, (0, 11), "cat"), [[8, 11]]);
+}
+
+#[test]
 fn highlights_are_bounded() {
     let record = "a ".repeat(MAX_HIGHLIGHTS + 50);
     let end = record.chars().count();

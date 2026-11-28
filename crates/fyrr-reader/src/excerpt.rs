@@ -63,10 +63,9 @@ fn query_terms(tokenizer: &mut dyn LanceTokenizer, query: &str) -> Result<Vec<St
     Ok(terms)
 }
 
-/// Sets the match ranges of `excerpt`, a passage of `record`: its tokens, as
-/// the index analyzer cuts and reduces them, that equal a token of `query`. A
-/// token the passage cuts, because the record goes on with a letter or digit,
-/// is not a token of the index and is not marked.
+/// Sets the match ranges of `excerpt`, a passage of `record`: the tokens of the
+/// record, as the index analyzer cuts and reduces them, that lie whole in the
+/// passage and equal a token of `query`. A token the passage cuts is not marked.
 pub(crate) fn highlight(
     tokenizer: &mut dyn LanceTokenizer,
     query: &str,
@@ -80,35 +79,33 @@ pub(crate) fn highlight(
         };
         count
     };
-    // shortcut: whether the passage cuts a token is judged as the `simple`
-    // tokenizer would, by alphanumeric characters; with another tokenizer of
-    // the namespace's analyzer a cut token may be marked, or one left out. Use
-    // the tokenizer of the index here when that costs highlights.
-    let before = (excerpt.start > 0)
-        .then(|| record.chars().nth(excerpt.start as usize - 1))
-        .flatten();
-    let after = record.chars().nth(excerpt.end as usize);
-    let cut_before = before.is_some_and(char::is_alphanumeric);
-    let cut_after = after.is_some_and(char::is_alphanumeric);
+    let mut chars = record.chars();
+    let mut skip = |count: u32| {
+        if count > 0 {
+            chars.nth(count as usize - 1);
+        }
+        record.len() - chars.as_str().len()
+    };
+    let from = skip(excerpt.start);
+    let to = skip(excerpt.end - excerpt.start);
+    // No tokenizer an analyzer admits (`simple`, `whitespace`, `unicode`; not
+    // `ngram`) makes a token across whitespace, so the tokens between the
+    // whitespace around the passage are the record's, with its offsets.
+    let head = record[..from].rfind(char::is_whitespace).unwrap_or(0);
+    let tail = record[to..]
+        .find(char::is_whitespace)
+        .map_or(record.len(), |at| to + at);
     let mut ranges = Vec::new();
-    let mut stream = tokenizer.token_stream_for_doc(&excerpt.text);
+    let mut stream = tokenizer.token_stream_for_doc(&record[head..tail]);
     while ranges.len() < MAX_HIGHLIGHTS
         && let Some(token) = stream.try_next()?
     {
-        if terms.binary_search(&token.text).is_err()
-            || (token.offset_from == 0 && cut_before)
-            || (token.offset_to == excerpt.text.len() && cut_after)
-        {
+        let (at, end) = (head + token.offset_from, head + token.offset_to);
+        if at < from || end > to || terms.binary_search(&token.text).is_err() {
             continue;
         }
-        let (Some(head), Some(body)) = (
-            excerpt.text.get(..token.offset_from),
-            excerpt.text.get(token.offset_from..token.offset_to),
-        ) else {
-            continue;
-        };
-        let start = excerpt.start + codepoints(head);
-        ranges.push([start, start + codepoints(body)]);
+        let start = excerpt.start + codepoints(&record[from..at]);
+        ranges.push([start, start + codepoints(&record[at..end])]);
     }
     drop(stream);
     excerpt.highlights = Some(ranges);

@@ -67,11 +67,10 @@ The `highlights` of an excerpt are marked with the tokens of the analyzer, and
 the excerpt itself is chosen with them: the passage holds the most distinct
 tokens of the query, so with a language a passage with `Häuser` is found by
 `haus`. A word the index drops (`max_token_length` bytes or more) or cuts (at `_`) is not
-a token of the query, as it is not a token of the index. The tokenizer is not
-used for one thing: whether a passage cuts a token at its edge is judged as the
-`simple` tokenizer would, by alphanumeric characters, so with the `whitespace`
-or `unicode` tokenizer a token cut by the edge of the excerpt may be marked, or
-one left out.
+a token of the query, as it is not a token of the index. Highlights are the
+tokens of the whole record, so a token the edge of the excerpt cuts is not
+marked: with the `whitespace` tokenizer, an excerpt that ends at the `-` of
+`cat-dog` marks no `cat`.
 
 ### The size of the positions
 
