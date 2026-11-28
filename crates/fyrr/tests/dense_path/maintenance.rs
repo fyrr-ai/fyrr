@@ -252,7 +252,7 @@ async fn maintenance_restore_refuses_a_namespace_of_connector_sources_on_storage
     std::fs::write(&copy, &text[..text.find("[[sources]]").unwrap()]).unwrap();
     super::namespace_copy::copied(&local, &copy);
     let copied = publication(&copy).await.1.publication_id;
-    for (config, target) in [(&commit, &first.publication_id), (&copy, &copied)] {
+    let refused = async |config: &Path, target: &str| {
         let head = publication(config).await.0;
         for args in [
             vec!["writer", "rollback"],
@@ -264,7 +264,24 @@ async fn maintenance_restore_refuses_a_namespace_of_connector_sources_on_storage
             assert!(stderr.contains("restore_unsupported"), "{stderr}");
             assert_eq!(publication(config).await.0, head);
         }
+    };
+    refused(&commit, &first.publication_id).await;
+    refused(&copy, &copied).await;
+    // Its cursors lost, in a configuration that lists no source.
+    let loaded = fyrr_core::config::load(&commit).unwrap();
+    let (store, ns) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
+    let cursors: Vec<_> =
+        futures::TryStreamExt::try_collect(store.list(Some(&ns.clone().join("cursors"))))
+            .await
+            .unwrap();
+    assert!(!cursors.is_empty());
+    for cursor in cursors {
+        store.delete(&cursor.location).await.unwrap();
     }
+    let bare = commit.with_file_name("bare.toml");
+    let text = std::fs::read_to_string(&commit).unwrap();
+    std::fs::write(&bare, &text[..text.find("[[sources]]").unwrap()]).unwrap();
+    refused(&bare, &first.publication_id).await;
 }
 
 #[tokio::test]
