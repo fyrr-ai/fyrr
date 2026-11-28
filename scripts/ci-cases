@@ -105,9 +105,11 @@ def build():
                 # can keep size and mtime. The snapshot is a plain executable.
                 temporary = destination.with_suffix(".tmp")
                 temporary.unlink(missing_ok=True)
+                filecmp.clear_cache()
                 if (
                     destination.is_symlink()
-                    or not os.access(destination, os.X_OK)
+                    or not os.access(destination, os.R_OK | os.X_OK)
+                    or destination.stat().st_nlink > 1
                     or not filecmp.cmp(item["executable"], destination, shallow=False)
                 ):
                     shutil.copy2(item["executable"], temporary)
