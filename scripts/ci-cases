@@ -680,12 +680,11 @@ def main():
         for row, spec in manifest.items():
             print(f"{row}\t{spec['kind']}\t{spec['title']}")
     elif mode == "rows":
-        # Rows with something to run in this tier, and whether a top-level run
-        # skips them unless asked; no build needed to know.
+        # Rows with something to run in this tier; no build needed to know.
         for row, spec in manifest.items():
             if spec["kind"] == "rust":
                 entries = {**spec.get("owns", {}), **spec.get("cases", {})}
-                print(f"{row}\t{len(selected_cases(entries))}\t{int(spec.get('on_demand', False))}")
+                print(f"{row}\t{len(selected_cases(entries))}")
     elif mode == "settings":
         spec = manifest[sys.argv[2]]
         print(json.dumps({"backend": spec.get("backend"), "services": spec.get("services", [])}))
