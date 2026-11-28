@@ -394,7 +394,7 @@ def run(spec, compiled=None):
             # failed runs intact, and never remove external-service data here.
             owned = re.compile(rf"(?:storage-)?(?:dense|fyrr-history)-{process.pid}-")
             removed = 0
-            for directory in (ROOT / "target/tmp").iterdir():
+            for directory in Path(env.get("FYRR_TEST_TMP", ROOT / "target/tmp")).iterdir():
                 if (
                     owned.match(directory.name)
                     and directory.is_dir()
