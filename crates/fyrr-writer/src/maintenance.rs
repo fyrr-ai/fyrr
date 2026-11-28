@@ -375,49 +375,37 @@ async fn command_recover(
 /// Publishes the version of a retained publication again, or of the one before
 /// the head's with `None`: a plain Lance restore under the namespace lease. The
 /// rows come back as they were then, with the readers they had. Only a
-/// namespace written through the write API alone restores; one that holds a
-/// connector source fails with `restore_unsupported` and recovers by a sync or
-/// `writer namespace copy`. So does one with a retired source, whose purged
-/// rows a restore would bring back.
+/// namespace written through the write API restores; one of connector sources
+/// fails with `restore_unsupported` and recovers by a sync or `writer namespace
+/// copy`. So does one with a retired source, whose purged rows a restore would
+/// bring back.
 pub async fn restore(config: &Config, publication: Option<&str>) -> Result<serde_json::Value> {
     if publication.is_some_and(|id| !fyrr_core::limits::prefixed_hex(id, "pub-", 32)) {
         return Err(WriterError::PublicationIdInvalid);
     }
-    // Decided before the lease, so a refusal writes nothing.
-    if !config.sources.is_empty() || holds_other_sources(config).await? {
-        return Err(WriterError::RestoreUnsupported);
+    // Judged before the lease, so a refusal writes nothing, and again under
+    // it, where a retirement can no longer land in between.
+    if let Some(head) = fyrr_reader::storage::optional_head(config).await? {
+        restorable(config, &head).await?;
     }
     crate::lease::LeaseGuard::with(config, |lease| async move {
+        restorable(config, &lease.head().await?).await?;
         // Keep the native publication future off the caller's stack.
         Box::pin(restore_held(config, &lease, publication)).await
     })
     .await
 }
 
-/// Whether the namespace has a cursor of a connector source, which a copy keeps
-/// too, or a retired source of any kind. A connector's source ID starts with a
-/// letter or digit, and the write API's with `_`.
-async fn holds_other_sources(config: &Config) -> Result<bool> {
-    let Some(head) = fyrr_reader::storage::optional_head(config).await? else {
-        return Ok(false);
-    };
+/// The namespace kind is fixed at creation, so the policy of `head` tells a
+/// write API namespace whatever the configuration lists.
+async fn restorable(config: &Config, head: &ServingHead) -> Result<()> {
     let (store, root) = namespace_store(config)?;
     let policy: PolicyArtifact =
         fyrr_reader::storage::artifact(store.as_ref(), &root, &head.policy).await?;
-    if !policy.retired_sources.is_empty() {
-        return Ok(true);
+    if policy.settings.namespace.write_api.is_none() || !policy.retired_sources.is_empty() {
+        return Err(WriterError::RestoreUnsupported);
     }
-    let mut cursors = store.list(Some(&root.clone().join("cursors")));
-    while let Some(object) = cursors.try_next().await? {
-        if !object
-            .location
-            .filename()
-            .is_some_and(|name| name.starts_with('_'))
-        {
-            return Ok(true);
-        }
-    }
-    Ok(false)
+    Ok(())
 }
 
 async fn restore_held(
