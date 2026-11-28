@@ -248,11 +248,15 @@ cases_start() {
     fi
     selected_rows=("$CASE_ROW")
   else
-    while IFS=$'\t' read -r row count; do
+    while IFS=$'\t' read -r row count on_demand; do
       name="$(row_name "$row")"
       if ((count == 0)); then
         not_evaluated "$name" "not selected by $TIER tier"
-      elif ((!ONLY_STEPS)) || [[ ${REQUESTED_STEPS["$name"]+selected} ]]; then
+      elif [[ ${REQUESTED_STEPS["$name"]+selected} ]]; then
+        selected_rows+=("$row")
+      elif ((on_demand)); then
+        not_evaluated "$name" "on demand; use --row=$row"
+      elif ((!ONLY_STEPS)); then
         selected_rows+=("$row")
       else
         not_evaluated "$name" "not selected by --step"
