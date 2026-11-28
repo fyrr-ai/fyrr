@@ -413,6 +413,8 @@ async fn restore_held(
     lease: &LeaseGuard,
     publication: Option<&str>,
 ) -> Result<serde_json::Value> {
+    // Damaged history fails before recovery writes a native version on it.
+    retained(config, &lease.head().await?).await?;
     // Recover an unpublished native suffix, so the restore follows the head.
     commit::commit_one(config, false, lease, Vec::new(), None).await?;
     let head = lease.head().await?;
