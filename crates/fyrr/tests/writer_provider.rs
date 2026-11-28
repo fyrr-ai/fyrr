@@ -196,8 +196,11 @@ fn failed_workers(log: &Path) -> usize {
         .count()
 }
 
-/// Waits until `count` workers have failed, as the log shows it.
-fn wait_for_failures(log: &Path, count: usize) {
+/// Waits until `count` workers have failed, as the log shows it, and returns
+/// the test clock when the test saw it. The service schedules the retry from
+/// its own reading of the clock, taken before it logged the failure, so the
+/// retry is due at most its delay after the returned time.
+fn wait_for_failures(log: &Path, count: usize) -> chrono::DateTime<chrono::Utc> {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
     while failed_workers(log) < count {
         assert!(
@@ -206,12 +209,28 @@ fn wait_for_failures(log: &Path, count: usize) {
         );
         std::thread::sleep(std::time::Duration::from_millis(200));
     }
+    fyrr_core::clock::now()
 }
 
-/// Moves the test clock by `by`, then gives the service real time to act on
-/// it: only a check that nothing happened needs that.
-fn advance_and_settle(by: u64) {
-    fyrr_core::clock::advance(std::time::Duration::from_secs(by)).unwrap();
+/// Moves the test clock to `by` seconds after `since`. The clock is real time
+/// plus the test's offset, so a step relative to an observed event does not
+/// count the real time the test spent since then.
+fn advance_to(since: chrono::DateTime<chrono::Utc>, by: i64) {
+    let target = since + chrono::TimeDelta::seconds(by);
+    let step = (target - fyrr_core::clock::now())
+        .to_std()
+        .unwrap_or_else(|_| {
+            panic!(
+                "real time alone passed {by} s after the observed event; the check would not hold"
+            )
+        });
+    fyrr_core::clock::advance(step).unwrap();
+}
+
+/// Moves the test clock to `by` seconds after `since`, then gives the service
+/// real time to act on it: only a check that nothing happened needs that.
+fn advance_to_and_settle(since: chrono::DateTime<chrono::Utc>, by: i64) {
+    advance_to(since, by);
     std::thread::sleep(std::time::Duration::from_secs(3));
 }
 
@@ -310,12 +329,13 @@ fn a_failing_source_is_retried_with_growing_delays_and_a_success_resets_them() {
             .unwrap(),
     );
     // The first worker starts at once and fails. The next waits 60 s of the
-    // test clock, the one after 120 s, the one after that 240 s.
-    wait_for_failures(&log, 1);
-    advance_and_settle(40);
+    // test clock, the one after 120 s, the one after that 240 s. Each step is
+    // measured from the failure the test saw.
+    let failed = wait_for_failures(&log, 1);
+    advance_to_and_settle(failed, 40);
     assert_eq!(failed_workers(&log), 1, "retried before 60 s");
-    fyrr_core::clock::advance(std::time::Duration::from_secs(40)).unwrap();
-    wait_for_failures(&log, 2);
+    advance_to(failed, 80);
+    let failed = wait_for_failures(&log, 2);
     // Another source publishes a new head while the failing one waits: that
     // does not make it due.
     let published = publications(&log);
@@ -336,16 +356,16 @@ fn a_failing_source_is_retried_with_growing_delays_and_a_success_resets_them() {
     }
     std::thread::sleep(std::time::Duration::from_secs(3));
     assert_eq!(failed_workers(&log), 2, "a new head made the source due");
-    advance_and_settle(80);
+    advance_to_and_settle(failed, 80);
     assert_eq!(failed_workers(&log), 2, "retried before 120 s");
-    fyrr_core::clock::advance(std::time::Duration::from_secs(50)).unwrap();
-    wait_for_failures(&log, 3);
-    advance_and_settle(200);
+    advance_to(failed, 130);
+    let failed = wait_for_failures(&log, 3);
+    advance_to_and_settle(failed, 200);
     assert_eq!(failed_workers(&log), 3, "retried before 240 s");
     // The source recovers, and runs when its backoff has passed.
     let healed = text.replace("mode='raise'", "mode='print'");
     std::fs::write(&fixture.config, healed).unwrap();
-    fyrr_core::clock::advance(std::time::Duration::from_secs(60)).unwrap();
+    advance_to(failed, 260);
     let storage = fixture.sandbox.output().join("storage");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
     while saved_cursor(&storage).as_deref() != Some("printed") {
@@ -360,9 +380,9 @@ fn a_failing_source_is_retried_with_growing_delays_and_a_success_resets_them() {
     // interval, the retry waits 60 s, not 480 s.
     std::fs::write(&fixture.config, &text).unwrap();
     fyrr_core::clock::advance(std::time::Duration::from_secs(11 * 60)).unwrap();
-    wait_for_failures(&log, 4);
-    advance_and_settle(40);
+    let failed = wait_for_failures(&log, 4);
+    advance_to_and_settle(failed, 40);
     assert_eq!(failed_workers(&log), 4, "retried before 60 s");
-    fyrr_core::clock::advance(std::time::Duration::from_secs(40)).unwrap();
+    advance_to(failed, 80);
     wait_for_failures(&log, 5);
 }
