@@ -338,8 +338,12 @@ async fn serve_timer_disabled_committer_on_storage() {
             .args(["-TERM", &process.child().id().to_string()])
             .status()
             .unwrap();
-        let result = process.finish();
-        assert!(result.status.success(), "{}", log.join().unwrap().join("\n"));
+        let result = process.finish_bounded();
+        assert!(
+            result.status.success(),
+            "{}",
+            log.join().unwrap().join("\n")
+        );
     };
     let (process, log, started) = serve();
     // An enabled committer starts its first round one period after its timer
