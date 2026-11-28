@@ -80,17 +80,20 @@ LOGS="$(realpath -m -- "${FYRR_CI_LOG_DIR:-$ROOT/target/ci-logs/$STAMP}")"
 mkdir -p "$LOGS" "$ROOT/target/tmp"
 # Fixture roots live in RAM when it can hold them: a test proves which syncs fyrr
 # asks for, never the device, and a loaded disk stalls each sync for seconds.
-# A top-level run drops its previous roots and those of deleted checkouts.
+# A top-level run drops its previous roots and those whose recorded checkout
+# is gone. The record is written once, by rename, so no reader sees it empty.
 if [[ -w /dev/shm && "$(stat -f -c %T /dev/shm)" == tmpfs ]]; then
   export FYRR_TEST_TMP="/dev/shm/fyrr-$(printf '%s' "$ROOT" | sha256sum | cut -c1-12)"
   if [[ -z "$CASE_ROW" ]]; then
     for dir in /dev/shm/fyrr-*; do
-      if [[ -O "$dir" && ("$dir" == "$FYRR_TEST_TMP" || ! -d "$(cat "$dir/root" 2>/dev/null)") ]]; then rm -rf -- "$dir"; fi
+      [[ -O "$dir" && -d "$dir" && ! -L "$dir" ]] || continue
+      owner="$(cat "$dir/root" 2>/dev/null)" || continue
+      if [[ "$dir" == "$FYRR_TEST_TMP" || (-n "$owner" && ! -d "$owner") ]]; then rm -rf -- "$dir"; fi
     done
   fi
   mkdir -p -m 0700 "$FYRR_TEST_TMP"
   [[ -O "$FYRR_TEST_TMP" && ! -L "$FYRR_TEST_TMP" ]] || die "$FYRR_TEST_TMP is not a directory of this user"
-  printf '%s\n' "$ROOT" >"$FYRR_TEST_TMP/root"
+  [[ -s "$FYRR_TEST_TMP/root" ]] || { printf '%s\n' "$ROOT" >"$FYRR_TEST_TMP/root.$$" && mv -f "$FYRR_TEST_TMP/root.$$" "$FYRR_TEST_TMP/root"; }
 fi
 exec > >(tee "$LOGS/ci.log") 2>&1
 
