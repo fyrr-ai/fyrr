@@ -449,7 +449,9 @@ async fn coordination_busy_and_expired_holder_on_storage() {
         let busy_started = Instant::now();
         let busy = host_commit(&committer);
         assert_eq!(busy.status.code(), Some(75));
-        assert!(busy_started.elapsed() < Duration::from_secs(1));
+        // Half the holder's 3 s lease: a committer that waits on the live
+        // lease before it gives up exceeds it, and process start has 1.5 s.
+        assert!(busy_started.elapsed() < Duration::from_millis(1500));
         assert!(String::from_utf8_lossy(&busy.stderr).contains("writer_busy holder=holder-"));
         let (held, _) = publication(&committer).await;
         let remaining = (held.lease.unwrap().expires_at - fyrr_core::clock::now())
@@ -636,6 +638,7 @@ async fn coordination_live_holder_is_busy_then_fenced_after_expiry(backend: Back
     let started = Instant::now();
     let busy = host_commit(&config);
     assert_eq!(busy.status.code(), Some(75));
+    // A third of the 15 s lease: busy at once, not after waiting on it.
     assert!(started.elapsed() < Duration::from_secs(5));
     assert!(String::from_utf8_lossy(&busy.stderr).contains("writer_busy holder=holder-"));
     let held = store.get(&path).await.unwrap().bytes().await.unwrap();

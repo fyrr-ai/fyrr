@@ -208,7 +208,8 @@ fn wait_for_failures(log: &Path, count: usize) {
     }
 }
 
-/// Moves the test clock by `by`, then gives the service real time to act on it.
+/// Moves the test clock by `by`, then gives the service real time to act on
+/// it: only a check that nothing happened needs that.
 fn advance_and_settle(by: u64) {
     fyrr_core::clock::advance(std::time::Duration::from_secs(by)).unwrap();
     std::thread::sleep(std::time::Duration::from_secs(3));
@@ -313,7 +314,7 @@ fn a_failing_source_is_retried_with_growing_delays_and_a_success_resets_them() {
     wait_for_failures(&log, 1);
     advance_and_settle(40);
     assert_eq!(failed_workers(&log), 1, "retried before 60 s");
-    advance_and_settle(40);
+    fyrr_core::clock::advance(std::time::Duration::from_secs(40)).unwrap();
     wait_for_failures(&log, 2);
     // Another source publishes a new head while the failing one waits: that
     // does not make it due.
@@ -337,14 +338,14 @@ fn a_failing_source_is_retried_with_growing_delays_and_a_success_resets_them() {
     assert_eq!(failed_workers(&log), 2, "a new head made the source due");
     advance_and_settle(80);
     assert_eq!(failed_workers(&log), 2, "retried before 120 s");
-    advance_and_settle(50);
+    fyrr_core::clock::advance(std::time::Duration::from_secs(50)).unwrap();
     wait_for_failures(&log, 3);
     advance_and_settle(200);
     assert_eq!(failed_workers(&log), 3, "retried before 240 s");
     // The source recovers, and runs when its backoff has passed.
     let healed = text.replace("mode='raise'", "mode='print'");
     std::fs::write(&fixture.config, healed).unwrap();
-    advance_and_settle(60);
+    fyrr_core::clock::advance(std::time::Duration::from_secs(60)).unwrap();
     let storage = fixture.sandbox.output().join("storage");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
     while saved_cursor(&storage).as_deref() != Some("printed") {
@@ -358,10 +359,10 @@ fn a_failing_source_is_retried_with_growing_delays_and_a_success_resets_them() {
     // The success reset the delay: when the source fails again after its
     // interval, the retry waits 60 s, not 480 s.
     std::fs::write(&fixture.config, &text).unwrap();
-    advance_and_settle(11 * 60);
+    fyrr_core::clock::advance(std::time::Duration::from_secs(11 * 60)).unwrap();
     wait_for_failures(&log, 4);
     advance_and_settle(40);
     assert_eq!(failed_workers(&log), 4, "retried before 60 s");
-    advance_and_settle(40);
+    fyrr_core::clock::advance(std::time::Duration::from_secs(40)).unwrap();
     wait_for_failures(&log, 5);
 }

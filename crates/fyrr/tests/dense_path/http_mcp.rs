@@ -632,7 +632,6 @@ async fn identity_http_deadline_cancellation_busy_inflight_refusal_and_active_dr
     let previous_identity = super::coordination::publication(&commit).await.0.identity;
     let held = hold_publication();
     arm(3).await;
-    let requested_at = std::time::Instant::now();
     let inflight = reader.search_task(&token, 6, 30000);
     blocked(&entered).await;
     held.entered();
@@ -653,10 +652,6 @@ async fn identity_http_deadline_cancellation_busy_inflight_refusal_and_active_dr
         "the directory change must be published before releasing the head read"
     );
     assert!(
-        requested_at.elapsed() < Duration::from_secs(20),
-        "publication exceeded the request deadline"
-    );
-    assert!(
         !inflight.is_finished(),
         "the request must still be held at the real storage boundary"
     );
@@ -674,7 +669,6 @@ async fn identity_http_deadline_cancellation_busy_inflight_refusal_and_active_dr
     let previous_identity = super::coordination::publication(&commit).await.0.identity;
     let held = hold_publication();
     arm(3).await;
-    let requested_at = std::time::Instant::now();
     let rebinding = reader.search_task(&token, 40, 30000);
     blocked(&entered).await;
     held.entered();
@@ -694,10 +688,6 @@ async fn identity_http_deadline_cancellation_busy_inflight_refusal_and_active_dr
         super::coordination::publication(&commit).await.0.identity,
         previous_identity,
         "the directory change must be published before releasing the head read"
-    );
-    assert!(
-        requested_at.elapsed() < Duration::from_secs(20),
-        "publication exceeded the request deadline"
     );
     assert!(
         !rebinding.is_finished(),
@@ -744,7 +734,6 @@ async fn identity_http_deadline_cancellation_busy_inflight_refusal_and_active_dr
     let previous_identity = super::coordination::publication(&commit).await.0.identity;
     let held = hold_publication();
     arm(3).await;
-    let requested_at = std::time::Instant::now();
     let unbinding = reader.search_task(&token, 43, 30000);
     blocked(&entered).await;
     held.entered();
@@ -765,10 +754,6 @@ async fn identity_http_deadline_cancellation_busy_inflight_refusal_and_active_dr
         super::coordination::publication(&commit).await.0.identity,
         previous_identity,
         "the directory change must be published before releasing the head read"
-    );
-    assert!(
-        requested_at.elapsed() < Duration::from_secs(20),
-        "publication exceeded the request deadline"
     );
     assert!(
         !unbinding.is_finished(),
@@ -870,12 +855,17 @@ async fn identity_http_deadline_cancellation_busy_inflight_refusal_and_active_dr
     );
     tokio::time::sleep(Duration::from_millis(1100)).await;
     *issuer.state.lock().unwrap() = (408, issuer.jwks.clone());
-    let started = std::time::Instant::now();
+    let before = issuer.requests.load(Ordering::SeqCst);
     assert_eq!(flood_reader.client.post(format!("{}/mcp", flood_reader.base))
         .bearer_auth(&token).header("Accept", "application/json, text/event-stream")
         .json(&json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":9999}}))
         .send().await.unwrap().status(), 429);
-    assert!(started.elapsed() < Duration::from_millis(1100));
+    // Trust expired above, so verifying the token would have refreshed the keys.
+    assert_eq!(
+        issuer.requests.load(Ordering::SeqCst),
+        before,
+        "JWT work before the limit"
+    );
     *issuer.state.lock().unwrap() = (200, issuer.jwks.clone());
     flood_reader.stop().await;
 

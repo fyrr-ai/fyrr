@@ -288,11 +288,13 @@ async fn mirror_population_crash_boundaries_recover_verified_bytes() {
                 object_store::local::LocalFileSystem::new_with_prefix(root.join("source")).unwrap(),
             );
             let store = mirror.wrap("namespace", target);
-            let started = std::time::Instant::now();
-            let result = tokio::time::timeout(
-                std::time::Duration::from_secs(1),
-                store.get(&Path::from("namespace/dataset.lance/data/other.lance")),
-            )
+            // The paused child never finishes its download, so any finite
+            // timeout on the whole read, body included, tells waiting behind
+            // it apart from not waiting.
+            let result = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+                let path = Path::from("namespace/dataset.lance/data/other.lance");
+                store.get(&path).await?.bytes().await
+            })
             .await;
             // Kill before asserting so a failure cannot leave a paused child.
             if result.is_err() {
@@ -300,8 +302,7 @@ async fn mirror_population_crash_boundaries_recover_verified_bytes() {
                 child.wait().unwrap();
                 panic!("unrelated object blocked behind a paused download");
             }
-            assert_eq!(result.unwrap().unwrap().bytes().await.unwrap(), "other");
-            assert!(started.elapsed() < std::time::Duration::from_secs(1));
+            assert_eq!(result.unwrap().unwrap(), "other");
             mirror.evict_unpinned().await.unwrap();
             assert!(
                 std::fs::read_dir(&cache).unwrap().any(|entry| entry

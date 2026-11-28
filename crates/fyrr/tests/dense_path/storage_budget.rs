@@ -962,8 +962,8 @@ fn writes_storage(request: &str) -> bool {
         .any(|read| request.starts_with(read))
 }
 
-/// Ticks of the committer measured once the service has settled.
-const TICKS: u64 = 8;
+/// Idle ticks of the committer measured once the service has settled.
+const TICKS: usize = 8;
 /// Storage requests of one idle committer tick, other than reads of
 /// publication manifests: the head, the policy twice, the envelope listing,
 /// the identity and the dataset open (12 measured), and the head once more
@@ -976,9 +976,10 @@ const IDLE_TICK_BUDGET: usize = 13;
 const IDLE_TICK_MANIFESTS: usize = 1;
 
 /// Watches a running writer service: waits until it has written nothing for
-/// two seconds in a row, after its first seconds, then follows `TICKS` seconds.
-/// Returns when it settled, where the window starts in `seen`, the window's
-/// requests, and the committer's idle and published ticks in it.
+/// two seconds in a row, after its first seconds, then follows it for `TICKS`
+/// seconds and at least `TICKS` idle ticks of the committer. Returns when it settled, where the window
+/// starts in `seen`, the window's requests, the ticks its budget covers, and
+/// the committer's published ticks in it.
 fn watch_idle(
     child: &mut std::process::Child,
     seen: &Seen,
@@ -1024,33 +1025,44 @@ fn watch_idle(
         events("idle"),
         events("published"),
     );
-    std::thread::sleep(Duration::from_secs(TICKS));
-    let requests = seen.all(mark);
-    let (idle, published) = (
-        events("idle") - idle_before,
-        events("published") - published_before,
-    );
-    assert!(
-        child.try_wait().unwrap().is_none(),
-        "the writer service exited"
-    );
-    (settled, mark, requests, idle, published)
+    // The window lasts `TICKS` seconds. A loaded host ticks late, so it ends
+    // only after the service logged `TICKS` idle ticks.
+    std::thread::sleep(Duration::from_secs(u64::try_from(TICKS).unwrap()));
+    loop {
+        // Requests first: a tick logged after them only adds to the budget.
+        let requests = seen.all(mark);
+        let window = settled.elapsed();
+        let (idle, published) = (
+            events("idle") - idle_before,
+            events("published") - published_before,
+        );
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "the writer service exited"
+        );
+        if idle >= TICKS || published > 0 {
+            // The budget follows the window's length, not the logged ticks:
+            // the 1 s coalescing timer starts a tick per second of it, one
+            // more may be under way at its start, and the service's watch of
+            // the head reads it every second whatever the committer does. A
+            // committer that ticks faster than its timer exceeds it.
+            let seconds = usize::try_from(window.as_secs()).unwrap();
+            return (settled, mark, requests, seconds + 1, published);
+        }
+        assert!(
+            window < Duration::from_secs(120),
+            "only {idle} idle ticks: the committer did not tick"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
 }
 
-/// The budget of an idle window: no write, the ticks' reads, and one manifest
-/// read per tick.
-fn assert_idle_window(requests: Vec<String>, idle: usize, published: usize) {
+/// The budget of an idle window of `ticks`: no write, the ticks' reads, and
+/// one manifest read per tick.
+fn assert_idle_window(requests: Vec<String>, ticks: usize, published: usize) {
     let (manifests, rest): (Vec<_>, Vec<_>) = requests
         .into_iter()
         .partition(|request| request.starts_with("GET publications/"));
-    // A window of `TICKS` seconds holds at most one tick more; a loaded host
-    // may run fewer. Only the service's own events tell an idle tick from a
-    // tick that had nothing to look at: the committer ticked and took no lease.
-    let ticks = usize::try_from(TICKS).unwrap() + 1;
-    assert!(
-        idle >= usize::try_from(TICKS / 2).unwrap(),
-        "only {idle} idle ticks: the committer did not tick"
-    );
     assert_eq!(published, 0, "an idle service committed");
     let writes: Vec<_> = rest
         .iter()
@@ -1126,7 +1138,7 @@ async fn an_idle_writer_service_stays_within_its_storage_request_budget() {
         stop.clone(),
     );
     let child = &mut service.0;
-    let (settled, mark, requests, idle, published) = watch_idle(child, &seen, &log);
+    let (settled, mark, requests, ticks, published) = watch_idle(child, &seen, &log);
     // Past the minute after which a sync worker used to be started again
     // whatever its intervals: a source with nothing due starts none, and the
     // service writes nothing. A worker reads its cursors first.
@@ -1163,7 +1175,7 @@ async fn an_idle_writer_service_stays_within_its_storage_request_budget() {
         0,
     );
 
-    assert_idle_window(requests, idle, published);
+    assert_idle_window(requests, ticks, published);
     std::fs::remove_dir_all(root).unwrap();
 }
 
@@ -1209,8 +1221,8 @@ async fn an_idle_writer_service_that_wrote_to_many_namespaces_stays_within_the_b
     }
 
     let log = root.join("service.stderr");
-    let (_, _, requests, idle, published) = watch_idle(&mut writer.child, &seen, &log);
-    assert_idle_window(requests, idle, published);
+    let (_, _, requests, ticks, published) = watch_idle(&mut writer.child, &seen, &log);
+    assert_idle_window(requests, ticks, published);
     stop.store(true, std::sync::atomic::Ordering::SeqCst);
     drop(writer);
     std::fs::remove_dir_all(root).unwrap();
@@ -1219,14 +1231,15 @@ async fn an_idle_writer_service_that_wrote_to_many_namespaces_stays_within_the_b
 /// Index segments `writer maintain` allows an index before it merges them.
 const SEGMENT_CAP: usize = 64;
 
-/// The served publication, once `done` holds of it: a service maintains in its
-/// own time, so a test waits on what it published, not on how long it took.
+/// The served publication, once `done` holds of it before `deadline`: a
+/// service maintains in its own time, so a test waits on what it published,
+/// not on how long it took.
 async fn served_until(
     config: &Path,
+    deadline: std::time::Instant,
     what: &str,
     done: impl Fn(&ContentManifest) -> bool,
 ) -> ContentManifest {
-    let deadline = std::time::Instant::now() + Duration::from_secs(600);
     loop {
         let (_, manifest) = super::coordination::publication(config).await;
         if done(&manifest) {
@@ -1246,6 +1259,8 @@ async fn served_until(
 #[ignore = "real executable and local storage; scripts/ci"]
 async fn a_writer_service_maintains_the_namespace_it_serves() {
     use super::write_api::{WRITE_KEY, Writer, configure, embed};
+    // One deadline for the whole case, its budget in CI.
+    let deadline = std::time::Instant::now() + Duration::from_secs(600);
     let (config, root) = setup_on(Backend::Local);
     assert_eq!(
         std::env::var("FYRR_TEST_S3_ENDPOINT").unwrap(),
@@ -1281,7 +1296,7 @@ async fn a_writer_service_maintains_the_namespace_it_serves() {
         writer.post(WRITE_KEY, "dense-fixture", &first).await,
         (200, json!({"upserted": 2, "deleted": 0}))
     );
-    served_until(&config, "the first maintenance", |manifest| {
+    served_until(&config, deadline, "the first maintenance", |manifest| {
         manifest.maintenance_completed_at.is_some()
     })
     .await;
@@ -1301,7 +1316,7 @@ async fn a_writer_service_maintains_the_namespace_it_serves() {
     // publication finds the grace passed.
     fyrr_core::clock::advance(Duration::from_secs(2 * 3600)).unwrap();
     write(2, &texts[2]).await;
-    served_until(&config, "maintenance of a deletion", |manifest| {
+    served_until(&config, deadline, "maintenance of a deletion", |manifest| {
         manifest
             .files
             .iter()
@@ -1311,13 +1326,18 @@ async fn a_writer_service_maintains_the_namespace_it_serves() {
     for (id, text) in texts.iter().enumerate().skip(3) {
         write(id, text).await;
     }
-    served_until(&config, "maintenance of the segments", |manifest| {
-        let mut segments = std::collections::BTreeMap::<&str, usize>::new();
-        for index in &manifest.indexes {
-            *segments.entry(&index.name).or_default() += 1;
-        }
-        segments.values().all(|count| *count <= SEGMENT_CAP)
-    })
+    served_until(
+        &config,
+        deadline,
+        "maintenance of the segments",
+        |manifest| {
+            let mut segments = std::collections::BTreeMap::<&str, usize>::new();
+            for index in &manifest.indexes {
+                *segments.entry(&index.name).or_default() += 1;
+            }
+            segments.values().all(|count| *count <= SEGMENT_CAP)
+        },
+    )
     .await;
     drop(writer);
     let log = std::fs::read_to_string(root.join("service.stderr")).unwrap();
