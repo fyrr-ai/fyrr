@@ -23,6 +23,7 @@ import tempfile
 import time
 import tomllib
 from pathlib import Path
+from urllib.parse import quote, unquote
 
 ROOT = Path(__file__).resolve().parent.parent
 os.environ["PATH"] = f"{Path.home() / '.cargo/bin'}:{os.environ['PATH']}"
@@ -321,12 +322,12 @@ def outcomes(directory, cases):
     """
     finished = {}
     for path in Path(directory).glob("*.libtest"):
-        group = path.name.removesuffix(".libtest")
+        group = unquote(path.name.removesuffix(".libtest"))
         for line in path.read_text(errors="replace").splitlines():
             # A result may carry a message (`failed: …`); test names hold no spaces.
             finished[f"{group}/{line.rsplit(' ', 1)[-1]}"] = line.split(" ", 1)[0]
     errors = {
-        path.name.removesuffix(".error"): path.read_text(errors="replace").strip()
+        unquote(path.name.removesuffix(".error")): path.read_text(errors="replace").strip()
         for path in Path(directory).glob("*.error")
     }
     table = {"ok": ("pass", 1, 0, 0), "ignored": ("pass", 0, 0, 1), "ignored:": ("pass", 0, 0, 1)}
@@ -376,7 +377,7 @@ def run(spec, compiled=None):
                 str(ROOT / item["path"]),
                 "--include-ignored",
                 "--exact",
-                f"--logfile={logs}/{group}.libtest",
+                f"--logfile={logs}/{quote(group, safe='')}.libtest",
                 *names,
             ]
             cwd = ROOT / item["cwd"]
@@ -389,7 +390,7 @@ def run(spec, compiled=None):
             # A harness error fails every case of this run, even one libtest passed.
             failure = f"{group}: {type(error).__name__}: {error}"
             if not python:
-                (logs / f"{group}.error").write_text(failure + "\n")
+                (logs / f"{quote(group, safe='')}.error").write_text(failure + "\n")
         if failure:
             failures.append(failure)
     if rust:
