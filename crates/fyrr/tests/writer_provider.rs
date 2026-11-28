@@ -1,7 +1,7 @@
 //! Provider-boundary compatibility through the real worker executable and local storage.
 #![cfg(feature = "writer")]
 
-mod common;
+use crate::common;
 
 use common::{Sandbox, embedding::Provider};
 use serde_json::json;

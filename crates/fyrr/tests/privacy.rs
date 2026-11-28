@@ -7,7 +7,7 @@
 //! Conditional head-write storage errors are also guarded on real S3 by
 //! `dense_path::head_diagnostics`, using this shared sentinel harness.
 
-mod common;
+use crate::common;
 
 use common::{Sandbox, Sentinels, assert_clean, config_with};
 
