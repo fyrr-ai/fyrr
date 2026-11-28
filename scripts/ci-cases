@@ -19,9 +19,11 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 import tomllib
 from pathlib import Path
+from urllib.parse import quote, unquote
 
 ROOT = Path(__file__).resolve().parent.parent
 os.environ["PATH"] = f"{Path.home() / '.cargo/bin'}:{os.environ['PATH']}"
@@ -310,6 +312,36 @@ def validate(manifest, actual):
     print(f"tiers: {counts['quick']} quick; {len(actual)} full ({counts['full']} additional)")
 
 
+def outcomes(directory, cases):
+    """Each Rust case's (status, passed, failed, ignored, reason), from libtest's `--logfile`.
+
+    libtest writes one `<result> <name>` line per finished test to that file, apart
+    from anything the tests print. A case without a line did not finish: it failed.
+    A `<group>.error` file names a harness error in that binary's run, which fails
+    every case of the run.
+    """
+    finished = {}
+    for path in Path(directory).glob("*.libtest"):
+        group = unquote(path.name.removesuffix(".libtest"))
+        for line in path.read_text(errors="replace").splitlines():
+            # A result may carry a message (`failed: …`); test names hold no spaces.
+            finished[f"{group}/{line.rsplit(' ', 1)[-1]}"] = line.split(" ", 1)[0]
+    errors = {
+        unquote(path.name.removesuffix(".error")): path.read_text(errors="replace").strip()
+        for path in Path(directory).glob("*.error")
+    }
+    table = {"ok": ("pass", 1, 0, 0), "ignored": ("pass", 0, 0, 1), "ignored:": ("pass", 0, 0, 1)}
+    results = {}
+    for case in cases:
+        error = errors.get(case.split("/", 1)[0])
+        result = finished.get(case)
+        if error is None and result in table:
+            results[case] = (*table[result], None)
+        else:
+            results[case] = ("FAIL", 0, 1, 0, error or f"libtest result: {result or 'none'}")
+    return results
+
+
 def run(spec, compiled=None):
     groups = collections.defaultdict(list)
     for case in spec["cases"]:
@@ -323,93 +355,114 @@ def run(spec, compiled=None):
             groups[f"python:{directory}:{parent}"].append(name)
         else:
             groups[group].append(name)
-    if compiled is None and any(not g.startswith("python:") for g in groups):
-        compiled = artifacts()
+    rust = [case for case in spec["cases"] if not case.startswith("python:")]
+    if rust:
+        compiled = compiled or artifacts()
+        logs = Path(os.environ.get("FYRR_CI_LOG_DIR") or tempfile.mkdtemp(prefix="fyrr-ci-"))
+        for stale in [*logs.glob("*.libtest"), *logs.glob("*.error")]:
+            stale.unlink()
+    # Run every group even after one fails, so each case reports its result.
+    failures = []
     for group, names in groups.items():
-        if group.startswith("python:"):
+        env = dict(os.environ)
+        python = group.startswith("python:")
+        if python:
             directory = group.split(":")[1]
             extras = PYTHON_PROJECTS[directory][1]
             command = ["uv", "run", "--locked", *extras, "pytest", *names]
             cwd = ROOT / directory
         else:
             item = compiled["tests"][group]
-            command = [str(ROOT / item["path"]), "--include-ignored", "--exact", *names]
+            command = [
+                str(ROOT / item["path"]),
+                "--include-ignored",
+                "--exact",
+                f"--logfile={logs}/{quote(group, safe='')}.libtest",
+                *names,
+            ]
             cwd = ROOT / item["cwd"]
-        env = dict(os.environ)
-        if not group.startswith("python:"):
             env["FYRR_GATE_BINARY"] = str(ROOT / compiled["binaries"][group.split(":")[0]])
-        process = subprocess.Popen(
-            command,
-            cwd=cwd,
-            env=env,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-        )
-        lines = []
-        started = last_finished = time.monotonic()
-        pending = None
-        for line in process.stdout:
-            print(line, end="", flush=True)
-            lines.append(line)
-            if group.startswith("python:"):
-                continue
-            # libtest runs serially by default. A parent may print its child
-            # harness output between `test NAME ...` and a standalone `ok`.
-            header = re.match(r"^test (\S+) \.\.\. ?(.*)$", line.rstrip())
-            if header and header[1] in names:
-                pending = header[1]
-                status = header[2]
-            elif line.strip() in {"ok", "FAILED"}:
-                status = line.strip()
-            else:
-                continue
-            if pending is None or status not in {"ok", "FAILED"}:
-                continue
-            finished = time.monotonic()
-            event = {
-                "case": f"{group}/{pending}",
-                "status": status,
-                "finished_at": datetime.datetime.now(datetime.UTC).isoformat(),
-                "elapsed_seconds": round(finished - started, 3),
-            }
-            if env.get("RUST_TEST_THREADS", "1") == "1":
-                event["seconds"] = round(finished - last_finished, 3)
-            print("ci-case " + json.dumps(event), flush=True)
-            last_finished = finished
-            pending = None
-        if process.wait():
-            raise RuntimeError(
-                f"{group}: {len(names)} selected cases, process exited {process.returncode}"
-            )
-        transcript = "".join(lines)
-        if group.startswith("python:"):
-            counts = re.findall(r"(\d+) passed", transcript)
-        else:
-            counts = re.findall(r"test result: ok\. (\d+) passed;", transcript)
+            if spec.get("batch") and "FYRR_TEST_TMP" in env:
+                env["TMPDIR"] = env["FYRR_TEST_TMP"]
+        try:
+            failure = run_group(group, names, command, cwd, env, None if python else logs)
+        except Exception as error:
+            # A harness error fails every case of this run, even one libtest passed.
+            failure = f"{group}: {type(error).__name__}: {error}"
+            if not python:
+                (logs / f"{quote(group, safe='')}.error").write_text(failure + "\n")
+        if failure:
+            failures.append(failure)
+    if rust:
+        # `scripts/ci` reads the row's counts from here: one per selected case.
+        results = outcomes(logs, rust).values()
+        totals = (sum(result[column] for result in results) for column in (1, 2, 3))
+        (logs / "counts").write_text(" ".join(map(str, totals)) + "\n")
+    if failures:
+        raise RuntimeError("\n".join(failures))
+
+
+def run_group(group, names, command, cwd, env, logs):
+    """Run one test binary or pytest directory; return its test failure, if any.
+
+    libtest inherits stdout, so its output never passes through this process and
+    a child it leaves behind cannot hold the run open. pytest's summary line is
+    read from a pipe, as bytes.
+    """
+    if logs is None:
+        output = bytearray()
+        with subprocess.Popen(
+            command, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT
+        ) as process:
+            for line in process.stdout:
+                sys.stdout.buffer.write(line)
+                sys.stdout.buffer.flush()
+                output += line
+        if process.returncode:
+            return f"{group}: {len(names)} selected cases, process exited {process.returncode}"
+        counts = re.findall(r"(\d+) passed", output.decode(errors="replace"))
         if not counts or int(counts[-1]) != len(names):
-            raise ValueError(f"{group}: expected {len(names)} passed cases, got {counts}")
-        if not group.startswith("python:") and env.get("FYRR_CI_KEEP_FIXTURES") != "1":
-            # Only this completed harness owns these local fixture roots. Keep
-            # failed runs intact, and never remove external-service data here.
-            owned = re.compile(rf"(?:storage-)?(?:dense|fyrr-history)-{process.pid}-")
-            removed = 0
-            for directory in Path(env.get("FYRR_TEST_TMP", ROOT / "target/tmp")).iterdir():
-                if (
-                    owned.match(directory.name)
-                    and directory.is_dir()
-                    and not directory.is_symlink()
-                ):
-                    shutil.rmtree(directory)
-                    removed += 1
-            print(f"ci-fixtures: removed {removed} successful roots for harness {process.pid}")
+            return f"{group}: expected {len(names)} passed cases, got {counts}"
+        return None
+    process = subprocess.Popen(command, cwd=cwd, env=env)
+    process.wait()
+    results = outcomes(logs, [f"{group}/{name}" for name in names])
+    missing = [case for case, result in results.items() if result[0] != "pass"]
+    if missing:
+        return f"{group}: no passing libtest result for {missing}"
+    if process.returncode:
+        # Every selected case passed, so no case explains this exit.
+        raise RuntimeError(f"process exited {process.returncode} after its cases passed")
+    if env.get("FYRR_CI_KEEP_FIXTURES") != "1":
+        # Only this completed harness owns these local fixture roots. Keep
+        # failed runs intact, and never remove external-service data here.
+        owned = re.compile(rf"(?:storage-)?(?:dense|fyrr-history)-{process.pid}-")
+        removed = 0
+        for directory in Path(env.get("FYRR_TEST_TMP", ROOT / "target/tmp")).iterdir():
+            if owned.match(directory.name) and directory.is_dir() and not directory.is_symlink():
+                shutil.rmtree(directory)
+                removed += 1
+        print(f"ci-fixtures: removed {removed} successful roots for harness {process.pid}")
+    return None
 
 
 async def pool(manifest, logs, jobs, rows):
-    """Schedule independent parents; every worker owns its fixture and process."""
+    """Schedule independent parents; every worker owns its fixture and process.
+
+    A `batch` row needs no fixture: one worker runs all its cases, in one
+    test process per binary.
+    """
     display_logs = logs.relative_to(ROOT) if logs.is_relative_to(ROOT) else logs
-    selected = [(row, case) for row in rows for case in selected_cases(manifest[row]["cases"])]
-    selected.sort(key=lambda item: -case_seconds(manifest[item[0]]["cases"][item[1]]))
+    selected = []
+    for row in rows:
+        cases = list(selected_cases(manifest[row]["cases"]))
+        if manifest[row].get("batch") and cases:
+            selected.append((row, cases))
+        else:
+            selected += [(row, [case]) for case in cases]
+    selected.sort(
+        key=lambda item: -sum(case_seconds(manifest[item[0]]["cases"][c]) for c in item[1])
+    )
     plan = [
         {
             "row": row,
@@ -427,6 +480,8 @@ async def pool(manifest, logs, jobs, rows):
     capacity = asyncio.Semaphore(jobs)
     started = time.monotonic()
     results = collections.defaultdict(list)
+    row_seconds = collections.defaultdict(float)
+    broken = set()
     active = {}
     peaks = collections.defaultdict(int)
 
@@ -460,13 +515,19 @@ async def pool(manifest, logs, jobs, rows):
 
     sampler = asyncio.create_task(sample_memory())
     task = asyncio.current_task()
-    asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, task.cancel)
+    # A timeout signals the whole process group and `scripts/ci` forwards it:
+    # cancel once, so the workers' cleanup below is not cut short.
+    asyncio.get_running_loop().add_signal_handler(
+        signal.SIGTERM, lambda: task.cancelling() or task.cancel()
+    )
 
-    async def execute(row, case):
+    async def execute(row, cases):
         async with capacity:
-            key = hashlib.sha256(case.encode()).hexdigest()[:12]
-            directory = logs / row / key
-            directory.mkdir(parents=True, exist_ok=True)
+            key = hashlib.sha256("\n".join(cases).encode()).hexdigest()[:12]
+            # Each attempt gets a fresh directory, so results that an earlier
+            # pool or its orphaned worker writes never land in this one.
+            (logs / row).mkdir(parents=True, exist_ok=True)
+            directory = Path(tempfile.mkdtemp(prefix=f"{key}-", dir=logs / row))
             clock = directory / "offset-ms"
             clock.write_text("0")
             clock.chmod(0o600)
@@ -490,18 +551,20 @@ async def pool(manifest, logs, jobs, rows):
                     "--",
                     str(ROOT / "scripts/ci"),
                     f"--row={row}",
-                    f"--case={case}",
+                    *(f"--case={case}" for case in cases),
                     cwd=ROOT,
                     env=environment,
                     stdout=output_log,
                     stderr=asyncio.subprocess.STDOUT,
                     start_new_session=True,
                 )
-                active[process.pid] = case
+                active[process.pid] = key
+                stopped = True
                 try:
-                    code = await process.wait()
+                    await process.wait()
+                    stopped = False
                 finally:
-                    if process.returncode is None:
+                    if stopped:
                         # This process group was created above for this case only.
                         try:
                             os.killpg(process.pid, signal.SIGTERM)
@@ -512,75 +575,84 @@ async def pool(manifest, logs, jobs, rows):
                         except ProcessLookupError:
                             await process.wait()
                     active.pop(process.pid, None)
-            duration = time.monotonic() - began
-            title = manifest[row]["title"]
-            summary = directory / "summary.txt"
-            record = None
-            if summary.exists():
-                for line in summary.read_text().splitlines():
-                    if not line.startswith(title + " "):
-                        continue
-                    record = re.match(
-                        r"^.*?\s+(pass|FAIL)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)s\s+(.+)$",
-                        line,
-                    )
-                    if record:
-                        break
-            status, passed, failed, ignored = ("FAIL", 0, 0, 0)
-            if record:
-                status = record[1] if code == 0 else "FAIL"
-                passed, failed, ignored = map(int, record.group(2, 3, 4))
-            result = {
-                "row": row,
-                "case": case,
-                "tier": manifest[row]["cases"][case]["tier"],
-                "peak_rss_kib": peaks[case],
-                "status": status,
-                "passed": passed,
-                "failed": failed,
-                "ignored": ignored,
-                "seconds": round(duration, 3),
-                "elapsed_seconds": round(time.monotonic() - started, 3),
-                "finished_at": datetime.datetime.now(datetime.UTC).isoformat(),
-                "log": str(display_logs / row / key / "runner.log"),
-            }
-            results[row].append(result)
-            print("ci-result " + json.dumps(result), flush=True)
+                    # Record what finished even when the pool is stopped.
+                    duration = time.monotonic() - began
+                    row_seconds[row] += duration
+                    if process.returncode:
+                        broken.add(row)
+                    found = outcomes(directory, cases)
+                    if (
+                        not stopped
+                        and process.returncode
+                        and all(result[0] != "FAIL" for result in found.values())
+                    ):
+                        # No failed case explains this exit: none of the job's results stand.
+                        found = dict.fromkeys(
+                            found, ("FAIL", 0, 1, 0, f"worker exited {process.returncode}")
+                        )
+                    for case, (status, passed, failed, ignored, reason) in found.items():
+                        result = {
+                            "row": row,
+                            "case": case,
+                            "tier": manifest[row]["cases"][case]["tier"],
+                            "peak_rss_kib": peaks[key],
+                            "status": status,
+                            "passed": passed,
+                            "failed": failed,
+                            "ignored": ignored,
+                            # A batch has no per-case process to time.
+                            "seconds": round(duration, 3) if len(cases) == 1 else None,
+                            "elapsed_seconds": round(time.monotonic() - started, 3),
+                            "finished_at": datetime.datetime.now(datetime.UTC).isoformat(),
+                            "log": str(display_logs / row / directory.name / "runner.log"),
+                        }
+                        if reason:
+                            result["reason"] = reason
+                        results[row].append(result)
+                        print("ci-result " + json.dumps(result), flush=True)
 
     try:
-        await asyncio.gather(*(execute(row, case) for row, case in selected))
+        await asyncio.gather(*(execute(row, cases) for row, cases in selected))
     finally:
         sampler.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await sampler
-    for row in rows:
-        items = results[row]
-        for case in manifest[row]["cases"].keys() - selected_cases(manifest[row]["cases"]).keys():
-            items.append(
-                {
-                    "row": row,
-                    "case": case,
-                    "tier": "full",
-                    "status": "n/e",
-                    "passed": 0,
-                    "failed": 0,
-                    "ignored": 0,
-                    "seconds": 0,
-                    "reason": "not selected by quick tier",
-                }
+        # Write what is known even when the pool is stopped; a selected case
+        # without a result failed.
+        for row in rows:
+            items = results[row]
+            chosen = selected_cases(manifest[row]["cases"])
+            for case in manifest[row]["cases"].keys() - {item["case"] for item in items}:
+                items.append(
+                    {
+                        "row": row,
+                        "case": case,
+                        "tier": manifest[row]["cases"][case]["tier"],
+                        "status": "FAIL" if case in chosen else "n/e",
+                        "passed": 0,
+                        "failed": int(case in chosen),
+                        "ignored": 0,
+                        "seconds": 0,
+                        "reason": "not run" if case in chosen else "not selected by quick tier",
+                    }
+                )
+            status = (
+                "pass"
+                if row not in broken and all(item["status"] in {"pass", "n/e"} for item in items)
+                else "FAIL"
             )
-        status = "pass" if all(item["status"] in {"pass", "n/e"} for item in items) else "FAIL"
-        passed, failed, ignored = (
-            sum(item[name] for item in items) for name in ("passed", "failed", "ignored")
-        )
-        seconds = round(sum(item["seconds"] for item in items))
-        path = logs / row / "cases.json"
-        path.write_text(json.dumps(items, indent=2) + "\n")
-        line = (
-            f"{manifest[row]['title']:<38} {status:<5} {passed:7} {failed:7} {ignored:8} "
-            f"{seconds:6}s  {display_logs / row / 'cases.json'}\n"
-        )
-        (logs / row / "summary.txt").write_text(line)
+            passed, failed, ignored = (
+                sum(item[name] for item in items) for name in ("passed", "failed", "ignored")
+            )
+            seconds = round(row_seconds[row])
+            (logs / row).mkdir(parents=True, exist_ok=True)
+            path = logs / row / "cases.json"
+            path.write_text(json.dumps(items, indent=2) + "\n")
+            line = (
+                f"{manifest[row]['title']:<38} {status:<5} {passed:7} {failed:7} {ignored:8} "
+                f"{seconds:6}s  {display_logs / row / 'cases.json'}\n"
+            )
+            (logs / row / "summary.txt").write_text(line)
 
 
 def main():
@@ -627,12 +699,13 @@ def main():
         row = sys.argv[2]
         spec = manifest[row]
         compiled = None
-        if len(sys.argv) == 4:
-            case = sys.argv[3]
-            found = resolver(manifest)(case)
-            if not found or found[0] != row or case in spec.get("children", {}):
-                raise ValueError("case does not belong to the selected owner")
-            cases = {case: found[2]}
+        if len(sys.argv) > 3:
+            cases, owner = {}, resolver(manifest)
+            for case in sys.argv[3:]:
+                found = owner(case)
+                if not found or found[0] != row or case in spec.get("children", {}):
+                    raise ValueError(f"case does not belong to the selected owner: {case}")
+                cases[case] = found[2]
         else:
             if spec["kind"] == "python":
                 actual = python_inventory(python_directories(spec))

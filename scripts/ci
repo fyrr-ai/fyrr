@@ -37,9 +37,8 @@ print(max(1, min(len(os.sched_getaffinity(0)), (capacity - 4 * 1024**2) // (2 * 
 JOBS
 )}"
 CASE_ROW=
-CASE_ID=
 POOL_PID=0
-declare -a POOL_ROWS=()
+declare -a POOL_ROWS=() CASE_IDS=()
 declare -A REQUESTED_STEPS=() SEEN_STEPS=()
 for arg in "$@"; do
   case "$arg" in
@@ -53,7 +52,7 @@ for arg in "$@"; do
       REQUESTED_STEPS["$(row_name "$CASE_ROW")"]=1
       JOBS=1
       ;;
-    --case=*) CASE_ID="${arg#--case=}" ;;
+    --case=*) CASE_IDS+=("${arg#--case=}") ;;
     --step=*)
       name="${arg#--step=}"
       [[ -n "$name" ]] || die "--step requires an exact step name"
@@ -66,7 +65,7 @@ done
 [[ "$TIER" == quick || "$TIER" == full ]] || die "unknown CI tier $TIER"
 ((IMAGES == 0)) || [[ "$TIER" == full ]] || die "--images cannot be combined with --quick"
 export FYRR_CI_TIER="$TIER"
-[[ -z "$CASE_ID" || -n "$CASE_ROW" ]] || die "--case requires --row"
+((${#CASE_IDS[@]} == 0)) || [[ -n "$CASE_ROW" ]] || die "--case requires --row"
 [[ "$JOBS" =~ ^[1-9][0-9]*$ ]] || die "--jobs must be a positive integer"
 # Harness cases that inspect process-wide descriptors need serial execution.
 # Independent Rust cases run concurrently on private storage below.
@@ -125,13 +124,12 @@ step() {
   log="$LOGS/$(printf '%02d' "$STEP")-$(tr -c 'a-z0-9\n' '-' <<<"${name,,}" | tr -s '-' | sed 's/^-//; s/-$//').log"
   log "step $STEP: $name"
   local started=$SECONDS status=pass passed=- failed=- ignored=-
+  rm -f "$LOGS/counts"
   "$@" >"$log" 2>&1 || status=FAIL
   case "$kind" in
     cargo)
-      read -r passed failed ignored < <(
-        sed -nE 's/^test result: [A-Za-z]+\. ([0-9]+) passed; ([0-9]+) failed; ([0-9]+) ignored;.*/\1 \2 \3/p' "$log" |
-          awk '{p += $1; f += $2; i += $3} END {print p + 0, f + 0, i + 0}'
-      )
+      # `ci-cases run` counts each selected case once, from libtest's logfile.
+      read -r passed failed ignored < <(cat "$LOGS/counts" 2>/dev/null || echo 0 0 0)
       ;;
     pytest)
       read -r passed failed ignored < <(
@@ -145,7 +143,7 @@ step() {
       )
       ;;
   esac
-  if [[ "$kind" != none && "$status" == pass && "$passed" == 0 ]]; then
+  if [[ "$kind" != none && "$status" == pass && "$passed" == 0 && "$ignored" == 0 ]]; then
     status="FAIL"
     echo "zero tests selected" >>"$log"
   fi
@@ -236,9 +234,7 @@ run_row() {
     (umask 077; printf '0' > "$FYRR_TEST_CLOCK_FILE") || return 1
   fi
   scenario_setup "$1" || return 1
-  local -a selection=()
-  [[ -z "$CASE_ID" ]] || selection+=("$CASE_ID")
-  "$ROOT/scripts/ci-cases" run "$1" "${selection[@]}"
+  FYRR_CI_LOG_DIR="$LOGS" "$ROOT/scripts/ci-cases" run "$1" "${CASE_IDS[@]}"
 }
 
 cases_start() {
@@ -247,7 +243,7 @@ cases_start() {
   local row name count
   if [[ -n "$CASE_ROW" ]]; then
     if [[ "${ROW_KINDS[$CASE_ROW]:-}" == python ]]; then
-      step "$(row_name "$CASE_ROW")" pytest "$ROOT/scripts/ci-cases" run "$CASE_ROW" ${CASE_ID:+"$CASE_ID"}
+      step "$(row_name "$CASE_ROW")" pytest "$ROOT/scripts/ci-cases" run "$CASE_ROW" "${CASE_IDS[@]}"
       return
     fi
     selected_rows=("$CASE_ROW")
@@ -277,6 +273,8 @@ cases_start() {
     return
   fi
   POOL_ROWS=("${selected_rows[@]}")
+  # A row the pool does not summarize failed; never read an earlier run's summary.
+  for row in "${POOL_ROWS[@]}"; do rm -f "$LOGS/$row/summary.txt"; done
   log "scheduling independent Rust cases with up to $JOBS workers"
   "$ROOT/scripts/ci-cases" pool "$LOGS" "$JOBS" "${selected_rows[@]}" >"$LOGS/case-pool.log" 2>&1 &
   POOL_PID=$!
@@ -284,12 +282,11 @@ cases_start() {
 
 cases_finish() {
   ((POOL_PID)) || return 0
-  local row name line pool_finished=1
+  local row name line
   local pool_log="${LOGS#"$ROOT"/}/case-pool.log"
-  # Test failures are recorded in the summaries. If the pool aborts, the
-  # summaries may still belong to an earlier run in the same log directory.
+  # Test failures are recorded in the summaries, which a stopped pool still writes.
   if ! wait "$POOL_PID"; then
-    pool_finished=0
+    FAILED=$((FAILED + 1))
     log "Rust case pool failed (log: $pool_log)"
   fi
   POOL_PID=0
@@ -297,10 +294,7 @@ cases_finish() {
     name="$(row_name "$row")"
     STEP=$((STEP + 1))
     SEEN_STEPS["$name"]=1
-    line=
-    if ((pool_finished)); then
-      line="$(awk -v name="$name" 'index($0, name) == 1 && $0 ~ / (pass|FAIL) / {print}' "$LOGS/$row/summary.txt" 2>/dev/null)" || line=
-    fi
+    line="$(awk -v name="$name" 'index($0, name) == 1 && $0 ~ / (pass|FAIL) / {print}' "$LOGS/$row/summary.txt" 2>/dev/null)" || line=
     if [[ -z "$line" ]]; then
       FAILED=$((FAILED + 1))
       ROWS+=("$(printf '%-38s %-5s %7s %7s %8s %6ss  %s' "$name" FAIL 0 0 0 0 "no worker summary from this run (see $pool_log)")")
