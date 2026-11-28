@@ -223,8 +223,8 @@ class InvalidConnector(Connector):
 
 
 class FailingSettings(ConfigModel):
-    mode: Literal["raise", "abort", "exit", "hang", "print", "memory", "die"] = setting(
-        description="How the provider fails."
+    mode: Literal["raise", "abort", "exit", "hang", "print", "memory", "die", "heal-once"] = (
+        setting(description="How the provider fails.")
     )
 
 
@@ -242,6 +242,14 @@ class FailingConnector(Connector):
         if pid_dir:
             # Lets a test prove that no provider process outlives the command.
             Path(pid_dir, f"{mode}.pid").write_text(str(os.getpid()))
+        if mode == "heal-once":
+            # Raises, except in the one run that removes the `heal` file the
+            # test placed next to the fixture.
+            try:
+                Path(self.context.scope.fixture).with_name("heal").unlink()
+                mode = "print"
+            except FileNotFoundError:
+                mode = "raise"
         if mode == "raise":
             raise ValueError(f"cannot parse document {marker}")
         if mode == "abort":
