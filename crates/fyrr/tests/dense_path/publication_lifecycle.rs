@@ -265,8 +265,17 @@ async fn committer_indexes_and_stale_prepared_acl_on_storage() {
 }
 
 #[tokio::test]
-#[ignore = "real CLI 60-second service timer and RustFS; scripts/ci"]
+#[ignore = "real CLI service timer and RustFS; scripts/ci"]
 async fn serve_timer_disabled_committer_on_storage() {
+    use super::coordination::CommitProcess;
+    use std::io::{BufRead, BufReader};
+    use std::sync::{Arc, atomic::AtomicBool, mpsc};
+    use std::time::{Duration, Instant};
+    // The documented default. The services below use 2 s to keep the case
+    // quick, a period no shorter constant in the service can stand in for.
+    let default = fyrr_core::config::CommitConfig::default().coalescing_timer;
+    assert_eq!(default.as_duration(), Duration::from_secs(60));
+    let period = Duration::from_secs(2);
     let (config, commit, root) = fixture();
     let initial = publication(&commit).await.0.content.unwrap();
     input(
@@ -274,59 +283,111 @@ async fn serve_timer_disabled_committer_on_storage() {
         json!({"epoch":1,"content":[[doc("a","r1","fixture document 1")]]}),
     );
     worker_sync(&config, &["incremental", "--kind", "content"]);
-    // No source polling is needed for this timer proof; the backlog lives only on S3.
+    // Each completed head read and the body of each head write. Without sources
+    // or an admin listener, only the startup read, the head watch (once per
+    // coalescing period) and the committer touch the head.
+    let (sender, events) = mpsc::channel::<(Instant, Option<Vec<u8>>)>();
+    let hook: super::corrections::BoundaryHook = Arc::new(move |request, body, after| {
+        let write = !after && request.starts_with("PUT ");
+        if request.contains("/head.json ") && (write || (after && request.starts_with("GET "))) {
+            let _ = sender.send((Instant::now(), write.then(|| body.to_vec())));
+        }
+        false
+    });
+    let next = |deadline: Instant| {
+        events
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .expect("the service stopped touching the head")
+    };
+    let endpoint = std::env::var("FYRR_TEST_S3_ENDPOINT").unwrap();
+    let stop = Arc::new(AtomicBool::new(false));
+    let (proxy, _guard) = super::corrections::proxy_at_boundary(endpoint.clone(), stop, hook);
+    // No source polling is needed for this timer proof; the backlog lives only in storage.
     let mut text = std::fs::read_to_string(&commit).unwrap();
     text.truncate(text.find("[[sources]]").unwrap());
-    text.push_str("\n[writer.serve]\ncommitter=false\n");
+    let text = text.replace(&endpoint, &proxy)
+        + "\n[writer.commit]\ncoalescing_timer='2s'\n[writer.serve]\ncommitter=false\n";
     let service = root.join("committer-host/service.toml");
     std::fs::write(&service, &text).unwrap();
-    let mut child = host_command(&service)
-        .args(["writer", "serve"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
-    std::thread::sleep(std::time::Duration::from_secs(2));
+    // The service, its log, and when it reported that its committer timer started.
+    let serve = || {
+        let mut process = CommitProcess::spawn_command(
+            &service,
+            &["writer", "serve"],
+            Arc::new(AtomicBool::new(true)),
+        );
+        let stderr = BufReader::new(process.child().stderr.take().unwrap());
+        let (sender, started) = mpsc::channel();
+        let log = std::thread::spawn(move || {
+            let mut lines = Vec::new();
+            for line in stderr.lines().map_while(Result::ok) {
+                if line == "writer_service event=started" {
+                    let _ = sender.send(Instant::now());
+                }
+                lines.push(line);
+            }
+            lines
+        });
+        let started = started
+            .recv_timeout(Duration::from_secs(60))
+            .expect("the service did not start");
+        (process, log, started)
+    };
+    let terminate = |mut process: CommitProcess, log: std::thread::JoinHandle<Vec<_>>| {
+        Command::new("kill")
+            .args(["-TERM", &process.child().id().to_string()])
+            .status()
+            .unwrap();
+        let result = process.finish_bounded();
+        assert!(
+            result.status.success(),
+            "{}",
+            log.join().unwrap().join("\n")
+        );
+    };
+    let (process, log, started) = serve();
+    // An enabled committer starts its first round one period after its timer
+    // started. Watch the head until the service's own head watch reads it half
+    // a period after that.
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let mut writes = Vec::new();
+    loop {
+        let (at, write) = next(deadline);
+        if write.is_none() && at >= started + period * 3 / 2 {
+            break;
+        }
+        writes.extend(write);
+    }
+    terminate(process, log);
+    // Shutdown waits for a round in progress, and a round with a backlog writes the head.
+    writes.extend(events.try_iter().filter_map(|(_, write)| write));
+    assert!(writes.is_empty(), "a disabled committer wrote the head");
     assert_eq!(
         publication(&commit).await.0.content.unwrap().publication_id,
         initial.publication_id
     );
-    Command::new("kill")
-        .args(["-TERM", &child.id().to_string()])
-        .status()
-        .unwrap();
-    assert!(child.wait().unwrap().success());
     std::fs::write(&service, text.replace("committer=false", "committer=true")).unwrap();
-    let began = std::time::Instant::now();
-    let mut child = host_command(&service)
-        .args(["writer", "serve"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
-    let mut observed = false;
-    for _ in 0..95 {
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-        if publication(&commit)
-            .await
-            .0
-            .content
-            .as_ref()
-            .unwrap()
-            .publication_id
-            != initial.publication_id
+    let (process, log, started) = serve();
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let published = loop {
+        if let (at, Some(body)) = next(deadline)
+            && serde_json::from_slice::<Value>(&body)
+                .is_ok_and(|head| head["content"]["sequence"].as_u64() > Some(initial.sequence))
         {
-            observed = true;
-            break;
+            break at;
         }
-    }
-    Command::new("kill")
-        .args(["-TERM", &child.id().to_string()])
-        .status()
-        .unwrap();
-    assert!(child.wait().unwrap().success());
-    assert!(observed);
-    assert!(began.elapsed().as_secs() >= 60);
+    };
+    terminate(process, log);
+    // The first round waits one period after the timer started. A quarter of it
+    // allows for the test seeing that line late.
+    assert!(
+        published - started >= period * 3 / 4,
+        "published before the timer"
+    );
+    assert_ne!(
+        publication(&commit).await.0.content.unwrap().publication_id,
+        initial.publication_id
+    );
     publish(&commit);
 }
 
@@ -355,20 +416,21 @@ async fn serve_isolates_failed_providers_while_publishing_on_storage() {
         json!({"epoch":1,"content":[[doc("healthy","r1","fixture document 1")]]}),
     );
     let mut command = super::coordination::worker_command(&service);
-    command.args(["writer", "serve", "--jobs", "5", "--timeout", "4s"]);
+    // The default worker timeout keeps the hanging provider hung while the healthy one publishes.
+    command.args(["writer", "serve", "--jobs", "5"]);
     let mut process =
         super::coordination::CommitProcess::from_command(command, Arc::new(AtomicBool::new(true)));
-    let mut observed = false;
-    for _ in 0..100 {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while !root.join("hanger/entered").exists()
+        || !super::incremental::roots(&super::incremental::rows(&commit).await)
+            .contains(&"healthy".to_owned())
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "a failed provider blocked healthy publication"
+        );
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        let rows = super::incremental::rows(&commit).await;
-        if super::incremental::roots(&rows).contains(&"healthy".to_owned()) {
-            observed = true;
-            break;
-        }
     }
-    assert!(observed, "a failed provider blocked healthy publication");
-    assert!(root.join("hanger/entered").exists());
     Command::new("kill")
         .args(["-TERM", &process.child().id().to_string()])
         .status()
@@ -623,18 +685,25 @@ async fn serve_metrics_count_publications_without_identity_on_storage() {
         json!({"epoch":1,"content":[[doc("healthy","r1","fixture document 1")]]}),
     );
     let mut command = super::coordination::worker_command(&service);
-    command.args(["writer", "serve", "--jobs", "1", "--timeout", "4s"]);
+    command.args(["writer", "serve", "--jobs", "1"]);
     let mut process =
         super::coordination::CommitProcess::from_command(command, Arc::new(AtomicBool::new(true)));
     let client = reqwest::Client::new();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     let mut body = String::new();
-    for _ in 0..100 {
+    while !body.contains("fyrr_writer_commit_rounds_total{outcome=\"published\"} ") {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no published round\n{body}"
+        );
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        if let Ok(response) = client.get(format!("http://{metrics}/metrics")).send().await {
+        // The request and its body share the time left before the deadline.
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        let request = client
+            .get(format!("http://{metrics}/metrics"))
+            .timeout(left);
+        if let Ok(response) = request.send().await {
             body = response.text().await.unwrap_or_default();
-            if body.contains("fyrr_writer_commit_rounds_total{outcome=\"published\"} ") {
-                break;
-            }
         }
     }
     Command::new("kill")
@@ -644,7 +713,6 @@ async fn serve_metrics_count_publications_without_identity_on_storage() {
     let result = process.finish();
     assert!(result.status.success(), "{}", report(&result));
     for line in [
-        "fyrr_writer_commit_rounds_total{outcome=\"published\"} ",
         "# TYPE fyrr_writer_commit_duration_seconds histogram",
         "# TYPE fyrr_writer_pending_envelopes gauge",
     ] {

@@ -189,6 +189,8 @@ pub async fn run(
         tokio::time::interval(loaded.config.writer.commit.coalescing_timer.as_duration());
     timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     timer.tick().await; // First publication waits for the configured coalescing period.
+    // The committer's timer runs from here.
+    eprintln!("writer_service event=started");
     let mut directory_timer =
         tokio::time::interval(loaded.config.identity.directory.sync_interval.as_duration());
     directory_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
