@@ -180,7 +180,13 @@ pub(super) fn prepare_version(
             let mut prepared = PreparedReader::open_shared(
                 config,
                 Some((
-                    session,
+                    // So do the native session's caches, which key the index
+                    // metadata of a dataset by its URI and Lance version.
+                    if replaced {
+                        std::sync::Weak::new()
+                    } else {
+                        session
+                    },
                     context.mirror.clone(),
                     context.cache.clone(),
                     context.query_embeddings.clone(),

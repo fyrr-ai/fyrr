@@ -290,6 +290,59 @@ async fn running_reader_never_serves_a_replaced_namespace_incarnation(backend: B
     std::fs::remove_dir_all(root).unwrap();
 }
 
+/// A namespace created again reaches the Lance version of the one it
+/// replaced with more rows; the running reader serves all of them.
+#[tokio::test]
+#[ignore = "real executable and local storage; scripts/ci"]
+async fn running_reader_serves_a_replaced_namespace_at_the_same_lance_version_on_local_storage() {
+    let (config, root) = setup_on(Backend::Local);
+    std::fs::write(
+        &config,
+        std::fs::read_to_string(&config)
+            .unwrap()
+            .replace("[reader]", "[reader]\nversion_check_interval = '1s'"),
+    )
+    .unwrap();
+    let vector: Vec<f32> = (0..1024).map(|d| ((d + 7) as f32).sin()).collect();
+    root.embedding.insert_both("ledger", vector);
+
+    success(&config, &["writer", "namespace", "create"]);
+    sync_texts(
+        &config,
+        &root,
+        &[("kept.txt", KEPT), ("doomed.txt", DOOMED)],
+    );
+    success(&config, &["writer", "commit"]);
+    let first = super::coordination::publication(&config).await.1;
+    let mut client = super::tools::Mcp::open(&config);
+    let (id, hits) = served(&mut client).unwrap();
+    assert_eq!(id, first.publication_id);
+    assert!(hits.contains(DOOMED), "{hits}");
+
+    export_and_delete(&config, &root).await;
+    success(&config, &["writer", "namespace", "create"]);
+    sync_texts(
+        &config,
+        &root,
+        &[
+            ("kept.txt", KEPT),
+            ("extra.txt", EXTRA),
+            ("second.txt", SECOND),
+        ],
+    );
+    success(&config, &["writer", "commit"]);
+    let second = super::coordination::publication(&config).await.1;
+    assert_ne!(second.publication_id, first.publication_id);
+    assert_eq!(second.lance_version, first.lance_version);
+    let hits = await_publication(&mut client, &second.publication_id, &[DOOMED]);
+    assert!(
+        hits.contains(KEPT) && hits.contains(EXTRA) && hits.contains(SECOND),
+        "{hits}"
+    );
+    drop(client);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 /// The shipped behaviour: requests check the serving head the reader's last
 /// version check read. A running reader may answer from the publication it
 /// holds until its next check, then follows the head: to a new publication,
