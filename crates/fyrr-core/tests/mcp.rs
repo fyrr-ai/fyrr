@@ -3,7 +3,7 @@
 //! example requests and responses round-trip through the Rust types and match
 //! the published tool schemas.
 
-mod common;
+use crate::common;
 
 use fyrr_core::config::DIMENSIONS_MAX;
 use fyrr_core::limits::mcp::{

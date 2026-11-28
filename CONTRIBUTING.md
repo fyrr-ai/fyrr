@@ -114,7 +114,7 @@ outputs stay private. The shared store is kept under 40 GiB (`MBX_GC_MAX_SIZE`).
 `scripts/ci-cases.json` owns the cases and their `quick`/`full` tiers; the
 ownership gate checks all cases, including those excluded from the selected tier.
 A row owns the cases under its prefixes (`owns`). A prefix ends at a test group
-(`full:fyrr:test:dense_path/`) or a module (`full:fyrr:test:dense_path/incremental::`)
+(`full:fyrr:test:integration/dense_path::`) or a module (`full:fyrr:test:integration/dense_path::incremental::`)
 and carries a tier and `seconds`, the mean time of one case; the pool only uses
 it to start long cases first. The longest prefix wins, and an exact entry in
 `cases` beats any prefix. `children` names the tests that a parent case runs
@@ -205,7 +205,7 @@ not create.
   on an unowned case, a stale entry, or an exact entry its prefix already covers.
 - **Contracts.** `schemas/`, the SDK's schema copies and `fixtures/mcp/` are
   generated from the Rust types. Regenerate them with
-  `FYRR_UPDATE_GOLDEN=1 cargo test --locked -p fyrr-core --test generated`
+  `FYRR_UPDATE_GOLDEN=1 cargo test --locked -p fyrr-core --test integration generated::`
   and review the diff. Compare each changed contract with its last released
   version. If all changes are additive (for example, new optional fields),
   use the next minor version; otherwise use the next major version, and

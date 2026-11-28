@@ -90,7 +90,7 @@ def build():
                 if variant == "reader" and (
                     package != "fyrr"
                     or target["kind"] != ["test"]
-                    or target["name"] not in {"cli", "privacy"}
+                    or target["name"] != "integration"
                 ):
                     continue
                 group = f"{variant}:{package}:{target['kind'][0]}:{target['name']}"

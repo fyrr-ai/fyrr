@@ -1,11 +1,11 @@
 //! Drift check: committed JSON Schemas and MCP golden files equal what the Rust
 //! types generate. Regenerate with
-//! `FYRR_UPDATE_GOLDEN=1 cargo test -p fyrr-core --test generated` and review
+//! `FYRR_UPDATE_GOLDEN=1 cargo test -p fyrr-core --test integration generated::` and review
 //! the diff.
 
 #[path = "support/generated.rs"]
 mod artifacts;
-mod common;
+use crate::common;
 
 use std::collections::BTreeSet;
 
@@ -173,7 +173,7 @@ fn generated_files_match_committed_copies() {
     assert!(
         drifted.is_empty(),
         "generated files differ from the committed copies: {drifted:?}\n\
-         regenerate with FYRR_UPDATE_GOLDEN=1 cargo test -p fyrr-core --test generated and review the diff"
+         regenerate with FYRR_UPDATE_GOLDEN=1 cargo test -p fyrr-core --test integration generated:: and review the diff"
     );
 }
 

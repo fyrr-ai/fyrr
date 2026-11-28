@@ -2,7 +2,7 @@
 //! rejected, cross-field validation, secrets only as environment references
 //! (never echoed), the generated JSON Schema, and value origins.
 
-mod common;
+use crate::common;
 
 use std::collections::HashMap;
 

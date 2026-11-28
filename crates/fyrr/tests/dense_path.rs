@@ -2,7 +2,7 @@
 //! serving and failure boundaries.
 #![cfg(feature = "writer")]
 
-mod common;
+use crate::common;
 
 #[path = "dense_path/api_keys.rs"]
 mod api_keys;

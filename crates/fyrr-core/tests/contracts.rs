@@ -3,7 +3,7 @@
 //! refused before the body is read (fail closed); a minor-version addition is
 //! accepted.
 
-mod common;
+use crate::common;
 
 use std::sync::Arc;
 

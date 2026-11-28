@@ -2,7 +2,7 @@
 //! connector providers and the dry-run sync (full build), the standing writer
 //! service's required configuration, and the reader-only build's missing writer.
 
-mod common;
+use crate::common;
 
 use std::path::{Path, PathBuf};
 use std::process::Output;
