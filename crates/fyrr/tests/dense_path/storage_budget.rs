@@ -454,8 +454,19 @@ async fn an_http_reader_with_api_keys_reads_them_once_per_version_check() {
     assert!(committed.status.success(), "{}", report(&committed));
 
     let seen = Seen::default();
+    // When each read of the published keys reached storage.
+    let key_reads = Arc::new(Mutex::new(Vec::new()));
+    let hook: BoundaryHook = {
+        let (hook, key_reads) = (seen.hook(), key_reads.clone());
+        Arc::new(move |request, body, after| {
+            if !after && request.contains("/api-keys.json ") {
+                key_reads.lock().unwrap().push(std::time::Instant::now());
+            }
+            hook(request, body, after)
+        })
+    };
     let stop = Arc::new(AtomicBool::new(false));
-    let (observed, _observer) = proxy_at_boundary(endpoint.clone(), stop.clone(), seen.hook());
+    let (observed, _observer) = proxy_at_boundary(endpoint.clone(), stop.clone(), hook);
     let observed_config = root.join("observed.toml");
     std::fs::write(&observed_config, text.replace(&endpoint, &observed)).unwrap();
     let mut reader =
@@ -463,15 +474,6 @@ async fn an_http_reader_with_api_keys_reads_them_once_per_version_check() {
             format!("\n[reader.http]\nlisten='{address}'\npublic_url='{base}/mcp'\n")
         })
         .await;
-    let keys_read = || {
-        seen.all(0)
-            .iter()
-            .filter(|request| request.ends_with("/api-keys.json"))
-            .count()
-    };
-    // Counted from here, after the read at start: a loaded start then adds
-    // nothing to the reads allowed.
-    let (started, at_start) = (std::time::Instant::now(), keys_read());
     // Requests that carry a key nobody published read no keys.
     let secret = format!("fyrr_key_{:064}", 7);
     for _ in 0..20 {
@@ -486,18 +488,20 @@ async fn an_http_reader_with_api_keys_reads_them_once_per_version_check() {
         .await;
         assert_eq!(status, 401, "{body}");
     }
-    // Five checks, so that a second read per check exceeds the reads its
-    // interval allows; a loaded host can hold the checks back.
+    // The read at start and five version checks. A check starts at least an
+    // interval after the one before it, however late the host runs it, so
+    // six reads span five intervals; a second read per check comes sooner,
+    // however slow each read is.
     let deadline = std::time::Instant::now() + Duration::from_secs(120);
-    while keys_read() < at_start + 5 && std::time::Instant::now() < deadline {
+    while key_reads.lock().unwrap().len() < 6 && std::time::Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
-    let keys = keys_read() - at_start;
-    let allowed =
-        usize::try_from(started.elapsed().as_millis() / INTERVAL.as_millis()).unwrap() + 2;
+    let reads = key_reads.lock().unwrap().clone();
+    assert!(reads.len() >= 6, "the keys were read {} times", reads.len());
+    let span = reads[5] - reads[0];
     assert!(
-        (5..=allowed).contains(&keys),
-        "the keys were read {keys} times, allowed {allowed}"
+        span >= INTERVAL * 9 / 2,
+        "six reads of the keys took {span:?}, five version checks take 5 intervals"
     );
 
     let post_as = |key: usize, namespace: String| {
@@ -979,7 +983,7 @@ const IDLE_TICK_MANIFESTS: usize = 1;
 
 /// Watches a running writer service: waits until it has written nothing for
 /// two seconds in a row, after its first seconds, then follows it for `TICKS`
-/// idle ticks of the committer. Returns when it settled, where the window
+/// seconds and at least `TICKS` idle ticks of the committer. Returns when it settled, where the window
 /// starts in `seen`, the window's requests, the ticks its budget covers, and
 /// the committer's published ticks in it.
 fn watch_idle(
@@ -1027,10 +1031,10 @@ fn watch_idle(
         events("idle"),
         events("published"),
     );
-    // A loaded host ticks late: the window ends after the ticks the service
-    // logged, not after a number of seconds.
+    // The window lasts `TICKS` seconds. A loaded host ticks late, so it ends
+    // only after the service logged `TICKS` idle ticks.
+    std::thread::sleep(Duration::from_secs(u64::try_from(TICKS).unwrap()));
     loop {
-        std::thread::sleep(Duration::from_millis(100));
         // Requests first: a tick logged after them only adds to the budget.
         let requests = seen.all(mark);
         let window = settled.elapsed();
@@ -1044,17 +1048,18 @@ fn watch_idle(
         );
         if idle >= TICKS || published > 0 {
             // The budget follows the window's length, not the logged ticks:
-            // the 1 s coalescing timer starts at most `seconds + 1` ticks in
-            // it, one more may be under way at its start, and the service's
-            // watch of the head reads it every second whatever the committer
-            // does. A committer that ticks faster than its timer exceeds it.
+            // the 1 s coalescing timer starts a tick per second of it, one
+            // more may be under way at its start, and the service's watch of
+            // the head reads it every second whatever the committer does. A
+            // committer that ticks faster than its timer exceeds it.
             let seconds = usize::try_from(window.as_secs()).unwrap();
-            return (settled, mark, requests, seconds + 2, published);
+            return (settled, mark, requests, seconds + 1, published);
         }
         assert!(
             window < Duration::from_secs(120),
             "only {idle} idle ticks: the committer did not tick"
         );
+        std::thread::sleep(Duration::from_millis(100));
     }
 }
 
