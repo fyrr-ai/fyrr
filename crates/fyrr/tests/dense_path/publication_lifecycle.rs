@@ -268,11 +268,14 @@ async fn committer_indexes_and_stale_prepared_acl_on_storage() {
 #[ignore = "real CLI service timer and RustFS; scripts/ci"]
 async fn serve_timer_disabled_committer_on_storage() {
     use super::coordination::CommitProcess;
+    use std::io::{BufRead, BufReader};
     use std::sync::{Arc, atomic::AtomicBool, mpsc};
     use std::time::{Duration, Instant};
-    // The documented default; the services below use 1 s to keep the case quick.
+    // The documented default. The services below use 2 s to keep the case
+    // quick, a period no shorter constant in the service can stand in for.
     let default = fyrr_core::config::CommitConfig::default().coalescing_timer;
     assert_eq!(default.as_duration(), Duration::from_secs(60));
+    let period = Duration::from_secs(2);
     let (config, commit, root) = fixture();
     let initial = publication(&commit).await.0.content.unwrap();
     input(
@@ -303,44 +306,65 @@ async fn serve_timer_disabled_committer_on_storage() {
     let mut text = std::fs::read_to_string(&commit).unwrap();
     text.truncate(text.find("[[sources]]").unwrap());
     let text = text.replace(&endpoint, &proxy)
-        + "\n[writer.commit]\ncoalescing_timer='1s'\n[writer.serve]\ncommitter=false\n";
+        + "\n[writer.commit]\ncoalescing_timer='2s'\n[writer.serve]\ncommitter=false\n";
     let service = root.join("committer-host/service.toml");
     std::fs::write(&service, &text).unwrap();
+    // The service, its log, and when it reported that its committer timer started.
     let serve = || {
-        CommitProcess::spawn_command(
+        let mut process = CommitProcess::spawn_command(
             &service,
             &["writer", "serve"],
             Arc::new(AtomicBool::new(true)),
-        )
+        );
+        let stderr = BufReader::new(process.child().stderr.take().unwrap());
+        let (sender, started) = mpsc::channel();
+        let log = std::thread::spawn(move || {
+            let mut lines = Vec::new();
+            for line in stderr.lines().map_while(Result::ok) {
+                if line == "writer_service event=started" {
+                    let _ = sender.send(Instant::now());
+                }
+                lines.push(line);
+            }
+            lines
+        });
+        let started = started
+            .recv_timeout(Duration::from_secs(60))
+            .expect("the service did not start");
+        (process, log, started)
     };
-    let terminate = |mut process: CommitProcess| {
+    let terminate = |mut process: CommitProcess, log: std::thread::JoinHandle<Vec<_>>| {
         Command::new("kill")
             .args(["-TERM", &process.child().id().to_string()])
             .status()
             .unwrap();
         let result = process.finish();
-        assert!(result.status.success(), "{}", report(&result));
+        assert!(result.status.success(), "{}", log.join().unwrap().join("\n"));
     };
-    let process = serve();
-    // The startup read, then two of the head watch: an enabled committer would
-    // have started its first round by the second.
+    let (process, log, started) = serve();
+    // An enabled committer starts its first round one period after its timer
+    // started. Watch the head until the service's own head watch reads it half
+    // a period after that.
     let deadline = Instant::now() + Duration::from_secs(60);
-    let mut writes: Vec<_> = (0..3).map(|_| next(deadline).1).collect();
-    terminate(process);
+    let mut writes = Vec::new();
+    loop {
+        let (at, write) = next(deadline);
+        if write.is_none() && at >= started + period * 3 / 2 {
+            break;
+        }
+        writes.extend(write);
+    }
+    terminate(process, log);
     // Shutdown waits for a round in progress, and a round with a backlog writes the head.
-    writes.extend(events.try_iter().map(|(_, write)| write));
-    assert!(
-        writes.iter().all(Option::is_none),
-        "a disabled committer wrote the head"
-    );
+    writes.extend(events.try_iter().filter_map(|(_, write)| write));
+    assert!(writes.is_empty(), "a disabled committer wrote the head");
     assert_eq!(
         publication(&commit).await.0.content.unwrap().publication_id,
         initial.publication_id
     );
     std::fs::write(&service, text.replace("committer=false", "committer=true")).unwrap();
-    let process = serve();
+    let (process, log, started) = serve();
     let deadline = Instant::now() + Duration::from_secs(60);
-    let ready = next(deadline).0;
     let published = loop {
         if let (at, Some(body)) = next(deadline)
             && serde_json::from_slice::<Value>(&body)
@@ -349,10 +373,11 @@ async fn serve_timer_disabled_committer_on_storage() {
             break at;
         }
     };
-    terminate(process);
-    // The first round waits one coalescing period after the startup read.
+    terminate(process, log);
+    // The first round waits one period after the timer started. A quarter of it
+    // allows for the test seeing that line late.
     assert!(
-        published - ready >= Duration::from_secs(1),
+        published - started >= period * 3 / 4,
         "published before the timer"
     );
     assert_ne!(
