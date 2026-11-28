@@ -140,6 +140,10 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   five connector names with exactly their types, one at the limit of declared
   attributes (the five count), or one that sets one of the five to another type.
   See [tuning](docs/tuning.md#namespaceattributes).
+- `fyrr config check`, `fyrr config show` and `fyrr writer sync` load only the
+  connector providers the configuration's sources name, so they no longer start
+  a Python host for every installed provider and finish sooner. `fyrr writer
+  providers` and `fyrr config schema` still load every installed provider.
 
 ### Added
 

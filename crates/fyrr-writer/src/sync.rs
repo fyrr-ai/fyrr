@@ -109,13 +109,32 @@ pub fn inventory(memory: u64) -> Result<serde_json::Value, String> {
         .map_err(|_| "the provider inventory is unreadable".to_owned())
 }
 
-/// Discovers the installed providers in worker processes.
+/// Discovers every installed provider in worker processes.
 pub fn discover(memory: u64) -> Result<Discovery, String> {
+    discover_matching(memory, |_| true)
+}
+
+/// Discovers only the installed providers that `config`'s sources name, selected
+/// or not; every registration of such a name is kept, so duplicates still fail.
+pub fn discover_configured(config: &Config) -> Result<Discovery, String> {
+    discover_matching(config.writer.worker_memory_max_bytes.as_u64(), |name| {
+        config.sources.iter().any(|source| source.provider == name)
+    })
+}
+
+fn discover_matching(memory: u64, wanted: impl Fn(&str) -> bool) -> Result<Discovery, String> {
     let mut inventory = inventory(memory)?;
     let entries = inventory
         .get_mut("providers")
         .and_then(serde_json::Value::as_array_mut)
         .ok_or("the provider inventory is unreadable")?;
+    // Each metadata worker starts a Python host; skip the ones nothing will use.
+    entries.retain(|entry| {
+        entry
+            .get("entry_point")
+            .and_then(serde_json::Value::as_str)
+            .is_none_or(&wanted)
+    });
     // Sequential: a provider crash/hang affects only its metadata record.
     for entry in entries {
         let Some(name) = entry.get("entry_point").and_then(serde_json::Value::as_str) else {
@@ -291,7 +310,7 @@ fn checked_discovery(config: &fyrr_core::config::Config) -> Result<Discovery, Ex
             providers: Vec::new(),
         });
     }
-    let discovery = match discover(config.writer.worker_memory_max_bytes.as_u64()) {
+    let discovery = match discover_configured(config) {
         Ok(discovery) => discovery,
         Err(error) => {
             eprintln!("error: {error}");
