@@ -716,6 +716,13 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Fixed
 
+- `fyrr writer commit --receipt` answers `receipt_unpublished` for an envelope
+  that a publication rejected, also one that publication lists as applied and
+  as rejected: a revision conflict, or a write API `delete_where` over more
+  documents than one write may delete, answered 409. It succeeded before,
+  while the manifest was retained and after maintenance deleted it.
+  "Applied" means applied and rejected by none, as the committer reads it.
+
 - Excerpt highlights mark only whole tokens of the record. With a tokenizer
   other than `simple`, an excerpt whose edge cut a token could mark part of
   it: with `whitespace`, an excerpt ending at the `-` of `cat-dog` marked

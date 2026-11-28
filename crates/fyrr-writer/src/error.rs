@@ -117,7 +117,6 @@ writer_errors! {
     PublicationUnavailable => ("publication_unavailable", false),
     ReceiptUnpublished => ("receipt_unpublished", false),
     RestoreHistoryIdentityChanged => ("restore_history_identity_changed", false),
-    RestoreHistorySummaryLimit => ("restore_history_summary_limit", false),
     RestoreWorkingSpaceExhausted => ("restore_working_space_exhausted", false),
     RetiredSourcesFull => ("retired_sources_full", false),
     SecretInputTooLarge => ("secret_input_too_large", false),

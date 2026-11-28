@@ -220,26 +220,3 @@ async fn history_order_case(command: &str, ancestor_sequence: u64) {
     assert!(super::coordination::publication(&config).await.1.sequence > template.sequence);
     std::fs::remove_dir_all(root).unwrap();
 }
-
-#[test]
-#[ignore = "real S3 cached history library path; scripts/ci"]
-fn cached_restore_history_checks_sequence_joins_on_storage() {
-    let (config, _root, _) = super::tools::fixture();
-    let output = Command::new(std::env::var_os("FYRR_WRITER_TEST_BINARY").unwrap())
-        .args([
-            "commit::history::sequence_tests::cached_history_checks_sequence_at_joins_on_storage",
-            "--exact",
-            "--ignored",
-            "--nocapture",
-        ])
-        .env("FYRR_TEST_HISTORY_CONFIG", &config)
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed; 0 failed"));
-}

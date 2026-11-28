@@ -9,64 +9,12 @@ use fyrr_core::publication::ServingHead;
 use fyrr_reader::storage::{namespace_store, optional_head};
 use object_store::{ObjectStore, ObjectStoreExt, path::Path};
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
 
 const STATUS_PAGE_PATHS: usize = 128;
 #[cfg(not(test))]
 type StatusEnvelope = PreparedEnvelope;
 #[cfg(test)]
 type StatusEnvelope = tests::TrackedEnvelope;
-
-async fn applied_page(
-    store: Arc<dyn ObjectStore>,
-    root: &Path,
-    head: &ServingHead,
-    ids: &BTreeSet<String>,
-) -> Result<BTreeSet<String>> {
-    let mut applied: BTreeSet<_> = head
-        .rejected_envelope_ids
-        .iter()
-        .filter(|id| ids.contains(*id))
-        .cloned()
-        .collect();
-    // Extra manifest passes buy bounded receipt memory: retain only this page's IDs.
-    let mut chain = fyrr_reader::storage::manifest_chain(
-        store.clone(),
-        root.clone(),
-        head.content.as_ref().map(|p| p.manifest.clone()),
-    );
-    let mut evidence = None;
-    let mut cut = false;
-    while let Some(publication) = chain.try_next().await? {
-        cut = publication.previous_publication_id.is_some();
-        evidence.get_or_insert(publication.envelope_evidence);
-        applied.extend(
-            publication
-                .envelope_ids
-                .into_iter()
-                .chain(publication.rejected_envelope_ids)
-                .filter(|id| ids.contains(id)),
-        );
-    }
-    // The chain ends where maintenance deleted it; the newest evidence tells
-    // the rest.
-    if cut
-        && let Some(evidence) = evidence
-        && let Some(checkpoint) =
-            crate::commit::read_checkpoint(store.as_ref(), root, &evidence.checkpoint).await?
-    {
-        applied.extend(
-            checkpoint
-                .applied_envelope_ids
-                .into_iter()
-                .chain(checkpoint.rejected_envelope_ids)
-                .chain(evidence.applied_since)
-                .chain(evidence.rejected_since)
-                .filter(|id| ids.contains(id)),
-        );
-    }
-    Ok(applied)
-}
 
 /// When each synced source's permissions and members were last read, from the
 /// cursor states that a completed read stamps (null when none did). A read that
@@ -174,6 +122,10 @@ pub async fn status(config: &Config) -> Result<serde_json::Value> {
         .await?
         .ok_or(WriterError::NamespaceUnavailable)?;
     let (store, root) = namespace_store(config)?;
+    let resolved = crate::commit::resolved(config, &head).await?;
+    // The evidence is the served manifest's alone: a lost retained manifest is
+    // found by walking the chain.
+    crate::maintenance::verify_history(config, &head).await?;
     let prefix = root.clone().join("envelopes");
     let mut listing = store.list(Some(&prefix)).fuse();
     let mut envelopes = 0;
@@ -196,15 +148,9 @@ pub async fn status(config: &Config) -> Result<serde_json::Value> {
         }
         #[cfg(test)]
         tests::page(paths.len());
-        let ids: BTreeSet<_> = paths
-            .iter()
-            .filter_map(|path| path.filename())
-            .map(|name| name.strip_suffix(".json").unwrap_or(name).to_owned())
-            .collect();
-        let applied = applied_page(store.clone(), &root, &head, &ids).await?;
         for path in paths {
-            // One decoded envelope, one manifest at a time, and a 128-path page;
-            // ObjectStore's listing also retains its own bounded service page.
+            // One decoded envelope at a time, and a 128-path page; ObjectStore's
+            // listing also retains its own bounded service page.
             let envelope: StatusEnvelope =
                 match fyrr_reader::storage::read_contract(store.as_ref(), &path).await {
                     Ok(envelope) => envelope,
@@ -212,28 +158,18 @@ pub async fn status(config: &Config) -> Result<serde_json::Value> {
                     Err(fyrr_reader::storage::StorageError::PublicationInvalid) => {
                         envelopes += 1;
                         let id = path.filename().and_then(|n| n.strip_suffix(".json"));
-                        if let Some(id) = id.filter(|id| !applied.contains(*id)) {
+                        if let Some(id) = id.filter(|id| !resolved.contains(id)) {
                             unreadable.insert(id.to_owned());
                         }
                         continue;
                     }
                     Err(error) => return Err(error.into()),
                 };
-            let resolved = if ids.contains(&envelope.envelope_id) {
-                applied.contains(&envelope.envelope_id)
-            } else {
-                // Preserve quiescent counts for a valid envelope stored under an alias.
-                applied_page(
-                    store.clone(),
-                    &root,
-                    &head,
-                    &BTreeSet::from([envelope.envelope_id.clone()]),
-                )
-                .await?
-                .contains(&envelope.envelope_id)
-            };
             envelopes += 1;
-            if !resolved && envelope.namespace == config.namespace.name {
+            // By the decoded ID: one stored under an alias counts as it.
+            if !resolved.contains(&envelope.envelope_id)
+                && envelope.namespace == config.namespace.name
+            {
                 let body: &PreparedEnvelope = &envelope;
                 let link = StatusLink::from(body);
                 if crate::commit::chained(link.kind) {
@@ -292,10 +228,9 @@ pub async fn status(config: &Config) -> Result<serde_json::Value> {
     crate::commit::attributed(&unreadable, &named)?;
     let (chains, applied_only): (BTreeMap<_, _>, BTreeMap<_, _>) =
         all.into_iter().partition(|(key, _)| walked.contains(key));
-    let none = BTreeSet::new();
+    let none = crate::commit::Resolved::default();
     let facts = crate::commit::Facts {
-        applied: &none,
-        rejected: &none,
+        resolved: &none,
         retired: &policy.retired_sources,
         chains: &chains,
     };
@@ -308,16 +243,7 @@ pub async fn status(config: &Config) -> Result<serde_json::Value> {
     // A link the walk read by ID, which no listing showed, is pending when no
     // publication resolved it, as the committer applies it.
     for link in links.iter().filter(|link| !chained.contains_key(&link.id)) {
-        if pending_state(link)
-            && !applied_page(
-                store.clone(),
-                &root,
-                &head,
-                &BTreeSet::from([link.id.clone()]),
-            )
-            .await?
-            .contains(&link.id)
-        {
+        if pending_state(link) && !resolved.contains(&link.id) {
             pending += 1;
         }
     }
@@ -410,10 +336,10 @@ pub(crate) async fn discard_purged(
     if purged.is_empty() {
         return Ok(0);
     }
-    let (applied, _) = crate::commit::published_ids(config, &head).await?;
+    let resolved = crate::commit::resolved(config, &head).await?;
     let mut retired = Vec::new();
     for (path, envelope) in purged {
-        if !applied.contains(&envelope.envelope_id)
+        if !resolved.applied(&envelope.envelope_id)
             && let EnvelopePayload::Content(payload) = &envelope.payload
         {
             let files = payload
@@ -466,8 +392,7 @@ pub(crate) async fn cleanup_held(
     let head = lease.head().await?;
     let (store, root, durability) = fyrr_reader::storage::cleanup_namespace_store(config)?;
     let crate::commit::CleanupEvidence {
-        applied,
-        rejected: published_rejected,
+        resolved,
         unresolved,
         envelopes,
     } = crate::commit::cleanup_evidence(config, &head).await?;
@@ -491,12 +416,11 @@ pub(crate) async fn cleanup_held(
         &policy,
         &keys,
         &listed,
-        &|id: &str| -> Result<bool> { Ok(applied.contains(id)) },
+        &|id: &str| -> Result<bool> { Ok(resolved.contains(id)) },
     )
     .await?;
     let facts = crate::commit::Facts {
-        applied: &applied,
-        rejected: &published_rejected,
+        resolved: &resolved,
         retired: &policy.retired_sources,
         chains: &chains,
     };
@@ -609,7 +533,7 @@ mod tests {
         write_contract,
     };
     use serde::{Deserialize, Deserializer, Serialize};
-    use std::{cell::RefCell, ops::Deref, sync::Mutex};
+    use std::{cell::RefCell, ops::Deref, sync::Arc, sync::Mutex};
 
     #[derive(Debug, Default, Clone, Copy)]
     struct Trace {
@@ -792,8 +716,14 @@ mod tests {
             manifest.sequence += 1;
             manifest.publication_id = format!("status-proof-{}", manifest.sequence);
             manifest.committed_at = fyrr_core::clock::now();
-            manifest.envelope_ids = ids[applied].to_vec();
-            manifest.rejected_envelope_ids = ids[rejected].to_vec();
+            manifest.envelope_ids = ids[applied.clone()].to_vec();
+            manifest.rejected_envelope_ids = ids[rejected.clone()].to_vec();
+            // As a publication records them: its evidence covers it.
+            let evidence = &mut manifest.envelope_evidence;
+            evidence.applied_since.extend(ids[applied].iter().cloned());
+            evidence
+                .rejected_since
+                .extend(ids[rejected].iter().cloned());
             let path = format!("publications/{}.json", manifest.publication_id);
             store
                 .put(

@@ -16,7 +16,6 @@ pub(crate) async fn commit_one(
     stage_timings: bool,
     lease: &LeaseGuard,
     envelopes: Vec<PreparedEnvelope>,
-    mut history: Option<&mut RestoreHistory>,
 ) -> Result<u64> {
     let preparation_start = std::time::Instant::now();
     let (store, root) = namespace_store(config)?;
@@ -25,16 +24,7 @@ pub(crate) async fn commit_one(
         return Err(WriterError::PublicationNamespaceInvalid);
     }
     let previous_manifest = previous_manifest(store.as_ref(), &root, &head).await?;
-    let markers = if let Some(h) = history.as_deref_mut() {
-        h.refresh(config, &head).await?;
-        h.fences(config, &envelopes).await?
-    } else {
-        let mut fences = history::RejectionFences::new(&envelopes)?;
-        for marker in rejection_markers(config, &head).await? {
-            fences.observe(&marker)?;
-        }
-        fences
-    };
+    let markers = RejectionFences::new(&envelopes, &rejection_markers(config, &head).await?);
     let current_policy: PolicyArtifact =
         fyrr_reader::storage::artifact(store.as_ref(), &root, &head.policy).await?;
     // The namespace's settings change only by a schema request: a configuration
@@ -48,12 +38,8 @@ pub(crate) async fn commit_one(
     reject_rewound(config, &head, &rewinding, &mut accepted, &mut rejected).await?;
     let mut rejection_head = head.clone();
     rejection_head.rejected_envelope_ids = rejected.clone();
-    let blocked = if let Some(h) = history.as_deref_mut() {
-        h.refresh(config, &rejection_head).await?;
-        blocked_sources(&h.unconsumed_rejections(config, &accepted).await?)
-    } else {
-        blocked_sources(&unconsumed_rejections(config, &rejection_head, &accepted).await?)
-    };
+    let blocked =
+        blocked_sources(&unconsumed_rejections(config, &rejection_head, &accepted).await?);
     let mut envelopes: Vec<_> = accepted
         .into_iter()
         .filter(|e| {
@@ -73,15 +59,8 @@ pub(crate) async fn commit_one(
     stage(stage_timings, "envelopes", preparation_start);
     // What the head was, before the grants of these envelopes were prepared.
     let unchanged = head.clone();
-    let identity_changed = refresh_identity(
-        config,
-        store.as_ref(),
-        &root,
-        &mut head,
-        &envelopes,
-        history.as_deref(),
-    )
-    .await?;
+    let identity_changed =
+        refresh_identity(config, store.as_ref(), &root, &mut head, &envelopes).await?;
     let (policy_changed, acl_changed) = refresh_policy(
         config,
         store.as_ref(),
@@ -222,6 +201,38 @@ fn rewound(rewinding: &BTreeMap<(String, SyncKind), u32>, envelope: &PreparedEnv
         .is_some_and(|generation| envelope.rejection_generation <= *generation)
 }
 
+/// The newest rejection generation of each source and kind of `candidates`
+/// that a marker rejected: an authorization envelope of no newer generation
+/// was prepared on a rewound cursor.
+#[derive(Debug)]
+pub(super) struct RejectionFences {
+    by_kind: BTreeMap<(String, SyncKind), u32>,
+}
+impl RejectionFences {
+    pub(super) fn new(candidates: &[PreparedEnvelope], markers: &[RejectionMarker]) -> Self {
+        let wanted: BTreeSet<_> = candidates
+            .iter()
+            .map(|e| (e.source_id.clone(), e.kind))
+            .collect();
+        let mut by_kind = BTreeMap::<_, u32>::new();
+        for marker in markers {
+            let key = (marker.source_id.clone(), marker.kind);
+            if wanted.contains(&key) {
+                let fence = by_kind.entry(key).or_default();
+                *fence = (*fence).max(marker.rejection_generation);
+            }
+        }
+        Self { by_kind }
+    }
+    pub(super) fn refusal(&self, envelope: &PreparedEnvelope) -> Option<&'static str> {
+        let fence = self
+            .by_kind
+            .get(&(envelope.source_id.clone(), envelope.kind))?;
+        (envelope.kind.is_authorization() && envelope.rejection_generation <= *fence)
+            .then_some("authorization_rewind_required")
+    }
+}
+
 fn content_groups(envelopes: &[PreparedEnvelope]) -> Vec<Vec<&PreparedEnvelope>> {
     // Batch disjoint keys, but flush before any key repeats. Revisions may cycle
     // A->B->A; only envelope order determines which physical rows survive.
@@ -299,7 +310,7 @@ async fn refusal(
     config: &Config,
     head: &ServingHead,
     current_policy: &PolicyArtifact,
-    markers: &history::RejectionFences,
+    markers: &RejectionFences,
     envelope: &PreparedEnvelope,
 ) -> Result<Option<&'static str>> {
     // A retired source's commits are fenced.
@@ -356,7 +367,7 @@ async fn accept_envelopes(
     config: &Config,
     head: &ServingHead,
     current_policy: &PolicyArtifact,
-    markers: &history::RejectionFences,
+    markers: &RejectionFences,
     envelopes: Vec<PreparedEnvelope>,
 ) -> Result<(
     Vec<PreparedEnvelope>,
@@ -400,7 +411,6 @@ async fn next_identity(
     root: &Path,
     head: &ServingHead,
     envelopes: &[PreparedEnvelope],
-    history: Option<&RestoreHistory>,
 ) -> Result<(IdentityArtifact, bool)> {
     let current_identity: IdentityArtifact =
         fyrr_reader::storage::artifact(store, root, &head.identity).await?;
@@ -410,42 +420,8 @@ async fn next_identity(
         .checked_add(1)
         .ok_or(WriterError::IdentityGenerationOverflow)?;
     let configured = configured_identity(config, identity_generation)?;
-    let member_paths = history
-        .map(|h| {
-            h.envelopes
-                .iter()
-                .filter(|(path, (_, summary, _))| {
-                    h.listed.contains(path)
-                        && envelopes.iter().any(|e| {
-                            let EnvelopePayload::Members(p) = &e.payload else {
-                                return false;
-                            };
-                            summary.kind == e.kind
-                                && summary.source_id == e.source_id
-                                && summary.rejection_generation == e.rejection_generation
-                                && summary.sequence >= e.sequence.saturating_sub(p.part as u64)
-                                && summary.sequence <= e.sequence
-                        })
-                })
-                .map(|(path, (_, summary, _))| {
-                    Ok((
-                        path.clone(),
-                        h.identity(&summary.envelope_id)?
-                            .ok_or(WriterError::PublicationInvalid)?,
-                    ))
-                })
-                .collect::<Result<Vec<_>>>()
-        })
-        .transpose()?;
-    let mut next_identity = crate::membership::build(
-        config,
-        &current_identity,
-        head,
-        envelopes,
-        configured,
-        member_paths.as_deref(),
-    )
-    .await?;
+    let mut next_identity =
+        crate::membership::build(config, &current_identity, head, envelopes, configured).await?;
     let identity_changed = next_identity.principals != current_identity.principals
         || next_identity.tokens != current_identity.tokens
         || next_identity.subjects != current_identity.subjects;
@@ -462,10 +438,9 @@ async fn refresh_identity(
     root: &Path,
     head: &mut ServingHead,
     envelopes: &[PreparedEnvelope],
-    history: Option<&RestoreHistory>,
 ) -> Result<bool> {
     let (next_identity, pointer_changed) =
-        next_identity(config, store, root, head, envelopes, history).await?;
+        next_identity(config, store, root, head, envelopes).await?;
     if pointer_changed {
         head.identity = crate::prepare::put_generation(
             store,
@@ -532,7 +507,7 @@ pub(crate) async fn idle(
 ) -> Result<bool> {
     let (store, root) = namespace_store(config)?;
     let (identity, identity_changed) =
-        next_identity(config, store.as_ref(), &root, head, &[], None).await?;
+        next_identity(config, store.as_ref(), &root, head, &[]).await?;
     if identity_changed
         || !crate::envelopes::purged_envelopes(config, head, policy)
             .await?
@@ -607,10 +582,7 @@ async fn waits(
     }) {
         return Ok(false);
     }
-    let mut fences = history::RejectionFences::new(pending)?;
-    for marker in rejection_markers(config, head).await? {
-        fences.observe(&marker)?;
-    }
+    let fences = RejectionFences::new(pending, &rejection_markers(config, head).await?);
     // Content that is blocked here is none of the judgments below: a commit
     // leaves it as it is.
     for envelope in pending.iter().filter(|e| e.kind != SyncKind::Content) {
@@ -1068,6 +1040,51 @@ mod tests {
             )
             .await;
             assert_eq!(stats["indices"][0]["num_partitions"], partitions, "{stats}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod fences_tests {
+    use super::*;
+
+    fn envelope(kind: &str) -> PreparedEnvelope {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!(
+            "../../fixtures/contracts/prepared-envelope/{kind}.json"
+        ));
+        let mut envelope: PreparedEnvelope =
+            fyrr_core::parse_contract(&std::fs::read(path).unwrap()).unwrap();
+        envelope.source_id = "source".into();
+        envelope
+    }
+
+    #[test]
+    fn acceptance_fences_preserve_kind_and_generation_boundaries() {
+        for (kind, generation, expected) in [
+            ("content", 0, None),
+            ("permissions", 3, Some("authorization_rewind_required")),
+            ("permissions", 4, None),
+            ("members", 3, Some("authorization_rewind_required")),
+            ("reconcile", 0, None),
+        ] {
+            let mut envelope = envelope(kind);
+            envelope.rejection_generation = generation;
+            let mut marker = RejectionMarker {
+                schema_version: ENVELOPE_CONTRACT_VERSION,
+                envelope_id: "env-00000000000000000000000000000001".into(),
+                source_id: "source".into(),
+                kind: envelope.kind,
+                sequence: 1,
+                rejection_generation: 3,
+                start_cursor: None,
+                reason: "fixture".into(),
+            };
+            let candidates = std::slice::from_ref(&envelope);
+            let fences = RejectionFences::new(candidates, std::slice::from_ref(&marker));
+            assert_eq!(fences.refusal(&envelope), expected, "{kind}/{generation}");
+            marker.source_id = "other".into();
+            let unrelated = RejectionFences::new(candidates, &[marker]);
+            assert_eq!(unrelated.refusal(&envelope), None);
         }
     }
 }

@@ -231,7 +231,7 @@ pub(crate) async fn publish_held(
         .checked_add(1)
         .ok_or(WriterError::IdentityGenerationOverflow)?;
     let configured = crate::commit::configured_identity(config, generation)?;
-    let next = crate::membership::build(config, &inputs, &head, &[], configured, None).await?;
+    let next = crate::membership::build(config, &inputs, &head, &[], configured).await?;
     if next.principals == current.principals
         && next.tokens == current.tokens
         && next.subjects == current.subjects

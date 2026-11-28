@@ -8,23 +8,9 @@ use std::path::{Path, PathBuf};
 
 pub(crate) const ERROR: WriterError = WriterError::RestoreWorkingSpaceExhausted;
 
-/// Called under the namespace lease.
-pub(crate) fn directory(config: &Config) -> Result<PathBuf> {
-    let base = base(config)?;
-    let scratch = base.join(format!(
-        "{}-history",
-        fyrr_reader::embedding::digest(fyrr_reader::storage::dataset_uri(config).as_bytes())
-    ));
-    match std::fs::remove_dir_all(&scratch) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(_) => return Err(ERROR),
-    }
-    create(&scratch)?;
-    Ok(scratch)
-}
+pub(crate) mod index;
 
-/// Worker commands do not hold a namespace lease and never remove another index.
+/// A sync worker holds no namespace lease and never removes another index.
 pub(crate) fn command_directory(config: &Config) -> Result<PathBuf> {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let base = base(config)?;

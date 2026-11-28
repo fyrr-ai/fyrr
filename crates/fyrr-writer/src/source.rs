@@ -175,7 +175,7 @@ pub async fn purge(config: &Config, source: &str, confirm: bool) -> Result<serde
         mark(config, &lease, source, false).await?;
         // Recover unpublished native versions through the committer before
         // starting a new delete lineage from the serving head.
-        commit::commit_one(config, false, &lease, Vec::new(), None).await?;
+        commit::commit_one(config, false, &lease, Vec::new()).await?;
         if rows > 0 {
             let head = lease.head().await?;
             let mut dataset = pinned(config, &head).await?;
@@ -221,7 +221,7 @@ pub async fn purge(config: &Config, source: &str, confirm: bool) -> Result<serde
             .await?;
         }
         // The identity is rebuilt without the source's principal snapshot.
-        commit::commit_one(config, false, &lease, Vec::new(), None).await?;
+        commit::commit_one(config, false, &lease, Vec::new()).await?;
         mark(config, &lease, source, true).await?;
         let mut plan = plan;
         plan["deleted_staging_files"] =

@@ -14,7 +14,7 @@ use fyrr_reader::embedding::digest;
 use fyrr_reader::storage::{
     api_key_deployment_hash, api_key_principal, api_key_subject, hash_principal, namespace_store,
 };
-use object_store::{ObjectStore, ObjectStoreExt, path::Path};
+use object_store::{ObjectStore, path::Path};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub async fn build(
@@ -23,7 +23,6 @@ pub async fn build(
     head: &ServingHead,
     envelopes: &[PreparedEnvelope],
     mut configured: IdentityArtifact,
-    member_paths: Option<&[(Path, String)]>,
 ) -> Result<IdentityArtifact> {
     let (store, root) = namespace_store(config)?;
     let mut inputs = current.inputs.clone();
@@ -36,16 +35,8 @@ pub async fn build(
     for envelope in envelopes {
         match &envelope.payload {
             EnvelopePayload::Members(payload) if payload.last => {
-                let input = member_input(
-                    config,
-                    store.as_ref(),
-                    &root,
-                    head,
-                    envelope,
-                    payload,
-                    member_paths,
-                )
-                .await?;
+                let input =
+                    member_input(config, store.as_ref(), &root, head, envelope, payload).await?;
                 inputs
                     .retain(|i| i.kind != IdentityInputKind::Source || i.id != envelope.source_id);
                 inputs.push(input);
@@ -154,39 +145,16 @@ async fn member_input(
     head: &ServingHead,
     envelope: &PreparedEnvelope,
     payload: &MembersPayload,
-    member_paths: Option<&[(Path, String)]>,
 ) -> Result<IdentityInput> {
-    let paths = match member_paths {
-        Some(paths) => paths
-            .iter()
-            .map(|(p, hash)| (p.clone(), Some(hash)))
-            .collect(),
-        None => crate::commit::envelope_paths(config, head)
-            .await?
-            .0
-            .into_iter()
-            .map(|p| (p, None))
-            .collect::<Vec<_>>(),
-    };
+    let (paths, _) = crate::commit::envelope_paths(config, head).await?;
     let mut parts = BTreeMap::new();
-    for (path, expected) in paths {
-        let item: PreparedEnvelope = if let Some(hash) = expected {
-            let bytes = store.get(&path).await?.bytes().await?;
-            if digest(&bytes) != *hash {
-                return Err(WriterError::RestoreHistoryIdentityChanged);
-            }
-            fyrr_reader::storage::parse_stored(
-                &bytes,
-                fyrr_reader::storage::StorageError::PublicationInvalid,
-            )?
-        } else {
-            // Another source's envelope that does not parse is not this
-            // snapshot's: a part of it that is missing fails below.
-            match fyrr_reader::storage::read_contract(store, &path).await {
-                Ok(item) => item,
-                Err(fyrr_reader::storage::StorageError::PublicationInvalid) => continue,
-                Err(error) => return Err(error.into()),
-            }
+    for path in paths {
+        // Another source's envelope that does not parse is not this
+        // snapshot's: a part of it that is missing fails below.
+        let item: PreparedEnvelope = match fyrr_reader::storage::read_contract(store, &path).await {
+            Ok(item) => item,
+            Err(fyrr_reader::storage::StorageError::PublicationInvalid) => continue,
+            Err(error) => return Err(error.into()),
         };
         if item.source_id != envelope.source_id
             || item.rejection_generation != envelope.rejection_generation
