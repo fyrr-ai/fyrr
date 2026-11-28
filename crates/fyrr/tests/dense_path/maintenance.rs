@@ -1,9 +1,8 @@
-//! Maintenance and restore lifecycle proofs through independent CLI hosts and owned RustFS.
+//! Maintenance lifecycle proofs through independent CLI hosts and owned RustFS.
 use super::coordination::{command, host_command, publication, worker_sync};
 use super::corrections::proxied;
 use super::incremental::{
-    doc, envelopes, fixture, fixture_on, initial, input, publish, publish_initial, rows,
-    source_rows,
+    doc, envelopes, fixture, fixture_on, input, publish, publish_initial, rows, source_rows,
 };
 use super::*;
 use object_store::ObjectStoreExt;
@@ -227,113 +226,76 @@ async fn maintenance_pending_revoke_purge_and_verify_on_storage() {
     );
 }
 
+/// A namespace of connector sources is not restored: a sync or a copy
+/// recovers it. The refusal writes nothing, not even the lease, and so does
+/// the refusal of a copy whose configuration lists no source.
 #[tokio::test]
 #[ignore = "real CLI and local storage; scripts/ci"]
-async fn maintenance_restore_rollback_current_rights_deletes_and_cursor_recovery_on_local_storage()
-{
-    maintenance_restore_rollback_current_rights_deletes_and_cursor_recovery(Backend::Local).await;
-}
-
-async fn maintenance_restore_rollback_current_rights_deletes_and_cursor_recovery(backend: Backend) {
-    let (worker, commit, root) = fixture_on(backend);
+async fn maintenance_restore_refuses_a_namespace_of_connector_sources_on_storage() {
+    let (worker, commit, root) = fixture();
     publish_initial(&worker, &commit, &root);
-    let (_, target) = publication(&commit).await;
+    let (_, first) = publication(&commit).await;
     input(
         &root,
-        json!({"epoch":2,"content":[[{"id":"b","delete":true,"revision":"r2","expected_prior_revision":"r1"}]],"permissions":[[{"id":"a","revision":"p2","readers":[]}]]}),
+        json!({"epoch":2,"content":[[replacement("a","r2","r1","fixture document 2")]]}),
     );
-    worker_sync(
-        &worker,
-        &["incremental", "--kind", "content", "--kind", "permissions"],
-    );
+    worker_sync(&worker, &["incremental", "--kind", "content"]);
     publish(&commit);
-    let (_, current) = publication(&commit).await;
-    let restored = command(&commit, &["writer", "restore", &target.publication_id]);
-    assert!(restored["lance_version"].as_u64().unwrap() > current.lance_version);
-    let (_, after) = publication(&commit).await;
-    assert!(!after.cursor_rewinds.is_empty());
-    let config = reader_config(&worker, &root, "every");
-    let mut mcp = tools::Mcp::open_logged(&config, &root.join("restore-reader.stderr"));
-    assert!(
-        !readable(&fetch(&mut mcp, "a")),
-        "current revoke survives older content"
-    );
-    assert!(
-        !readable(&fetch(&mut mcp, "b")),
-        "current delete survives older content"
-    );
-    assert!(
-        mcp.call("search", json!({"query":"fixture query","limit":1}))["structuredContent"]["hits"]
-            .as_array()
-            .is_some_and(|h| !h.is_empty())
-    );
-    command(&commit, &["writer", "verify"]);
-    command(&commit, &["writer", "rollback"]);
-    let (_, rollback) = publication(&commit).await;
-    assert!(rollback.lance_version > after.lance_version);
-    input(
-        &root,
-        json!({"epoch":3,"capture_cursors":true,"content":[[doc("c","r1","fixture document 3")]]}),
-    );
-    worker_sync(
-        &worker,
-        &[
-            "incremental",
-            "--kind",
-            "content",
-            "--kind",
-            "permissions",
-            "--kind",
-            "members",
-        ],
-    );
-    let captured: Value =
-        serde_json::from_slice(&std::fs::read(root.join("content-cursor.json")).unwrap()).unwrap();
-    assert!(
-        captured.is_null(),
-        "restore/rollback force full content rescan"
-    );
-    publish(&commit);
-    let loaded = fyrr_core::config::load(&worker).unwrap();
-    let (store, path) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
-    let cursor_path = path.join("cursors").join("incremental-content.json");
-    let cursor: fyrr_core::connector::CursorState =
-        fyrr_reader::storage::read_contract(store.as_ref(), &cursor_path)
+    // A copy of a connector namespace, in a configuration that lists no source.
+    let (local, _local_root) = setup_on(Backend::Local);
+    command(&local, &["writer", "namespace", "create"]);
+    let synced = run(&local, &["writer", "sync"]);
+    assert!(synced.status.success(), "{}", report(&synced));
+    publish(&local);
+    let copy = super::namespace_copy::elsewhere(&local, "copy", None);
+    let text = std::fs::read_to_string(&copy).unwrap();
+    std::fs::write(&copy, &text[..text.find("[[sources]]").unwrap()]).unwrap();
+    super::namespace_copy::copied(&local, &copy);
+    let copied = publication(&copy).await.1.publication_id;
+    let refused = async |config: &Path, target: &str| {
+        let head = publication(config).await.0;
+        for args in [
+            vec!["writer", "rollback"],
+            vec!["writer", "restore", target],
+        ] {
+            let output = host_command(config).args(&args).output().unwrap();
+            assert!(!output.status.success(), "{args:?}");
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(stderr.contains("restore_unsupported"), "{stderr}");
+            assert_eq!(publication(config).await.0, head);
+        }
+    };
+    refused(&commit, &first.publication_id).await;
+    refused(&copy, &copied).await;
+    // Its cursors lost, in a configuration that lists no source.
+    let loaded = fyrr_core::config::load(&commit).unwrap();
+    let (store, ns) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
+    let cursors: Vec<_> =
+        futures::TryStreamExt::try_collect(store.list(Some(&ns.clone().join("cursors"))))
             .await
             .unwrap();
-    assert_eq!(cursor.restore_sequence, rollback.sequence);
-    store.delete(&cursor_path).await.unwrap();
-    worker_sync(&worker, &["incremental", "--kind", "content"]);
-    let captured: Value =
-        serde_json::from_slice(&std::fs::read(root.join("content-cursor.json")).unwrap()).unwrap();
-    // A lost content cursor confirms what was published and reads from the start.
-    assert!(
-        captured.is_null(),
-        "a lost content cursor reads the source again from the start"
-    );
-    publish(&commit);
-    let healthy = fetch(&mut mcp, "c");
-    assert!(readable(&healthy), "{healthy}");
-    assert!(!readable(&fetch(&mut mcp, "a")));
-    assert!(!readable(&fetch(&mut mcp, "b")));
+    assert!(!cursors.is_empty());
+    for cursor in cursors {
+        store.delete(&cursor.location).await.unwrap();
+    }
+    let bare = commit.with_file_name("bare.toml");
+    let text = std::fs::read_to_string(&commit).unwrap();
+    std::fs::write(&bare, &text[..text.find("[[sources]]").unwrap()]).unwrap();
+    refused(&bare, &first.publication_id).await;
 }
 
 #[tokio::test]
 #[ignore = "real CLI and local storage; scripts/ci"]
-async fn maintenance_restore_crash_boundaries_on_storage() {
-    // Distinct storage boundaries, shared by the two native maintenance operations.
-    // This is deliberately not a cross product of actions and failure windows.
+async fn maintenance_crash_boundaries_on_storage() {
+    // Distinct storage boundaries of a native maintenance operation.
     let cases = [
-        (false, "/_versions/", false),
-        (true, "/_versions/", true),
-        (false, "/publications/", false),
-        (true, "/head.json", false),
-        (false, "/head.json", true),
+        ("/_versions/", false),
+        ("/publications/", false),
+        ("/head.json", true),
     ];
-    for (restore, boundary, after) in cases {
+    for (boundary, after) in cases {
         let (worker, commit, root) = fixture();
         publish_initial(&worker, &commit, &root);
-        let target = publication(&commit).await.1;
         input(
             &root,
             json!({"epoch":2,"content":[[replacement("a","r2","r1","fixture document 2")]],"permissions":[[{"id":"b","revision":"p2","readers":[]}]]}),
@@ -377,23 +339,19 @@ async fn maintenance_restore_crash_boundaries_on_storage() {
         let mut guard = thread;
         guard.resume = resume.clone();
         let config = proxied(&commit, &endpoint);
-        let args = if restore {
-            vec!["writer", "restore", &target.publication_id]
-        } else {
-            vec!["writer", "maintain"]
-        };
+        let args = ["writer", "maintain"];
         let mut process =
             coordination::CommitProcess::spawn_command(&config, &args, resume.clone());
         let started = Instant::now();
         while !fired.load(Ordering::SeqCst) {
             assert!(
                 started.elapsed() < Duration::from_secs(90),
-                "boundary {restore}/{boundary}/{after} was not reached"
+                "boundary {boundary}/{after} was not reached"
             );
             if process.child().try_wait().unwrap().is_some() {
                 let output = process.finish();
                 panic!(
-                    "operation {restore}/{boundary}/{after} exited before boundary: status={}, stdout={}, stderr={}",
+                    "maintain {boundary}/{after} exited before boundary: status={}, stdout={}, stderr={}",
                     output.status,
                     String::from_utf8_lossy(&output.stdout),
                     String::from_utf8_lossy(&output.stderr),
@@ -415,7 +373,7 @@ async fn maintenance_restore_crash_boundaries_on_storage() {
             .unwrap_or_default();
         // The crashed holder is gone; advance its persisted lease deadline.
         fyrr_core::clock::advance(remaining + Duration::from_millis(50)).unwrap();
-        // A different host recovers any orphan through Restore, then does the requested work.
+        // A different host recovers any orphan, then does the requested work.
         command(&commit, &args);
         assert_eq!(command(&commit, &["writer", "verify"])["verified"], true);
         let config = reader_config(&worker, &root, "interval");
@@ -423,7 +381,7 @@ async fn maintenance_restore_crash_boundaries_on_storage() {
         assert!(readable(&fetch(&mut mcp, "a")));
         assert!(
             !readable(&fetch(&mut mcp, "b")),
-            "current revoke survives {restore}/{boundary}/{after}"
+            "current revoke survives {boundary}/{after}"
         );
         let fixed = mcp.call(
             "search",
@@ -434,127 +392,6 @@ async fn maintenance_restore_crash_boundaries_on_storage() {
                 .as_array()
                 .unwrap()
                 .is_empty()
-        );
-    }
-}
-
-#[tokio::test]
-#[ignore = "real CLI and RustFS; scripts/ci"]
-async fn restore_and_rollback_preserve_current_section_revocation() {
-    for rollback in [false, true] {
-        let (worker, commit, root) = fixture();
-        initial(&root);
-        let mut value: Value =
-            serde_json::from_slice(&std::fs::read(root.join("input.json")).unwrap()).unwrap();
-        value["content"][0][0]["texts"] = json!(["fixture document 0", "fixture document 2"]);
-        value["content"][0][0]["section_readers"] = json!([["grp:group"], ["grp:group"]]);
-        input(&root, value.clone());
-        worker_sync(
-            &worker,
-            &[
-                "incremental",
-                "--kind",
-                "content",
-                "--kind",
-                "permissions",
-                "--kind",
-                "members",
-            ],
-        );
-        publish(&commit);
-        let old = publication(&commit).await.1;
-        value["epoch"] = json!(2);
-        value["content"][0][0]["revision"] = json!("r2");
-        value["content"][0][0]["expected_prior_revision"] = json!("r1");
-        value["content"][0][0]["section_readers"] = json!([[], ["grp:group"]]);
-        input(&root, value.clone());
-        worker_sync(&worker, &["incremental", "--kind", "content"]);
-        publish(&commit);
-        let mut before = tools::Mcp::open(&worker);
-        let denied = fetch(&mut before, "a");
-        assert!(
-            !denied.to_string().contains("fixture document 0"),
-            "precondition revoke did not apply"
-        );
-        drop(before);
-        if rollback {
-            command(&commit, &["writer", "rollback"]);
-        } else {
-            command(&commit, &["writer", "restore", &old.publication_id]);
-        }
-        command(&commit, &["writer", "verify"]);
-        let mut after = tools::Mcp::open(&worker);
-        let result = fetch(&mut after, "a");
-        assert!(
-            !result.to_string().contains("fixture document 0"),
-            "RESTORE REGRANTED REVOKED SECTION: {}",
-            result
-        );
-        drop(after);
-
-        // A fresh complete sync can legitimately restate section grants.
-        value["epoch"] = json!(3);
-        value["content"][0][0]["revision"] = json!("r3");
-        value["content"][0][0]["expected_prior_revision"] = json!("r1");
-        value["content"][0][0]["section_readers"] = json!([["grp:group"], ["grp:group"]]);
-        for permission in value["permissions"][0].as_array_mut().unwrap() {
-            permission["revision"] = json!("p3");
-        }
-        input(&root, value);
-        worker_sync(
-            &worker,
-            &[
-                "incremental",
-                "--kind",
-                "content",
-                "--kind",
-                "permissions",
-                "--kind",
-                "members",
-            ],
-        );
-        publish(&commit);
-        let loaded = fyrr_core::config::load(&worker).unwrap();
-        let restated = fyrr_writer::apply::permission_readers(
-            &loaded.config,
-            "incremental",
-            &["grp:group".into()],
-            &[],
-        )
-        .unwrap();
-        let batch = rows(&worker).await;
-        let roots = fyrr_writer::apply::strings(&batch, "root_id").unwrap();
-        let metadata = fyrr_writer::apply::strings(&batch, "metadata_json").unwrap();
-        let mut changed = 0;
-        for row in 0..batch.num_rows() {
-            if roots.value(row) != "a" {
-                continue;
-            }
-            changed += 1;
-            let metadata: Value = serde_json::from_str(metadata.value(row)).unwrap();
-            assert_eq!(metadata["_fyrr"]["revision"], "r3");
-            let own: Vec<String> =
-                serde_json::from_value(metadata["_fyrr_own_readers"].clone()).unwrap();
-            assert_eq!(own, restated);
-            let permission = fyrr_writer::apply::state(&batch, row)
-                .unwrap()
-                .permission
-                .unwrap();
-            let intersection: Vec<_> = own
-                .into_iter()
-                .filter(|token| permission.readers.contains(token))
-                .collect();
-            assert_eq!(
-                fyrr_writer::apply::tokens(&batch, row).unwrap(),
-                intersection
-            );
-        }
-        assert_eq!(changed, 2);
-        let mut restated_reader = tools::Mcp::open(&worker);
-        assert!(
-            fetch(&mut restated_reader, "a")
-                .to_string()
-                .contains("fixture document 0")
         );
     }
 }
@@ -664,34 +501,6 @@ async fn maintenance_retired_source_commits_are_fenced_on_storage() {
         .unwrap();
     assert!(!unknown.status.success());
     assert!(String::from_utf8_lossy(&unknown.stderr).contains("source_unknown"));
-}
-
-/// A retired source remains denied after restore.
-#[tokio::test]
-#[ignore = "real CLI and local storage; scripts/ci"]
-async fn maintenance_retired_source_survives_restore_and_rollback_on_storage() {
-    let (worker, commit, root) = retirement_fixture().await;
-    let first = publication(&worker).await.1.publication_id;
-    input(
-        &root,
-        json!({"epoch":2,"content":[[replacement("a","r2","r1","fixture document 2")]]}),
-    );
-    worker_sync(&worker, &["incremental", "--kind", "content"]);
-    publish(&commit);
-    command(&commit, &["writer", "source", "retire", "incremental"]);
-    assert!(held_rows(&worker).await > 0, "retiring deletes nothing");
-
-    command(&commit, &["writer", "rollback"]);
-    assert_eq!(held_rows(&worker).await, 0, "a rollback brings no row back");
-    assert!(!readable(&fetch(&mut tools::Mcp::open(&worker), "a")));
-    command(&commit, &["writer", "restore", &first]);
-    assert_eq!(held_rows(&worker).await, 0, "nor does a restore");
-    assert!(!readable(&fetch(&mut tools::Mcp::open(&worker), "a")));
-    assert!(readable(&client_fetch_allowed(&worker)));
-}
-
-fn client_fetch_allowed(config: &Path) -> Value {
-    tools::Mcp::open(config).call("fetch", json!({"source_id":"allowed","root_id":"0.txt"}))
 }
 
 /// The sources and directory whose snapshots the published identity is built from.
@@ -819,276 +628,6 @@ async fn maintenance_purge_killed_before_its_head_publication_converges_on_stora
 
 #[tokio::test]
 #[ignore = "real CLI and RustFS; scripts/ci"]
-async fn maintenance_restore_discovers_authorization_after_failed_cursor_on_storage() {
-    discovers_authorization_after_failed_cursor("restore").await;
-}
-
-async fn discovers_authorization_after_failed_cursor(operation: &str) {
-    for kind in ["permissions", "members"] {
-        let (worker, commit, root) = fixture();
-        publish_initial(&worker, &commit, &root);
-        let target = publication(&commit).await.1;
-        let final_cursor = if kind == "permissions" { "2-0" } else { "2-1" };
-        input(
-            &root,
-            if kind == "permissions" {
-                json!({"epoch":2,"permissions":[[{"id":"a","revision":"failed-cursor-revoke","readers":[]}]]})
-            } else {
-                json!({"epoch":2,"members":[
-                    {"last":false,"users":[{"id":"u","email":"fixture@example.test","email_verification":"verified_corporate","active":false}],"groups":[]},
-                    {"last":true,"users":[],"groups":[{"id":"child","members":[]},{"id":"group","members":["grp:child"]}]}
-                ]})
-            },
-        );
-        let loaded = fyrr_core::config::load(&commit).unwrap();
-        let (store, ns) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
-        let cursor_path =
-            object_store::path::Path::from(format!("{ns}/cursors/incremental-{kind}.json"));
-        let before: fyrr_core::connector::CursorState =
-            fyrr_reader::storage::read_contract(store.as_ref(), &cursor_path)
-                .await
-                .unwrap();
-        let endpoint = std::env::var("FYRR_TEST_S3_ENDPOINT").unwrap();
-        let failed_cursor = Arc::new(AtomicBool::new(false));
-        let observed = failed_cursor.clone();
-        let hook: super::corrections::BoundaryHook = Arc::new(move |request, body, after| {
-            let reject = !after
-                && request.starts_with("PUT ")
-                && request.contains(&format!("/cursors/incremental-{kind}.json"))
-                && serde_json::from_slice::<Value>(body).is_ok_and(|cursor| {
-                    cursor["sequence"]
-                        .as_u64()
-                        .is_some_and(|sequence| sequence > before.sequence)
-                        && cursor["cursor"].as_str() == Some(final_cursor)
-                });
-            if reject {
-                observed.store(true, Ordering::SeqCst);
-            }
-            reject
-        });
-        let (proxy, guard) = super::corrections::proxy_at_boundary(
-            endpoint.clone(),
-            Arc::new(AtomicBool::new(false)),
-            hook,
-        );
-        let proxied = root.join("failed-cursor.toml");
-        std::fs::write(
-            &proxied,
-            std::fs::read_to_string(&worker)
-                .unwrap()
-                .replace(&endpoint, &proxy),
-        )
-        .unwrap();
-        let output = super::coordination::worker_command(&proxied)
-            .args(["writer", "sync", "incremental", "--kind", kind])
-            .output()
-            .unwrap();
-        assert!(!output.status.success());
-        assert!(
-            failed_cursor.load(Ordering::SeqCst),
-            "only the final cursor advance is faulted, after durable authorization"
-        );
-        drop(guard);
-        let head = fyrr_reader::storage::optional_head(&loaded.config)
-            .await
-            .unwrap()
-            .unwrap();
-        // A members envelope is found by the log; a permissions one only when a
-        // cursor confirmed it, and this cursor write failed.
-        assert_eq!(
-            fyrr_writer::commit::pending(&loaded.config, &head)
-                .await
-                .unwrap()
-                .iter()
-                .any(|e| e.kind.is_authorization()),
-            kind == "members"
-        );
-        let after: fyrr_core::connector::CursorState =
-            fyrr_reader::storage::read_contract(store.as_ref(), &cursor_path)
-                .await
-                .unwrap();
-        assert_ne!(after.cursor.as_deref(), Some(final_cursor));
-        if operation == "restore" {
-            command(&commit, &["writer", "restore", &target.publication_id]);
-        } else {
-            command(&commit, &["writer", "maintain"]);
-        }
-        let config = reader_config(&worker, &root, "every");
-        if kind == "permissions" {
-            let mut reader = tools::Mcp::open(&config);
-            assert!(
-                readable(&fetch(&mut reader, "a")),
-                "an envelope no cursor confirmed is not applied"
-            );
-            drop(reader);
-            // The repeated read applies it.
-            worker_sync(&worker, &["incremental", "--kind", kind]);
-            publish(&commit);
-        }
-        let mut reader = tools::Mcp::open(&config);
-        assert!(
-            !readable(&fetch(&mut reader, "a")),
-            "{kind}: fresh discovery must apply the durable revoke despite failed cursor advancement"
-        );
-        assert_eq!(readable(&fetch(&mut reader, "b")), kind == "permissions");
-    }
-}
-
-#[tokio::test]
-#[ignore = "real CLI and local storage; scripts/ci"]
-async fn maintenance_restore_changed_envelope_identity_fails_closed_on_storage() {
-    use std::sync::atomic::AtomicUsize;
-    let (_, commit, root) = fixture();
-    let target = publication(&commit).await.1;
-    let lists = Arc::new(AtomicUsize::new(0));
-    let changed = Arc::new(AtomicBool::new(false));
-    let altered = changed.clone();
-    let endpoint = std::env::var("FYRR_TEST_S3_ENDPOINT").unwrap();
-    // Cleanup lists twice, then history records its first snapshot.
-    // Change the next history listing, after that identity is cached.
-    let transform: super::corrections::ResponseTransform = Arc::new(move |request, response| {
-        if request.contains("list-type=2")
-            && request.contains("envelopes")
-            && lists.fetch_add(1, Ordering::SeqCst) == 3
-        {
-            super::corrections::rewrite_ok_body(response, |body| {
-                if let Ok(mut objects) = serde_json::from_slice::<
-                    Vec<fyrr_reader::storage::test_store::boundary::Metadata>,
-                >(body)
-                {
-                    objects.first_mut().unwrap().e_tag =
-                        Some(r#""changed-immutable-object""#.into());
-                    *body = serde_json::to_vec(&objects).unwrap();
-                } else {
-                    let mut text = String::from_utf8(body.clone()).unwrap();
-                    let start = text.find("<ETag>").unwrap() + 6;
-                    let end = start + text[start..].find("</ETag>").unwrap();
-                    text.replace_range(start..end, "&quot;changed-immutable-object&quot;");
-                    *body = text.into_bytes();
-                }
-                altered.store(true, Ordering::SeqCst);
-                true
-            });
-        }
-    });
-    let (proxy, guard) = super::corrections::proxy_transform(
-        endpoint.clone(),
-        Arc::new(AtomicBool::new(false)),
-        transform,
-        None,
-    );
-    let metered = root.join("changed-identity.toml");
-    std::fs::write(
-        &metered,
-        std::fs::read_to_string(&commit)
-            .unwrap()
-            .replace(&endpoint, &proxy),
-    )
-    .unwrap();
-    let output = host_command(&metered)
-        .args(["writer", "restore", &target.publication_id])
-        .output()
-        .unwrap();
-    drop(guard);
-    assert!(
-        changed.load(Ordering::SeqCst),
-        "second history LIST must expose the changed immutable identity"
-    );
-    assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("restore_history_identity_changed"));
-    assert_eq!(
-        publication(&commit).await.1.publication_id,
-        target.publication_id
-    );
-}
-
-#[tokio::test]
-#[ignore = "real S3 conditional restore history read; scripts/ci"]
-async fn maintenance_restore_refuses_envelope_replaced_after_listing_on_real_s3() {
-    let (worker, commit, root) = fixture();
-    let target = publication(&commit).await.1;
-    // A valid, unchanged envelope must permit the same restore operation.
-    command(&commit, &["writer", "restore", &target.publication_id]);
-    let before = publication(&commit).await.0;
-    let loaded = fyrr_core::config::load(&worker).unwrap();
-    let (store, _) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
-    let (path, mut envelope) = envelopes(&worker).await.into_iter().next().unwrap();
-    let original = store.head(&path).await.unwrap().e_tag;
-    let get = format!(
-        "GET /{}/{} HTTP/1.1\r\n",
-        std::env::var("FYRR_TEST_S3_BUCKET").unwrap(),
-        path.as_ref().replace('(', "%28").replace(')', "%29")
-    );
-    let gate_get = get.clone();
-    // Cleanup reads this envelope unconditionally. Select history's conditional
-    // read itself, regardless of how many cleanup enumerations precede it.
-    let selected = Arc::new(AtomicBool::new(false));
-    let gate_selected = selected.clone();
-    let (gate, hook) = super::corrections::RequestGate::new(move |request, headers, after| {
-        let matches = !after
-            && request == gate_get
-            && String::from_utf8_lossy(headers)
-                .lines()
-                .any(|line| line.to_ascii_lowercase().starts_with("if-match:"));
-        if matches {
-            gate_selected.store(true, Ordering::SeqCst);
-        }
-        matches
-    });
-    let observed = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let statuses = observed.clone();
-    let transform = Arc::new(move |request: &str, response: &mut Vec<u8>| {
-        if request == get && selected.load(Ordering::SeqCst) {
-            statuses.lock().unwrap().push(
-                String::from_utf8_lossy(response)
-                    .lines()
-                    .next()
-                    .unwrap()
-                    .to_owned(),
-            );
-        }
-    });
-    let endpoint = std::env::var("FYRR_TEST_S3_ENDPOINT").unwrap();
-    let (proxy, _proxy_guard) = super::corrections::proxy_transform(
-        endpoint.clone(),
-        Arc::new(AtomicBool::new(false)),
-        transform,
-        Some(hook),
-    );
-    let gate = gate;
-    let proxied = root.join("conditional-restore.toml");
-    std::fs::write(
-        &proxied,
-        std::fs::read_to_string(&commit)
-            .unwrap()
-            .replace(&endpoint, &proxy),
-    )
-    .unwrap();
-    let process = super::coordination::CommitProcess::spawn_command(
-        &proxied,
-        &["writer", "restore", &target.publication_id],
-        Arc::new(AtomicBool::new(false)),
-    );
-    gate.entered();
-    envelope.created_at -= chrono::Duration::seconds(1);
-    let replacement = write_contract(&envelope);
-    parse_contract::<fyrr_core::envelope::PreparedEnvelope>(&replacement).unwrap();
-    store.put(&path, replacement.into()).await.unwrap();
-    assert_ne!(store.head(&path).await.unwrap().e_tag, original);
-    gate.release();
-    let output = process.finish_bounded();
-    assert_eq!(
-        *observed.lock().unwrap(),
-        ["HTTP/1.1 412 Precondition Failed"]
-    );
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("storage_unavailable"), "{stderr}");
-    assert_eq!(publication(&commit).await.0.content, before.content);
-}
-
-#[tokio::test]
-#[ignore = "real CLI and RustFS; scripts/ci"]
 async fn maintenance_reader_switch_keeps_inflight_pin_and_evicts_old_mirror_on_real_s3() {
     maintenance_reader_switch_keeps_inflight_pin_and_evicts_old_mirror(Backend::S3).await;
 }
@@ -1157,246 +696,6 @@ async fn maintenance_reader_switch_keeps_inflight_pin_and_evicts_old_mirror(back
     assert!(stdout.contains("1 passed; 0 failed"));
 }
 
-#[tokio::test]
-#[ignore = "real CLI and local storage; scripts/ci"]
-#[allow(clippy::print_stderr)]
-async fn maintenance_restore_batched_authorization_boundaries_on_storage() {
-    let (worker, commit, root) = fixture();
-    initial(&root);
-    let mut seed: Value =
-        serde_json::from_slice(&std::fs::read(root.join("input.json")).unwrap()).unwrap();
-    let members_path = root.join("restore-members.json");
-    std::fs::write(&members_path, serde_json::to_vec(&seed["members"]).unwrap()).unwrap();
-    let documents: Vec<_> = (0..300)
-        .map(|n| {
-            let mut value = doc(
-                &format!("restore-{n}"),
-                "r1",
-                &format!("fixture document {n}"),
-            );
-            if n == 0 {
-                value["texts"] = json!(["fixture document 0", "fixture document 1"]);
-                value["section_readers"] = json!([["grp:group"], ["grp:group"]]);
-            }
-            value
-        })
-        .collect();
-    seed["content"] = json!(documents.chunks(100).collect::<Vec<_>>());
-    seed.as_object_mut().unwrap().remove("permissions");
-    input(&root, seed);
-    worker_sync(
-        &worker,
-        &[
-            "incremental",
-            "--kind",
-            "content",
-            "--kind",
-            "permissions",
-            "--kind",
-            "members",
-        ],
-    );
-    publish(&commit);
-    let target = publication(&commit).await.1;
-    let changes = |epoch: usize| {
-        let documents: Vec<_> = (0..300).map(|n| {
-            if n == 299 {
-                return json!({"id":"restore-299","delete":true,"revision":format!("r{epoch}"),"expected_prior_revision":"r1"});
-            }
-            let mut value = doc(&format!("restore-{n}"), &format!("r{epoch}"), &format!("fixture document {n}"));
-            value["expected_prior_revision"] = json!("r1");
-            if n == 0 {
-                value["texts"] = json!(["fixture document 0", "fixture document 1"]);
-                value["section_readers"] = json!([["grp:group"], ["grp:group"]]);
-            }
-            value
-        }).collect();
-        // Keep the content publication granted, then revoke every root through
-        // the permission stream so both restore targets need two patch groups.
-        let permissions: Vec<_> = (0..300)
-            .map(|n| json!({"id":format!("restore-{n}"),"revision":format!("p{epoch}"),"readers":[]}))
-            .collect();
-        json!({"epoch":epoch,"content":documents.chunks(100).collect::<Vec<_>>(),
-            "permissions":permissions.chunks(100).collect::<Vec<_>>()})
-    };
-    let config = reader_config(&worker, &root, "every");
-    let mut reader = tools::Mcp::open(&config);
-    let granted = fetch(&mut reader, "restore-0");
-    assert!(readable(&granted), "initial grant is live: {granted}");
-    input(&root, changes(2));
-    // Publish content before its separate permission stream so rollback's
-    // predecessor still has grants to patch across both root groups.
-    worker_sync(&worker, &["incremental", "--kind", "content"]);
-    publish(&commit);
-    let predecessor = publication(&commit).await.1.publication_id;
-    let content_grant = fetch(&mut reader, "restore-260");
-    assert!(
-        readable(&content_grant),
-        "content must retain the grant until the permission stream: {content_grant}"
-    );
-    worker_sync(&worker, &["incremental", "--kind", "permissions"]);
-    publish(&commit);
-    let permission_deny = fetch(&mut reader, "restore-260");
-    assert!(
-        !readable(&permission_deny),
-        "the permission publication must revoke the grant: {permission_deny}"
-    );
-    // Roll back while the preceding snapshot still has broad grants, then
-    // explicitly restore the original snapshot: each must patch all 300 roots.
-    for rollback in [true, false] {
-        let before = publication(&commit).await.1;
-        let result = if rollback {
-            command(&commit, &["writer", "rollback"])
-        } else {
-            command(&commit, &["writer", "restore", &target.publication_id])
-        };
-        if rollback {
-            assert_eq!(result["from_publication"], predecessor);
-        }
-        let (head, after) = publication(&commit).await;
-        assert_eq!(after.sequence, before.sequence + 1, "one final publication");
-        assert!(result["restored"].as_bool().unwrap());
-        let loaded = fyrr_core::config::load(&commit).unwrap();
-        let dataset = fyrr_reader::storage::pinned(&loaded.config, &head)
-            .await
-            .unwrap();
-        let transactions = &after.lineage.transactions;
-        let mut updates = 0;
-        let mut restores = 0;
-        for recorded in transactions {
-            let tx = dataset
-                .read_version_transaction(recorded.version)
-                .await
-                .unwrap()
-                .transaction
-                .unwrap();
-            match tx.operation {
-                lance::dataset::transaction::Operation::Update { .. } => updates += 1,
-                lance::dataset::transaction::Operation::Restore { .. } => restores += 1,
-                _ => {}
-            }
-        }
-        let (store, namespace) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
-        let restored_from: fyrr_core::publication::ContentManifest =
-            fyrr_reader::storage::read_contract(
-                store.as_ref(),
-                &object_store::path::Path::from(format!(
-                    "{namespace}/publications/{}.json",
-                    result["from_publication"].as_str().unwrap()
-                )),
-            )
-            .await
-            .unwrap();
-        let historical = dataset
-            .checkout_version(restored_from.lance_version)
-            .await
-            .unwrap();
-        let granted_rows = historical
-            .count_rows(Some(
-                "source_id = 'incremental' AND array_length(readers) > 0".into(),
-            ))
-            .await
-            .unwrap();
-        assert_eq!(
-            granted_rows,
-            if rollback { 300 } else { 301 },
-            "the selected snapshot must retain grants across both root groups"
-        );
-        assert_eq!(updates, 2, "300 changed roots must use two groups");
-        assert_eq!(restores, 1);
-        eprintln!(
-            "restore_cost rollback={rollback} roots=300 groups={updates} native_commits={} prior_root_updates=300",
-            transactions.len()
-        );
-        for key in ["restore-0", "restore-260", "restore-299"] {
-            assert!(
-                !readable(&fetch(&mut reader, key)),
-                "restore must preserve current deny/delete: {key}"
-            );
-        }
-        command(&commit, &["writer", "verify"]);
-    }
-    let cases = std::env::var("FYRR_TEST_RESTORE_REVIEW_CASE")
-        .map(|case| vec![Some(case)])
-        .unwrap_or_else(|_| {
-            vec![
-                None,
-                Some("a1".into()),
-                Some("a2".into()),
-                Some("cadence".into()),
-            ]
-        });
-    for case in cases {
-        use std::os::unix::process::ExitStatusExt;
-        let started = Instant::now();
-        // Bound a hung child, including the real CLI commands its hooks invoke.
-        // Event order comes from the acknowledged restore callbacks, not this watchdog.
-        let mut probe = Command::new("timeout");
-        probe.args(["--kill-after=5s", "180s"]).arg(
-            std::env::var_os("FYRR_WRITER_TEST_BINARY")
-                .expect("writer libtest built by scripts/ci"),
-        );
-        if let Some(case) = &case {
-            probe.env("FYRR_TEST_RESTORE_REVIEW_CASE", case);
-        } else {
-            probe.env_remove("FYRR_TEST_RESTORE_REVIEW_CASE");
-        }
-        let output = probe
-            .args([
-                "maintenance::restore_tests::restore_drains_restarts_and_caps_attempts_on_storage",
-                "--exact",
-                "--ignored",
-                "--nocapture",
-            ])
-            .env("FYRR_TEST_RESTORE_WORKER", &worker)
-            .env("FYRR_TEST_RESTORE_CONFIG", &commit)
-            .env("FYRR_TEST_RESTORE_INPUT", root.join("input.json"))
-            .env("FYRR_TEST_RESTORE_MEMBERS", &members_path)
-            .env("FYRR_TEST_RESTORE_TARGET", &target.publication_id)
-            .env(
-                "FYRR_TEST_RESTORE_BINARY",
-                host_command(&commit).get_program(),
-            )
-            // Nested real writer commands need the same provider environment
-            // as worker_command; recorded CI does not export it globally.
-            .env(
-                "VIRTUAL_ENV",
-                Path::new(env!("CARGO_MANIFEST_DIR")).join("../../connectors/.venv"),
-            )
-            .env(
-                "PYTHONPATH",
-                Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/providers"),
-            )
-            .output()
-            .unwrap();
-        eprintln!(
-            "restore_probe case={case:?} status={} code={:?} signal={:?} elapsed={:?}",
-            output.status,
-            output.status.code(),
-            output.status.signal(),
-            started.elapsed(),
-        );
-        assert!(
-            output.status.success(),
-            "case={case:?} status={} code={:?} signal={:?} elapsed={:?}\n{}\n{}",
-            output.status,
-            output.status.code(),
-            output.status.signal(),
-            started.elapsed(),
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed; 0 failed"));
-    }
-    for key in ["restore-0", "restore-260", "restore-299"] {
-        assert!(
-            !readable(&fetch(&mut reader, key)),
-            "live retained reader must not widen after retries: {key}"
-        );
-    }
-    command(&commit, &["writer", "verify"]);
-}
-
 /// Rewrite only test-clock observations. Preserve the real fixture's objects and payload bytes.
 fn age_observations(request: &str, response: &mut Vec<u8>, expired: Option<&str>) {
     if !request.starts_with("GET ") {
@@ -1447,7 +746,7 @@ fn age_observations(request: &str, response: &mut Vec<u8>, expired: Option<&str>
 
 #[tokio::test]
 #[ignore = "real CLI and RustFS; scripts/ci"]
-async fn maintenance_purge_window_and_restore_horizon_on_storage() {
+async fn maintenance_purge_window_on_storage() {
     let (worker, commit, root) = fixture();
     publish_initial(&worker, &commit, &root);
     let old = publication(&commit).await.1;
@@ -1485,12 +784,6 @@ async fn maintenance_purge_window_and_restore_horizon_on_storage() {
     let mut guard = thread;
     guard.resume = Arc::new(AtomicBool::new(true));
     let config = proxied(&commit, &endpoint);
-    let expired = host_command(&config)
-        .args(["writer", "restore", &old.publication_id])
-        .output()
-        .unwrap();
-    assert!(!expired.status.success());
-    assert!(String::from_utf8_lossy(&expired.stderr).contains("restore_horizon_expired"));
     command(&config, &["writer", "maintain"]);
     let loaded = fyrr_core::config::load(&commit).unwrap();
     let (store, ns) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
@@ -1802,10 +1095,9 @@ async fn maintenance_deletes_history_outside_the_purge_window_on_storage() {
     command(&commit, &["writer", "maintain"]);
     command(&commit, &["writer", "status"]);
 
-    // A fresh writer, restore and rollback work from what is left.
+    // A fresh writer works from what is left.
     history_round(&worker, &root, 11);
     publish(&commit);
-    command(&commit, &["writer", "rollback"]);
     assert_eq!(command(&commit, &["writer", "verify"])["verified"], true);
     std::fs::remove_dir_all(root).unwrap();
 }

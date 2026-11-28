@@ -68,9 +68,9 @@ The writer runs every provider in isolated `__worker` child processes. The
 | `writer status` | Prints envelope and pending-envelope counts, quarantined entries per reason, the data files (`fragments`) and the segments of each index (`index_segments`) of the served version, the directory's identity generation, the age of the last permission and member read per source (`source_reads`), the sources whose content or permissions chain is broken (`blocked_sources`) and a value-free `warnings` list, relative to the printed `content_sequence`. Counts are exact in a quiescent namespace. |
 | `writer maintain` | Runs lease-held maintenance in bounded steps: purges unreadable rows, compacts, appends or merges index deltas and cleans retired versions and old envelopes. |
 | `writer verify` | Scans the pinned publication completely: logical keys, document state, revisions, finite nonzero vectors, index coverage. Reports `incompatible_index` when index kinds, coverage or the publication's recorded analyzer and retrieval policy do not match the namespace's settings. A missing readers index remains `readers_index_missing`. Needs only namespace storage. |
-| `writer restore PUBLICATION` | Publishes a new fenced version from a retained publication, with the current policy, identity, permissions and tombstones. |
+| `writer restore PUBLICATION` | Publishes the Lance version of a retained publication of a write API namespace again, as a new version under the namespace lease: its documents come back with the readers they had then. A namespace of connector sources fails with `restore_unsupported`. Prints `{"restored":true,"lance_version":…,"from_publication":…}`. See [Restore and rollback](operations.md#restore-and-rollback). |
 | `writer rollback` | Restores the preceding retained publication. |
-| `writer source retire SOURCE` | Denies the source to every reader from its next version check on and rejects its further envelopes. Final; kept by restore. |
+| `writer source retire SOURCE` | Denies the source to every reader from its next version check on and rejects its further envelopes. Final. |
 | `writer source purge SOURCE [--confirm]` | Without `--confirm` prints the plan (rows, envelopes, cursors). With it retires the source and deletes its rows, state, envelopes and cursors; each step is idempotent, so an interrupted purge is run again. It is the only recovery for a source in `blocked_sources`, such as one whose permissions cursor is lost (`permission_cursor_lost`): cursor objects are internal, never deleted, copied or restored by hand. See [Blocked sources](operations.md#blocked-sources). |
 | `writer keys` | Publishes the configured [API keys](identity.md#identityapi_keys) of the deployment as one artifact under the storage root, written by compare-and-swap: each key's keyed hash with its roles and namespace prefix, never a secret, name or reader token. The artifact replaces the published set and is not written again when current. If a secret is unset or malformed, or two keys share a secret, the command exits 1 (`configuration_invalid`) and leaves the published set unchanged. A competing publisher exits 75 (`committer_busy`). Needs no namespace and no lease. |
 | `writer directory --snapshot FILE` | Publishes a complete hashed directory snapshot under the namespace lease. |
@@ -87,6 +87,13 @@ See [provider installation and discovery](deployment.md#providers-in-the-image).
 | `conditional_delete_unsupported` | The S3 server did not prove that it honors conditional deletion. The serving head is retained; use a backend supporting `If-Match` on DELETE. |
 | `delete_confirmation_invalid` | `--delete-data` does not repeat the namespace name; nothing was deleted. |
 | `namespace_deleting` | Objects remain under the namespace's prefix, as after a deletion that removed the serving head and did not finish. Run `writer namespace delete` again before creating the namespace. |
+
+### Restore failures
+
+| Code | Meaning |
+| --- | --- |
+| `restore_horizon_expired` | The publication is not retained, or older than `writer.purge_window`. Nothing was published. |
+| `restore_unsupported` | The namespace holds connector sources, or a source is retired and its purged rows would come back. A namespace of connector sources is a derived index: sync it again, or copy a backup back with `writer namespace copy`. Nothing was written. |
 
 ### Namespace copy failures
 

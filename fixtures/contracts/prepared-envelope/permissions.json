@@ -6,7 +6,6 @@
   "kind": "permissions",
   "sequence": 7,
   "rejection_generation": 0,
-  "restore_sequence": 0,
   "cursor": {
     "start": null,
     "end": "perm-page-token-0002"

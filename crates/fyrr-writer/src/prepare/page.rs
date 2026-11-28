@@ -89,7 +89,6 @@ pub(super) async fn content_page(
         kind: SyncKind::Content,
         sequence,
         rejection_generation: state.rejection_generation,
-        restore_sequence: state.restore_sequence,
         cursor: batch.cursor.clone(),
         advances_cursor,
         base_head,

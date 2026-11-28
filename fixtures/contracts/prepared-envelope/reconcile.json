@@ -6,7 +6,6 @@
   "kind": "reconcile",
   "sequence": 3,
   "rejection_generation": 0,
-  "restore_sequence": 0,
   "cursor": {
     "start": null,
     "end": "listing-7f3a:part-1"

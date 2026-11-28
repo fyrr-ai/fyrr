@@ -1394,13 +1394,6 @@ async fn incremental_section_readers_survive_a_later_permission_state_on_storage
     );
     apply(7, "content", content("t", "r1", None));
     assert_eq!(section_readers(&rows(&worker).await, "t"), both);
-    // A restore keeps the current rights of every row.
-    let rollback = host_command(&commit)
-        .args(["writer", "rollback"])
-        .output()
-        .unwrap();
-    assert!(rollback.status.success(), "{}", report(&rollback));
-    assert_eq!(section_readers(&rows(&worker).await, "s"), both);
 }
 
 /// A sync provider without a permission stream states readers only in
@@ -1585,10 +1578,6 @@ async fn rejected_authorization(kind: SyncKind) {
             assert!(
                 envelope.rejection_generation > marker.rejection_generation,
                 "{kind:?}: replacement generation"
-            );
-            assert!(
-                envelope.restore_sequence >= marker.restore_sequence,
-                "{kind:?}: replacement restore sequence"
             );
         }
         if envelope.kind != kind {
@@ -2232,7 +2221,6 @@ async fn put_envelope_of(
     envelope.namespace.clone_from(&loaded.config.namespace.name);
     envelope.source_id = "incremental".into();
     envelope.rejection_generation = 0;
-    envelope.restore_sequence = 0;
     envelope.cursor.start = None;
     envelope.sequence = sequence;
     envelope.created_at = fyrr_core::clock::now();
@@ -2864,37 +2852,6 @@ async fn incremental_a_replacement_of_a_root_over_a_group_publishes_in_steps_on_
     large_documents(&worker);
     small_group(&commit);
     replace_a(&worker, &commit, &root, 2, "r2", 'A').await;
-}
-
-/// `writer restore` writes a root over a group in steps too: back to a
-/// replacement of `a`, whose rights changed since, its rows over the bytes of
-/// the group the committer has by then, in one publication.
-#[tokio::test]
-#[ignore = "real CLI and local storage; scripts/ci"]
-async fn incremental_a_restore_of_a_root_over_a_group_publishes_in_steps_on_storage() {
-    let (worker, commit, root) = fixture();
-    publish_initial(&worker, &commit, &root);
-    large_documents(&worker);
-    large_documents(&commit);
-    let target = replace_a(&worker, &commit, &root, 2, "r2", 'A').await;
-    replace_a(&worker, &commit, &root, 3, "r3", 'C').await;
-    // The rights of `a` change after the target: a restore rewrites its rows.
-    input(
-        &root,
-        json!({"epoch":4,"permissions":[[{"id":"a","revision":"p2","readers":["grp:group","grp:other"]}]]}),
-    );
-    worker_sync(&worker, &["incremental", "--kind", "permissions"]);
-    publish(&commit);
-    let text = std::fs::read_to_string(&commit)
-        .unwrap()
-        .replace("[writer]\ndocument_max_bytes='512KiB'\nenvelope_max_bytes='1MiB'\n[writer.commit]\ngroup_max_bytes='1MiB'\n", "")
-        .replace("document_max_bytes='512KiB'", "document_max_bytes='64B'");
-    std::fs::write(&commit, text).unwrap();
-    small_group(&commit);
-    let before = publication(&commit).await.1.sequence;
-    command(&commit, &["writer", "restore", &target]);
-    assert_eq!(publication(&commit).await.1.sequence, before + 1);
-    assert_eq!(revisions(&rows(&worker).await, "a"), ["r2"; 25]);
 }
 
 /// Lets `config` prepare documents of 400,000 characters, whose files are small
@@ -3735,74 +3692,6 @@ async fn incremental_a_missing_cursor_blocks_its_source_on_storage() {
     assert_eq!(status["blocked_sources"], json!([]), "{status}");
 }
 
-/// A restore between a confirmed split read and the next commit: the restore
-/// keeps the rights of every row, the read's revocation is published whole or
-/// not at all, the chain stays whole (the source is not blocked, nothing waits),
-/// and the next read publishes whole, in one publication.
-#[tokio::test]
-#[ignore = "real CLI and local storage; scripts/ci"]
-async fn incremental_a_restore_after_a_confirmed_split_read_keeps_the_chain_on_storage() {
-    let (worker, commit, root) = fixture();
-    publish_initial(&worker, &commit, &root);
-    let granted = row_readers(&rows(&worker).await, "a");
-    assert!(!granted.is_empty());
-    let target = publication(&commit).await.1.publication_id;
-    input(
-        &root,
-        json!({"epoch":2,"content":[[doc("a","r2","fixture document 2")]]}),
-    );
-    worker_sync(&worker, &["incremental", "--kind", "content"]);
-    publish(&commit);
-    // One root to a part: the revocation of `a` and `b` is a split read.
-    for config in [&worker, &commit] {
-        let text = std::fs::read_to_string(config)
-            .unwrap()
-            .replace("[reader]", "[writer]\nenvelope_max_rows=1\n[reader]");
-        std::fs::write(config, text).unwrap();
-    }
-    let before = permission_envelopes(&worker).await.len();
-    input(
-        &root,
-        json!({"epoch":3,"permissions":[[{"id":"a","revision":"p2","readers":[]}],[{"id":"b","revision":"p2","readers":[]}]]}),
-    );
-    worker_sync(&worker, &["incremental", "--kind", "permissions"]);
-    let parts: Vec<_> = permission_envelopes(&worker).await.split_off(before);
-    assert_eq!(
-        part_shape(&parts),
-        [(1, false, false), (1, false, false), (0, true, true)]
-    );
-    command(&commit, &["writer", "restore", &target]);
-    let rights =
-        |batch: &arrow_array::RecordBatch| (row_readers(batch, "a"), row_readers(batch, "b"));
-    let after = rights(&rows(&worker).await);
-    assert!(
-        after == (granted.clone(), granted.clone()) || after == (Vec::new(), Vec::new()),
-        "never a part of the read: {after:?}"
-    );
-    publish(&commit);
-    assert_eq!(
-        rights(&rows(&worker).await),
-        (Vec::new(), Vec::new()),
-        "the revocation is published whole"
-    );
-    for part in &parts {
-        assert_eq!(resolved(&commit, &part.envelope_id).await, (true, false));
-    }
-    let status = command(&commit, &["writer", "status"]);
-    assert_eq!(status["blocked_sources"], json!([]), "{status}");
-    assert_eq!(status["pending_envelopes"], json!(0), "{status}");
-    // The chain goes on from the restored head: a read after it publishes whole.
-    let before = permission_envelopes(&worker).await.len();
-    input(
-        &root,
-        json!({"epoch":4,"permissions":[[{"id":"a","revision":"p3","readers":["grp:group"]}],[{"id":"b","revision":"p3","readers":["grp:group"]}]]}),
-    );
-    worker_sync(&worker, &["incremental", "--kind", "permissions"]);
-    let parts: Vec<_> = permission_envelopes(&worker).await.split_off(before);
-    published_in_one(&commit, &parts).await;
-    assert_eq!(rights(&rows(&worker).await), (granted.clone(), granted));
-}
-
 /// A new cursor follows every lease generation of the log: after the cursor of
 /// a source whose read was rejected is gone, with no chain left to confirm, a
 /// read again takes a generation above the old one, so its envelopes are never
@@ -4461,7 +4350,6 @@ async fn put_marker(config: &Path, envelope: &PreparedEnvelope) {
         kind: envelope.kind,
         sequence: envelope.sequence,
         rejection_generation: envelope.rejection_generation,
-        restore_sequence: envelope.restore_sequence,
         start_cursor: envelope.cursor.start.clone(),
         reason: "authorization_rewind_required".into(),
     };
@@ -4643,7 +4531,6 @@ async fn incremental_a_rejection_marker_written_before_a_crash_is_reused_on_stor
         kind: read.kind,
         sequence: read.sequence,
         rejection_generation: read.rejection_generation,
-        restore_sequence: read.restore_sequence,
         start_cursor: read.cursor.start.clone(),
         reason: "authorization_rewind_required".into(),
     };

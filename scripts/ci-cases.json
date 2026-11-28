@@ -13,7 +13,6 @@
       "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::local_store_waiter_across_delete_and_recreate_acts_on_the_new_object": {"tier": "full", "seconds": 26.0},
       "full:fyrr-writer:lib:fyrr_writer/commit::history::index::tests::history_sqlite_runtime_io_measurement": {"tier": "full", "seconds": 2.0},
       "full:fyrr-writer:lib:fyrr_writer/embedding::tests::local_cache_runtime_io_measurement": {"tier": "full", "seconds": 2.0},
-      "full:fyrr-writer:lib:fyrr_writer/maintenance::restore_index::tests::restore_sqlite_runtime_io_measurement": {"tier": "full", "seconds": 2.0},
       "full:fyrr:test:dense_path/coordination::recovery_lease_ttl_ignores_toml_formatting_and_preserves_source_settings": {"tier": "quick", "seconds": 0.021}
     },
     "children": {
@@ -21,12 +20,6 @@
         "tier": "quick",
         "parents": [
           "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::lance_commits_on_a_local_root_are_exclusive"
-        ]
-      },
-      "full:fyrr-writer:lib:fyrr_writer/maintenance::restore_index::tests::working_file_creation_child": {
-        "tier": "quick",
-        "parents": [
-          "full:fyrr-writer:lib:fyrr_writer/maintenance::restore_index::tests::working_file_kill_during_creation_and_restart_leave_no_file"
         ]
       },
       "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::local_store_child_process": {
@@ -149,7 +142,6 @@
       "full:fyrr:test:dense_path/dense_path_and_namespace_contracts_on_local_storage": {"tier": "full", "seconds": 32.088},
       "full:fyrr:test:dense_path/local_storage::local_storage_publishes_and_serves_with_permission_filtering": {"tier": "quick", "seconds": 31.39},
       "full:fyrr:test:dense_path/maintenance::maintenance_reader_switch_keeps_inflight_pin_and_evicts_old_mirror_on_local_storage": {"tier": "full", "seconds": 31.389},
-      "full:fyrr:test:dense_path/maintenance::maintenance_restore_rollback_current_rights_deletes_and_cursor_recovery_on_local_storage": {"tier": "full", "seconds": 46.331},
       "full:fyrr:test:dense_path/mirror_identity::running_http_reader_never_serves_a_revoked_grant_of_a_replaced_namespace_on_local_storage": {"tier": "quick", "seconds": 42.059}
     }
   },
@@ -308,17 +300,6 @@
     "backend": "local",
     "owns": {
       "full:fyrr:test:dense_path/maintenance::": {"tier": "full", "seconds": 111.956}
-    },
-    "cases": {
-      "full:fyrr:test:dense_path/maintenance::maintenance_restore_changed_envelope_identity_fails_closed_on_storage": {"tier": "quick", "seconds": 23.985}
-    },
-    "children": {
-      "full:fyrr-writer:lib:fyrr_writer/maintenance::restore_tests::restore_drains_restarts_and_caps_attempts_on_storage": {
-        "tier": "full",
-        "parents": [
-          "full:fyrr:test:dense_path/maintenance::maintenance_restore_batched_authorization_boundaries_on_storage"
-        ]
-      }
     }
   },
   "s3-maintenance": {
@@ -326,8 +307,7 @@
     "kind": "rust",
     "backend": "s3",
     "cases": {
-      "full:fyrr:test:dense_path/maintenance::maintenance_reader_switch_keeps_inflight_pin_and_evicts_old_mirror_on_real_s3": {"tier": "full", "seconds": 32.533},
-      "full:fyrr:test:dense_path/maintenance::maintenance_restore_refuses_envelope_replaced_after_listing_on_real_s3": {"tier": "full", "seconds": 27.663}
+      "full:fyrr:test:dense_path/maintenance::maintenance_reader_switch_keeps_inflight_pin_and_evicts_old_mirror_on_real_s3": {"tier": "full", "seconds": 32.533}
     },
     "children": {
       "full:fyrr-reader:lib:fyrr_reader/serve::tests::generations::generation_inflight_pin_and_mirror_eviction_on_real_s3": {
@@ -640,7 +620,7 @@
     "kind": "rust",
     "backend": "local",
     "owns": {
-      "full:fyrr:test:dense_path/history_integrity::": {"tier": "full", "seconds": 16.951}
+      "full:fyrr:test:dense_path/history_integrity::": {"tier": "full", "seconds": 36.256}
     },
     "children": {
       "full:fyrr-writer:lib:fyrr_writer/commit::history::sequence_tests::cached_history_checks_sequence_at_joins_on_storage": {

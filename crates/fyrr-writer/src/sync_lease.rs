@@ -171,14 +171,10 @@ impl CursorLease {
                 .filter(|m| m.source_id == source && m.kind == kind);
             state.sequence = log.sequence;
             state.rejection_generation = markers
-                .clone()
                 .map(|m| m.rejection_generation)
                 .fold(log.rejection_generation, u32::max)
                 .checked_add(1)
                 .ok_or(WriterError::RejectionGenerationOverflow)?;
-            state.restore_sequence = markers
-                .map(|m| m.restore_sequence)
-                .fold(log.restore_sequence, u64::max);
             state.last = log.applied;
             state.lease = (log.generation > 0).then(|| fyrr_core::publication::Lease {
                 holder: String::new(),
@@ -231,7 +227,7 @@ impl CursorLease {
             ttl,
             format!("{source}:{}:{}:{now}", kind.as_str(), std::process::id()).as_bytes(),
         )?);
-        state.schema_version = fyrr_core::connector::CONNECTOR_CONTRACT_VERSION;
+        state.schema_version = fyrr_core::connector::CURSOR_CONTRACT_VERSION;
         let result = cas_put(store.as_ref(), &path, &state, mode)
             .await
             .map_err(|e| match e {
@@ -286,7 +282,7 @@ impl CursorLease {
         if !self.live(&held) {
             return Err(WriterError::SyncLeaseLost);
         }
-        state.schema_version = fyrr_core::connector::CONNECTOR_CONTRACT_VERSION;
+        state.schema_version = fyrr_core::connector::CURSOR_CONTRACT_VERSION;
         state.lease = held.0.lease.clone();
         state
             .lease

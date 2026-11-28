@@ -5,7 +5,6 @@
   "kind": "permissions",
   "sequence": 7,
   "rejection_generation": 1,
-  "restore_sequence": 0,
   "start_cursor": "cursor-6",
   "reason": "permission_read_incomplete"
 }

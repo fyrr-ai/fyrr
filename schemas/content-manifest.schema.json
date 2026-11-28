@@ -93,13 +93,6 @@
         "type": "string"
       }
     },
-    "cursor_rewinds": {
-      "type": "array",
-      "items": {
-        "type": "string"
-      },
-      "description": "Immutable restore rewind marker paths; visible only through this publication."
-    },
     "incarnation": {
       "type": "string",
       "description": "The incarnation of the namespace that published this version, copied\nfrom the serving head."

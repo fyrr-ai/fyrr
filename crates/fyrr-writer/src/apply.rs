@@ -10,8 +10,7 @@ pub use row_state::{
     rows_filter, state, state_source, states, strings, tokens,
 };
 pub(crate) use row_state::{
-    OWN_READERS, effective_readers, marker_row, own_readers, with_own_readers, with_patch,
-    with_state, with_typed,
+    OWN_READERS, effective_readers, marker_row, own_readers, with_patch, with_state, with_typed,
 };
 
 use arrow_array::{
@@ -48,7 +47,6 @@ pub async fn reject(
         kind: envelope.kind,
         sequence: envelope.sequence,
         rejection_generation: envelope.rejection_generation,
-        restore_sequence: envelope.restore_sequence,
         start_cursor: envelope.cursor.start.clone(),
         reason: reason.into(),
     };

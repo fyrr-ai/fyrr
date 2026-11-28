@@ -102,7 +102,6 @@ pub(crate) async fn change_schema(
             Vec::new(),
             Default::default(),
             false,
-            Vec::new(),
             false,
             None,
         )

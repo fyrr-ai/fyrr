@@ -1,7 +1,7 @@
 //! Retiring and purging a source, under the namespace
 //! lease. Retirement is one entry in the policy artifact: readers deny the
-//! source on their next request, the committer rejects its envelopes, a
-//! worker refuses to sync it, and a restore cannot bring its rows back. A
+//! source on their next request, the committer rejects its envelopes and a
+//! worker refuses to sync it. A
 //! purge retires the source and removes its rows, envelopes and cursors; old
 //! Lance versions leave within the purge window like any deleted content.
 use crate::{Result, WriterError};
@@ -198,7 +198,6 @@ pub async fn purge(config: &Config, source: &str, confirm: bool) -> Result<serde
                 Vec::new(),
                 Default::default(),
                 true,
-                Vec::new(),
                 false,
                 None,
             )

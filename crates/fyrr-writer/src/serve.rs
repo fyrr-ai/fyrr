@@ -31,7 +31,7 @@ pub async fn run(
         }
         requested.store(true, Ordering::Release);
     });
-    // A change of the served head, which carries rejections and rewinds, makes
+    // A change of the served head, which carries rejections, makes
     // every source due: a task of its own counts them, so that a long commit
     // does not delay them; the supervisor reads the count.
     let heads = Arc::new(AtomicU64::new(0));

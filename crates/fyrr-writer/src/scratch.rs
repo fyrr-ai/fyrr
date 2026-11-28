@@ -8,11 +8,11 @@ use std::path::{Path, PathBuf};
 
 pub(crate) const ERROR: WriterError = WriterError::RestoreWorkingSpaceExhausted;
 
-/// Called under the namespace lease; purposes have independent lifetimes.
-pub(crate) fn directory(config: &Config, purpose: &str) -> Result<PathBuf> {
+/// Called under the namespace lease.
+pub(crate) fn directory(config: &Config) -> Result<PathBuf> {
     let base = base(config)?;
     let scratch = base.join(format!(
-        "{}-{purpose}",
+        "{}-history",
         fyrr_reader::embedding::digest(fyrr_reader::storage::dataset_uri(config).as_bytes())
     ));
     match std::fs::remove_dir_all(&scratch) {
@@ -125,9 +125,9 @@ pub(crate) fn check_space(scratch: &Path, bytes: u64) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn open(scratch: &Path, purpose: &str, created: impl Fn(&Path)) -> Result<Connection> {
+pub(crate) fn open(scratch: &Path) -> Result<Connection> {
     let path = scratch.join(format!(
-        "fyrr-writer-{purpose}-{}-{}.sqlite",
+        "fyrr-writer-history-{}-{}.sqlite",
         std::process::id(),
         fyrr_core::clock::now().timestamp_nanos_opt().ok_or(ERROR)?
     ));
@@ -139,14 +139,11 @@ pub(crate) fn open(scratch: &Path, purpose: &str, created: impl Fn(&Path)) -> Re
     )
     .ok()
     .and_then(|fd| {
-        let opened = Connection::open_with_flags(
+        Connection::open_with_flags(
             format!("/proc/self/fd/{}", fd.as_raw_fd()),
             rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE,
-        );
-        if opened.is_ok() {
-            created(&path);
-        }
-        opened.ok()
+        )
+        .ok()
     });
     if let Some(db) = anonymous {
         return Ok(db);
@@ -157,7 +154,6 @@ pub(crate) fn open(scratch: &Path, purpose: &str, created: impl Fn(&Path)) -> Re
         .mode(0o600)
         .open(&path)
         .map_err(|_| ERROR)?;
-    created(&path);
     let opened = Connection::open(&path);
     let removed = std::fs::remove_file(&path);
     drop(file);

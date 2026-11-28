@@ -10,12 +10,10 @@ pub(super) fn replacement_matches(
     source_id: &str,
     kind: fyrr_core::connector::SyncKind,
     rejection_generation: u32,
-    restore_sequence: u64,
 ) -> bool {
     source_id == rejected.source_id
         && kind == rejected.kind
         && rejection_generation > rejected.rejection_generation
-        && restore_sequence >= rejected.restore_sequence
 }
 
 pub(crate) mod index;
@@ -24,7 +22,6 @@ use index::{Evidence, Index};
 #[derive(Debug)]
 pub(crate) struct RestoreHistory {
     index: Index,
-    rewinds: Vec<String>,
     pub(super) listed: BTreeSet<Path>,
     pub(super) envelopes: BTreeMap<Path, (object_store::ObjectMeta, RejectionMarker, bool)>,
 }
@@ -32,15 +29,12 @@ impl RestoreHistory {
     pub(crate) fn new(config: &Config) -> Result<Self> {
         Ok(Self {
             index: Index::new(config)?,
-            rewinds: Vec::new(),
             listed: BTreeSet::new(),
             envelopes: BTreeMap::new(),
         })
     }
     fn check_bounds(&self, additional: usize) -> Result<()> {
-        if self.rewinds.len() + self.envelopes.len() + self.listed.len() + additional
-            > RESTORE_HISTORY_LIMIT
-        {
+        if self.envelopes.len() + self.listed.len() + additional > RESTORE_HISTORY_LIMIT {
             return Err(WriterError::RestoreHistorySummaryLimit);
         }
         Ok(())
@@ -56,7 +50,6 @@ impl RestoreHistory {
         let cut = fyrr_reader::storage::history_cut(store.as_ref(), &root).await?;
         let mut next = head.content.as_ref().map(|p| p.manifest.clone());
         let mut newer_sequence: Option<u64> = None;
-        let mut rewinds = None;
         while let Some(path) = next {
             if let Some(sequence) = self.index.get::<u64>(Evidence::Manifest, &path)? {
                 if newer_sequence.is_some_and(|newer| sequence >= newer) {
@@ -86,14 +79,6 @@ impl RestoreHistory {
                 return Err(WriterError::PublicationInvalid);
             }
             newer_sequence = Some(m.sequence);
-            if rewinds.is_none() {
-                if self.envelopes.len() + self.listed.len() + m.cursor_rewinds.len()
-                    > RESTORE_HISTORY_LIMIT
-                {
-                    return Err(WriterError::RestoreHistorySummaryLimit);
-                }
-                rewinds = Some(m.cursor_rewinds);
-            }
             for id in m.envelope_ids {
                 self.index.put(Evidence::Applied, &id, &(), true)?;
             }
@@ -130,9 +115,6 @@ impl RestoreHistory {
             }
         }
         self.index.promote()?;
-        if let Some(rewinds) = rewinds {
-            self.rewinds = rewinds;
-        }
         self.check_bounds(0)
     }
     pub(super) fn identity(&self, id: &str) -> Result<Option<String>> {
@@ -202,9 +184,8 @@ impl RestoreHistory {
                 kind: envelope.kind,
                 sequence: envelope.sequence,
                 rejection_generation: envelope.rejection_generation,
-                restore_sequence: envelope.restore_sequence,
                 start_cursor: None,
-                reason: "restore_rewind".into(),
+                reason: "pending".into(),
             };
             self.envelopes.insert(
                 path,
@@ -237,12 +218,6 @@ impl RestoreHistory {
         pending.sort_by(|a, b| (&a.source_id, a.sequence).cmp(&(&b.source_id, b.sequence)));
         Ok(pending)
     }
-    pub(crate) fn summaries(&self) -> impl Iterator<Item = &RejectionMarker> {
-        self.envelopes
-            .iter()
-            .filter(|(p, _)| self.listed.contains(p))
-            .map(|(_, (_, s, _))| s)
-    }
     async fn visit_markers(
         &self,
         config: &Config,
@@ -254,9 +229,6 @@ impl RestoreHistory {
             after = id;
             let path = format!("rejections/{after}.json");
             visit(self, self.marker(store.as_ref(), &root, &path).await?)?;
-        }
-        for path in &self.rewinds {
-            visit(self, self.marker(store.as_ref(), &root, path).await?)?;
         }
         Ok(())
     }
@@ -311,26 +283,14 @@ impl RestoreHistory {
     fn consumed(&self, marker: &RejectionMarker, applying: &[PreparedEnvelope]) -> Result<bool> {
         if applying.iter().any(|e| {
             crate::apply::complete_read(e)
-                && replacement_matches(
-                    marker,
-                    &e.source_id,
-                    e.kind,
-                    e.rejection_generation,
-                    e.restore_sequence,
-                )
+                && replacement_matches(marker, &e.source_id, e.kind, e.rejection_generation)
         }) {
             return Ok(true);
         }
         for (path, (_, e, complete)) in &self.envelopes {
             if self.listed.contains(path)
                 && *complete
-                && replacement_matches(
-                    marker,
-                    &e.source_id,
-                    e.kind,
-                    e.rejection_generation,
-                    e.restore_sequence,
-                )
+                && replacement_matches(marker, &e.source_id, e.kind, e.rejection_generation)
                 && self.index.contains(Evidence::Applied, &e.envelope_id)?
                 && !self.index.contains(Evidence::Rejected, &e.envelope_id)?
             {
@@ -343,14 +303,9 @@ impl RestoreHistory {
 
 #[derive(Debug)]
 pub(super) struct RejectionFences {
-    by_kind: BTreeMap<(String, &'static str), Fence>,
+    /// The newest rejection generation of each wanted source and kind.
+    by_kind: BTreeMap<(String, &'static str), u32>,
     wanted: BTreeSet<(String, &'static str)>,
-}
-#[derive(Debug, Default)]
-struct Fence {
-    restore_sequence: u64,
-    authorization_restore_sequence: u64,
-    rejection_generation: Option<u32>,
 }
 impl RejectionFences {
     pub(super) fn new(candidates: &[PreparedEnvelope]) -> Result<Self> {
@@ -372,19 +327,7 @@ impl RejectionFences {
             return Ok(());
         }
         let fence = self.by_kind.entry(key).or_default();
-        fence.restore_sequence = fence.restore_sequence.max(marker.restore_sequence);
-        if marker.reason != "restore_rewind" {
-            fence.authorization_restore_sequence = fence
-                .authorization_restore_sequence
-                .max(marker.restore_sequence);
-            fence.rejection_generation = Some(
-                fence
-                    .rejection_generation
-                    .map_or(marker.rejection_generation, |n| {
-                        n.max(marker.rejection_generation)
-                    }),
-            );
-        }
+        *fence = (*fence).max(marker.rejection_generation);
         if self.by_kind.len() > RESTORE_HISTORY_LIMIT {
             return Err(WriterError::RestoreHistorySummaryLimit);
         }
@@ -394,24 +337,8 @@ impl RejectionFences {
         let fence = self
             .by_kind
             .get(&(envelope.source_id.clone(), envelope.kind.as_str()))?;
-        let authorization = envelope.kind.is_authorization();
-        if envelope.restore_sequence
-            < if authorization {
-                fence.authorization_restore_sequence
-            } else {
-                fence.restore_sequence
-            }
-        {
-            Some("restore_refetch")
-        } else if authorization
-            && fence
-                .rejection_generation
-                .is_some_and(|n| envelope.rejection_generation <= n)
-        {
-            Some("authorization_rewind_required")
-        } else {
-            None
-        }
+        (envelope.kind.is_authorization() && envelope.rejection_generation <= *fence)
+            .then_some("authorization_rewind_required")
     }
 }
 
@@ -429,24 +356,21 @@ mod tests {
             kind: Permissions,
             sequence: 99,
             rejection_generation: 3,
-            restore_sequence: 7,
             start_cursor: None,
             reason: "fixture".into(),
         };
-        for (source, kind, generation, restore, expected) in [
-            ("other", Permissions, 4, 7, false),
-            ("source", Members, 4, 7, false),
-            ("source", Permissions, 2, 7, false),
-            ("source", Permissions, 3, 7, false),
-            ("source", Permissions, 4, 6, false),
-            ("source", Permissions, 4, 7, true),
-            ("source", Permissions, 4, 8, true),
-            ("source", Permissions, u32::MAX, u64::MAX, true),
+        for (source, kind, generation, expected) in [
+            ("other", Permissions, 4, false),
+            ("source", Members, 4, false),
+            ("source", Permissions, 2, false),
+            ("source", Permissions, 3, false),
+            ("source", Permissions, 4, true),
+            ("source", Permissions, u32::MAX, true),
         ] {
             assert_eq!(
-                replacement_matches(&rejected, source, kind, generation, restore),
+                replacement_matches(&rejected, source, kind, generation),
                 expected,
-                "{source} {kind:?} generation={generation} restore={restore}"
+                "{source} {kind:?} generation={generation}"
             );
         }
         let exhausted = RejectionMarker {
@@ -458,7 +382,6 @@ mod tests {
             "source",
             Permissions,
             u32::MAX,
-            u64::MAX,
         ));
     }
 
@@ -480,43 +403,27 @@ mod tests {
             kind: Permissions,
             sequence: 1,
             rejection_generation: 3,
-            restore_sequence: 7,
             start_cursor: None,
             reason: "fixture".into(),
         }
     }
 
     #[test]
-    fn acceptance_fences_preserve_kind_restore_and_generation_boundaries() {
-        for (kind, reason, generation, restore, expected) in [
-            ("content", "restore_rewind", 0, 6, Some("restore_refetch")),
-            ("content", "fixture", 0, 7, None),
-            ("permissions", "restore_rewind", 3, 6, None),
-            ("permissions", "fixture", 3, 6, Some("restore_refetch")),
-            (
-                "permissions",
-                "fixture",
-                3,
-                7,
-                Some("authorization_rewind_required"),
-            ),
-            ("permissions", "fixture", 4, 7, None),
-            ("members", "fixture", 4, 6, Some("restore_refetch")),
-            ("reconcile", "fixture", 0, 7, None),
+    fn acceptance_fences_preserve_kind_and_generation_boundaries() {
+        for (kind, generation, expected) in [
+            ("content", 0, None),
+            ("permissions", 3, Some("authorization_rewind_required")),
+            ("permissions", 4, None),
+            ("members", 3, Some("authorization_rewind_required")),
+            ("reconcile", 0, None),
         ] {
             let mut envelope = envelope(kind);
             envelope.rejection_generation = generation;
-            envelope.restore_sequence = restore;
             let mut marker = marker();
             marker.kind = envelope.kind;
-            marker.reason = reason.into();
             let mut fences = RejectionFences::new(std::slice::from_ref(&envelope)).unwrap();
             fences.observe(&marker).unwrap();
-            assert_eq!(
-                fences.refusal(&envelope),
-                expected,
-                "{kind}/{reason}/{generation}/{restore}"
-            );
+            assert_eq!(fences.refusal(&envelope), expected, "{kind}/{generation}");
             marker.source_id = "other".into();
             let mut unrelated = RejectionFences::new(std::slice::from_ref(&envelope)).unwrap();
             unrelated.observe(&marker).unwrap();
@@ -581,9 +488,8 @@ mod tests {
         if let EnvelopePayload::Permissions(payload) = &mut replacement.payload {
             payload.complete_read = true;
         }
-        for (generation, restore, expected) in [(5, 7, Some(9)), (10, 6, Some(1)), (10, 7, None)] {
+        for (generation, expected) in [(5, Some(9)), (10, None)] {
             replacement.rejection_generation = generation;
-            replacement.restore_sequence = restore;
             let left = history
                 .unconsumed_rejections(&config, std::slice::from_ref(&replacement))
                 .await

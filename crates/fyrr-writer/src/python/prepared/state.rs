@@ -52,7 +52,7 @@ impl CommandEvidence {
         Ok(())
     }
 
-    /// The rejection markers and cursor rewinds the head's publications record.
+    /// The rejection markers the head's publications record.
     fn markers(
         &mut self,
         config: &fyrr_core::config::Config,
@@ -93,8 +93,7 @@ fn unconsumed<'a>(
         .filter(|m| {
             m.source_id == source
                 && m.kind == kind
-                && (m.rejection_generation >= state.rejection_generation
-                    || m.restore_sequence > state.restore_sequence)
+                && m.rejection_generation >= state.rejection_generation
         })
         .collect()
 }
@@ -169,7 +168,6 @@ pub(super) struct Pending {
     pub(super) content_paths: Vec<Path>,
     pub(super) cursors: Vec<(u64, Option<String>)>,
     pub(super) generation: u32,
-    pub(super) restore_sequence: u64,
     /// The newest rejection generation that a complete-read envelope ended.
     pub(super) completed_generation: u32,
     pub(super) members_tail: Option<(u64, bool)>,
@@ -189,7 +187,6 @@ impl Preparation<'_> {
         let mut content_paths = Vec::new();
         let mut durable_cursors = Vec::new();
         let mut durable_generation = 0;
-        let mut durable_restore_sequence = 0;
         let mut members_tail = None;
         let mut completed_generation = 0;
         let mut source_pending = false;
@@ -304,7 +301,6 @@ impl Preparation<'_> {
                 && !crate::commit::chained(envelope.kind)
             {
                 durable_generation = durable_generation.max(envelope.rejection_generation);
-                durable_restore_sequence = durable_restore_sequence.max(envelope.restore_sequence);
                 if matches!(
                     envelope.payload,
                     EnvelopePayload::Permissions(_) | EnvelopePayload::Members(_)
@@ -416,7 +412,6 @@ impl Preparation<'_> {
             content_paths,
             cursors: durable_cursors,
             generation: durable_generation,
-            restore_sequence: durable_restore_sequence,
             completed_generation,
             members_tail,
             store,
@@ -435,7 +430,6 @@ impl Preparation<'_> {
     ) -> Result<(CursorState, bool, bool)> {
         let mut state = self.rt.block_on(self.lease.state())?;
         state.rejection_generation = state.rejection_generation.max(durable.generation);
-        state.restore_sequence = state.restore_sequence.max(durable.restore_sequence);
         // Repair the cache from every durable envelope before checking due time.
         self.rt.block_on(crate::prepare::recover_cursor(
             self.lease,
@@ -445,20 +439,7 @@ impl Preparation<'_> {
         let interval = interval(self.source, self.kind);
         let markers = unconsumed(&durable.markers, &self.source.id, self.kind, &state);
         if let Some(oldest) = markers.iter().min_by_key(|m| m.sequence) {
-            state.cursor = if markers
-                .iter()
-                .any(|m| m.restore_sequence > state.restore_sequence)
-            {
-                None
-            } else {
-                oldest.start_cursor.clone()
-            };
-            state.restore_sequence = markers
-                .iter()
-                .map(|m| m.restore_sequence)
-                .max()
-                .unwrap_or(0)
-                .max(state.restore_sequence);
+            state.cursor.clone_from(&oldest.start_cursor);
             state.rejection_generation = markers
                 .iter()
                 .map(|m| m.rejection_generation)

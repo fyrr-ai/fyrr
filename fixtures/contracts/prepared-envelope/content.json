@@ -6,7 +6,6 @@
   "kind": "content",
   "sequence": 42,
   "rejection_generation": 1,
-  "restore_sequence": 0,
   "cursor": {
     "start": "2026-09-30T09:00:00Z#page=3",
     "end": "2026-09-30T10:00:00Z#page=1"

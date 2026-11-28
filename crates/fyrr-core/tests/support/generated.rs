@@ -442,7 +442,6 @@ fn published_files(arrow: &Value) -> Vec<GeneratedFile> {
                 kind: fyrr_core::connector::SyncKind::Permissions,
                 sequence: 7,
                 rejection_generation: 1,
-                restore_sequence: 0,
                 start_cursor: Some("cursor-6".into()),
                 reason: "permission_read_incomplete".into(),
             }))

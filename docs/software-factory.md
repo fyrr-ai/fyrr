@@ -115,7 +115,7 @@ Every successful response carries `publication_id`, `content_version` and
 to the run log next to the change the agent produced. When nobody reads the
 diff, this is the record of which tickets and decisions the agent could see.
 
-A retained publication can be served again with
+A retained publication of a write API namespace can be served again with
 `fyrr writer restore PUBLICATION`
 ([restore and rollback](operations.md#restore-and-rollback)), so a failed
 run can be repeated against the same content.

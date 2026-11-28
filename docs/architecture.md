@@ -71,8 +71,9 @@ on a single host a [local directory](configuration.md#local-storage):
    and created again at the same storage URI stops serving when it next
    reads the head and prepares the new namespace's publication.
 
-Published versions are retained for `writer.purge_window` and can be
-restored; see [operations](operations.md#restore-and-rollback).
+Published versions are retained for `writer.purge_window`; those of a
+namespace written through the write API can be restored, see
+[operations](operations.md#restore-and-rollback).
 
 Every artifact carries a `major.minor` contract version. An unknown major
 is refused with `publication_invalid` at startup or
